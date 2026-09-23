@@ -1,0 +1,1202 @@
+{
+ "fiscal_year": 2569,
+ "steps": [
+  {
+   "code": "P1",
+   "order": 1,
+   "sheet": "แบบ พัสดุ 1",
+   "page_no": 1,
+   "title": "ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "subject": "เบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "section",
+     "title": "วัสดุสำนักงาน"
+    },
+    {
+     "type": "item",
+     "code": "P1-01",
+     "seq": 1,
+     "name": "ถุงใส่ขยะสีดำ 13\" * 21\" (41 ใบ/ห่อ/1 kg.)",
+     "unit": "ห่อ",
+     "price": 49.0
+    },
+    {
+     "type": "item",
+     "code": "P1-02",
+     "seq": 2,
+     "name": "ถุงใส่ขยะสีดำ 16\" * 28\" (26 ใบ/ห่อ/1 kg.)",
+     "unit": "ห่อ",
+     "price": 49.0
+    },
+    {
+     "type": "item",
+     "code": "P1-03",
+     "seq": 3,
+     "name": "ถุงใส่ขยะสีแดง 13\" * 21\" (41 ใบ/ห่อ/1 kg.)",
+     "unit": "ห่อ",
+     "price": 66.0
+    },
+    {
+     "type": "item",
+     "code": "P1-04",
+     "seq": 4,
+     "name": "ถุงใส่ขยะสีแดง 16\" * 28\" (26 ใบ/ห่อ/1 kg.)",
+     "unit": "ห่อ",
+     "price": 66.0
+    },
+    {
+     "type": "item",
+     "code": "P1-05",
+     "seq": 5,
+     "name": "สมุดส่งผู้ป่วยไปรับการตรวจหรือรักษาต่อ",
+     "unit": "เล่ม",
+     "price": 150.0
+    },
+    {
+     "type": "item",
+     "code": "P1-06",
+     "seq": 6,
+     "name": "สติกเกอร์ติด Tube",
+     "unit": "ดวง",
+     "price": 0.3
+    },
+    {
+     "type": "item",
+     "code": "P1-07",
+     "seq": 7,
+     "name": "ใบ Lab สีเหลือง",
+     "unit": "เล่ม",
+     "price": 75.0
+    },
+    {
+     "type": "item",
+     "code": "P1-08",
+     "seq": 8,
+     "name": "ใบ Lab สีชมพู",
+     "unit": "เล่ม",
+     "price": 75.0
+    },
+    {
+     "type": "item",
+     "code": "P1-09",
+     "seq": 9,
+     "name": "ใบ Lab สีฟ้า",
+     "unit": "เล่ม",
+     "price": 75.0
+    },
+    {
+     "type": "item",
+     "code": "P1-10",
+     "seq": 10,
+     "name": "ใบเบิก - ใบส่งคืน / แบบ พ.3101",
+     "unit": "เล่ม",
+     "price": 225.0
+    },
+    {
+     "type": "item",
+     "code": "P1-11",
+     "seq": 11,
+     "name": "ขวดเปล่า 300 CC.",
+     "unit": "ขวด",
+     "price": 19.0
+    },
+    {
+     "type": "section",
+     "title": "วัสดุการแพทย์"
+    },
+    {
+     "type": "item",
+     "code": "P1-12",
+     "seq": 12,
+     "name": "หมวกคลุมผม เฉพาะ บริการทันตกรรม",
+     "unit": "ชิ้น",
+     "price": 0.85
+    },
+    {
+     "type": "item",
+     "code": "P1-13",
+     "seq": 13,
+     "name": "Autoclave Tape 3/4\"",
+     "unit": "ม้วน",
+     "price": 235.4
+    },
+    {
+     "type": "item",
+     "code": "P1-14",
+     "seq": 14,
+     "name": "Face Mask (50 ชิ้น/กล่อง)",
+     "unit": "กล่อง",
+     "price": 41.73
+    },
+    {
+     "type": "item",
+     "code": "P1-15",
+     "seq": 15,
+     "name": "ใบมีดผ่าตัด No.11 (100 ใบ/กล่อง)",
+     "unit": "กล่อง",
+     "price": 310.0
+    },
+    {
+     "type": "item",
+     "code": "P1-16",
+     "seq": 16,
+     "name": "Set Saline ชุดให้น้ำเกลือ (NIPO)",
+     "unit": "ชุด",
+     "price": 10.7
+    },
+    {
+     "type": "item",
+     "code": "P1-17",
+     "seq": 17,
+     "name": "K-Y Gel",
+     "unit": "ซอง",
+     "price": 4.0
+    },
+    {
+     "type": "item",
+     "code": "P1-18",
+     "seq": 18,
+     "name": "ไม้กดลิ้น (100 ชิ้น/กล่อง)",
+     "unit": "กล่อง",
+     "price": 110.0
+    },
+    {
+     "type": "item",
+     "code": "P1-19",
+     "seq": 19,
+     "name": "Mask N95 (ให้ รพ.สต. แห่งละ 5 ชิ้น/ปี)",
+     "unit": "ชิ้น",
+     "price": 25.0
+    },
+    {
+     "type": "item",
+     "code": "P1-20",
+     "seq": 20,
+     "name": "Air-way No.3",
+     "unit": "ชิ้น",
+     "price": 16.0
+    },
+    {
+     "type": "item",
+     "code": "P1-21",
+     "seq": 21,
+     "name": "Air-way No.4",
+     "unit": "ชิ้น",
+     "price": 16.0
+    },
+    {
+     "type": "item",
+     "code": "P1-22",
+     "seq": 22,
+     "name": "Air-way No.5",
+     "unit": "ชิ้น",
+     "price": 16.0
+    }
+   ]
+  },
+  {
+   "code": "P2",
+   "order": 2,
+   "sheet": "แบบ พัสดุ 2",
+   "page_no": 2,
+   "title": "ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "subject": "เบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "section",
+     "title": "วัสดุการแพทย์"
+    },
+    {
+     "type": "item",
+     "code": "P2-01",
+     "seq": 23,
+     "name": "Oxgen cannula",
+     "unit": "ชุด",
+     "price": 10.5
+    },
+    {
+     "type": "item",
+     "code": "P2-02",
+     "seq": 24,
+     "name": "Oxgen Mask with bag adult",
+     "unit": "ชิ้น",
+     "price": 24.0
+    },
+    {
+     "type": "item",
+     "code": "P2-03",
+     "seq": 25,
+     "name": "Oxgen Mask with bag childen",
+     "unit": "ชิ้น",
+     "price": 24.0
+    },
+    {
+     "type": "item",
+     "code": "P2-04",
+     "seq": 26,
+     "name": "ไม้ pap smear (100 ชิ้น/กล่อง)",
+     "unit": "กล่อง",
+     "price": 123.5
+    },
+    {
+     "type": "item",
+     "code": "P2-05",
+     "seq": 27,
+     "name": "สไลด์ pap smear (100 แผ่น/กล่อง)",
+     "unit": "กล่อง",
+     "price": 38.5
+    },
+    {
+     "type": "item",
+     "code": "P2-06",
+     "seq": 28,
+     "name": "DISPOS NEEDLE NO. 18*1\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-07",
+     "seq": 29,
+     "name": "DISPOS NEEDLE NO. 18*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.06
+    },
+    {
+     "type": "item",
+     "code": "P2-08",
+     "seq": 30,
+     "name": "DISPOS NEEDLE NO. 20*1\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-09",
+     "seq": 31,
+     "name": "DISPOS NEEDLE NO. 20*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-10",
+     "seq": 32,
+     "name": "DISPOS NEEDLE NO. 21*1\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-11",
+     "seq": 33,
+     "name": "DISPOS NEEDLE NO. 21*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.05
+    },
+    {
+     "type": "item",
+     "code": "P2-12",
+     "seq": 34,
+     "name": "DISPOS NEEDLE NO. 22*1\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-13",
+     "seq": 35,
+     "name": "DISPOS NEEDLE NO. 22*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-14",
+     "seq": 36,
+     "name": "DISPOS NEEDLE NO. 23*1\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-15",
+     "seq": 37,
+     "name": "DISPOS NEEDLE NO. 23*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-16",
+     "seq": 38,
+     "name": "DISPOS NEEDLE NO. 24*1\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-17",
+     "seq": 39,
+     "name": "DISPOS NEEDLE NO. 24*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-18",
+     "seq": 40,
+     "name": "DISPOS NEEDLE NO. 25*1\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-19",
+     "seq": 41,
+     "name": "DISPOS NEEDLE NO. 25*1.5\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-20",
+     "seq": 42,
+     "name": "DISPOS NEEDLE NO. 26*0.5\"",
+     "unit": "ชิ้น",
+     "price": 0.41
+    },
+    {
+     "type": "item",
+     "code": "P2-21",
+     "seq": 43,
+     "name": "DISPOS NEEDLE NO. 27*0.5\"",
+     "unit": "ชิ้น",
+     "price": 0.42
+    },
+    {
+     "type": "item",
+     "code": "P2-22",
+     "seq": 44,
+     "name": "ELASTIC BANDAGE 2\"",
+     "unit": "ม้วน",
+     "price": 7.92
+    },
+    {
+     "type": "item",
+     "code": "P2-23",
+     "seq": 45,
+     "name": "ELASTIC BANDAGE 3\"",
+     "unit": "ม้วน",
+     "price": 11.23
+    }
+   ]
+  },
+  {
+   "code": "P3",
+   "order": 3,
+   "sheet": "แบบ พัสดุ 3",
+   "page_no": 3,
+   "title": "ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "subject": "เบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "section",
+     "title": "วัสดุการแพทย์"
+    },
+    {
+     "type": "item",
+     "code": "P3-01",
+     "seq": 46,
+     "name": "ELASTIC BANDAGE 4\"",
+     "unit": "ม้วน",
+     "price": 14.58
+    },
+    {
+     "type": "item",
+     "code": "P3-02",
+     "seq": 47,
+     "name": "ELASTIC BANDAGE 6\"",
+     "unit": "ม้วน",
+     "price": 21.67
+    },
+    {
+     "type": "item",
+     "code": "P3-03",
+     "seq": 48,
+     "name": "FOLEY CATHETER 2 WAY NO.8",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-04",
+     "seq": 49,
+     "name": "FOLEY CATHETER 2 WAY NO.10",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-05",
+     "seq": 50,
+     "name": "FOLEY CATHETER 2 WAY NO.12",
+     "unit": "ชิ้น",
+     "price": 17.21
+    },
+    {
+     "type": "item",
+     "code": "P3-06",
+     "seq": 51,
+     "name": "FOLEY CATHETER 2 WAY NO.14",
+     "unit": "ชิ้น",
+     "price": 14.5
+    },
+    {
+     "type": "item",
+     "code": "P3-07",
+     "seq": 52,
+     "name": "FOLEY CATHETER 2 WAY NO.16",
+     "unit": "ชิ้น",
+     "price": 14.5
+    },
+    {
+     "type": "item",
+     "code": "P3-08",
+     "seq": 53,
+     "name": "FOLEY CATHETER 2 WAY NO.18",
+     "unit": "ชิ้น",
+     "price": 14.5
+    },
+    {
+     "type": "item",
+     "code": "P3-09",
+     "seq": 54,
+     "name": "FOLEY CATHETER 2 WAY NO.20",
+     "unit": "ชิ้น",
+     "price": 14.5
+    },
+    {
+     "type": "item",
+     "code": "P3-10",
+     "seq": 55,
+     "name": "FOLEY CATHETER 2 WAY NO.22",
+     "unit": "ชิ้น",
+     "price": 15.7
+    },
+    {
+     "type": "item",
+     "code": "P3-11",
+     "seq": 56,
+     "name": "FOLEY CATHETER 2 WAY NO.24",
+     "unit": "ชิ้น",
+     "price": 24.77
+    },
+    {
+     "type": "item",
+     "code": "P3-12",
+     "seq": 57,
+     "name": "FOLEY CATHETER 3 WAY NO.18",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-13",
+     "seq": 58,
+     "name": "FOLEY CATHETER 3 WAY NO.20",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-14",
+     "seq": 59,
+     "name": "FOLEY CATHETER 3 WAY NO.22",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-15",
+     "seq": 60,
+     "name": "FOLEY CATHETER 3 WAY NO.24",
+     "unit": "ชิ้น",
+     "price": 28.0
+    },
+    {
+     "type": "item",
+     "code": "P3-16",
+     "seq": 61,
+     "name": "GAUZE (สำเร็จรูป) 3*4\" NON STERILE (100แผ่น/ห่อ)",
+     "unit": "ห่อ",
+     "price": 42.8
+    },
+    {
+     "type": "item",
+     "code": "P3-17",
+     "seq": 62,
+     "name": "GAUZE BANDAGE 36\"* 6 YDS.",
+     "unit": "ม้วน",
+     "price": 44.94
+    },
+    {
+     "type": "item",
+     "code": "P3-18",
+     "seq": 63,
+     "name": "IV CATHETER NO.16",
+     "unit": "ชิ้น",
+     "price": 8.7
+    },
+    {
+     "type": "item",
+     "code": "P3-19",
+     "seq": 64,
+     "name": "IV CATHETER NO.18",
+     "unit": "ชิ้น",
+     "price": 8.21
+    },
+    {
+     "type": "item",
+     "code": "P3-20",
+     "seq": 65,
+     "name": "IV CATHETER NO.20",
+     "unit": "ชิ้น",
+     "price": 7.53
+    },
+    {
+     "type": "item",
+     "code": "P3-21",
+     "seq": 66,
+     "name": "IV CATHETER NO.22",
+     "unit": "ชิ้น",
+     "price": 7.2
+    },
+    {
+     "type": "item",
+     "code": "P3-22",
+     "seq": 67,
+     "name": "IV CATHETER NO.24",
+     "unit": "ชิ้น",
+     "price": 21.4
+    },
+    {
+     "type": "item",
+     "code": "P3-23",
+     "seq": 68,
+     "name": "MICROPORE 1/2\"*10 YDS.",
+     "unit": "ม้วน",
+     "price": 7.94
+    }
+   ]
+  },
+  {
+   "code": "P4",
+   "order": 4,
+   "sheet": "แบบ พัสดุ 4",
+   "page_no": 4,
+   "title": "ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "subject": "เบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "section",
+     "title": "วัสดุการแพทย์"
+    },
+    {
+     "type": "item",
+     "code": "P4-01",
+     "seq": 69,
+     "name": "MICROPORE 1\"*10 YDS.",
+     "unit": "ม้วน",
+     "price": 15.87
+    },
+    {
+     "type": "item",
+     "code": "P4-02",
+     "seq": 70,
+     "name": "NG TUBE NO.10*125 CM.",
+     "unit": "ชิ้น",
+     "price": 8.83
+    },
+    {
+     "type": "item",
+     "code": "P4-03",
+     "seq": 71,
+     "name": "NG TUBE NO.12*125 CM.",
+     "unit": "ชิ้น",
+     "price": 7.64
+    },
+    {
+     "type": "item",
+     "code": "P4-04",
+     "seq": 72,
+     "name": "NG TUBE NO.14*125 CM.",
+     "unit": "ชิ้น",
+     "price": 7.8
+    },
+    {
+     "type": "item",
+     "code": "P4-05",
+     "seq": 73,
+     "name": "NG TUBE NO.16*125 CM.",
+     "unit": "ชิ้น",
+     "price": 7.8
+    },
+    {
+     "type": "item",
+     "code": "P4-06",
+     "seq": 74,
+     "name": "NG TUBE NO.18*125 CM.",
+     "unit": "ชิ้น",
+     "price": 7.8
+    },
+    {
+     "type": "item",
+     "code": "P4-07",
+     "seq": 75,
+     "name": "SOFRA - TULLE",
+     "unit": "ชิ้น",
+     "price": 9.52
+    },
+    {
+     "type": "item",
+     "code": "P4-08",
+     "seq": 76,
+     "name": "SYRINGE DISPOS 1 ML. (ไม่ติดเข็ม)",
+     "unit": "ชิ้น",
+     "price": 0.0
+    },
+    {
+     "type": "item",
+     "code": "P4-09",
+     "seq": 77,
+     "name": "SYRINGE DISPOS 1 ML. (ถอดหัวเข็มได้ 25*1\" LDS)",
+     "unit": "ชิ้น",
+     "price": 0.05
+    },
+    {
+     "type": "item",
+     "code": "P4-10",
+     "seq": 78,
+     "name": "SYRINGE INSULIN DISPOS 100 UNIT (29*0.5)",
+     "unit": "ชิ้น",
+     "price": 1.85
+    },
+    {
+     "type": "item",
+     "code": "P4-11",
+     "seq": 79,
+     "name": "SYRINGE DISPOS 3 ML.",
+     "unit": "ชิ้น",
+     "price": 1.06
+    },
+    {
+     "type": "item",
+     "code": "P4-12",
+     "seq": 80,
+     "name": "SYRINGE DISPOS 5 ML.",
+     "unit": "ชิ้น",
+     "price": 1.16
+    },
+    {
+     "type": "item",
+     "code": "P4-13",
+     "seq": 81,
+     "name": "SYRINGE DISPOS 10 ML.",
+     "unit": "ชิ้น",
+     "price": 1.54
+    },
+    {
+     "type": "item",
+     "code": "P4-14",
+     "seq": 82,
+     "name": "SYRINGE DISPOS 20 ML.",
+     "unit": "ชิ้น",
+     "price": 3.3
+    },
+    {
+     "type": "item",
+     "code": "P4-15",
+     "seq": 83,
+     "name": "SYRINGE DISPOS 50 ML.",
+     "unit": "ชิ้น",
+     "price": 8.67
+    },
+    {
+     "type": "item",
+     "code": "P4-16",
+     "seq": 84,
+     "name": "THERMOMETER DIGITAL (ยี่ห้อ TERUMO)",
+     "unit": "ชิ้น",
+     "price": 642.0
+    },
+    {
+     "type": "item",
+     "code": "P4-17",
+     "seq": 85,
+     "name": "TRANSPORE 1\"",
+     "unit": "ชิ้น",
+     "price": 21.03
+    },
+    {
+     "type": "item",
+     "code": "P4-18",
+     "seq": 86,
+     "name": "URINE BAG",
+     "unit": "ชิ้น",
+     "price": 14.5
+    },
+    {
+     "type": "item",
+     "code": "P4-19",
+     "seq": 87,
+     "name": "ถุงมือตรวจโรค DISPOSABLE NO.XS",
+     "unit": "กล่อง",
+     "price": 93.85
+    },
+    {
+     "type": "item",
+     "code": "P4-20",
+     "seq": 88,
+     "name": "ถุงมือตรวจโรค DISPOSABLE NO.S",
+     "unit": "กล่อง",
+     "price": 93.99
+    },
+    {
+     "type": "item",
+     "code": "P4-21",
+     "seq": 89,
+     "name": "ถุงมือตรวจโรค DISPOSABLE NO.M",
+     "unit": "กล่อง",
+     "price": 93.99
+    },
+    {
+     "type": "item",
+     "code": "P4-22",
+     "seq": 90,
+     "name": "ถุงมือตรวจโรค DISPOSABLE NO.L",
+     "unit": "กล่อง",
+     "price": 93.7
+    },
+    {
+     "type": "item",
+     "code": "P4-23",
+     "seq": 91,
+     "name": "สำลี (สำเร็จรูป) 0.35 g. (450 กรัม/ถุง)",
+     "unit": "ถุง",
+     "price": 70.0
+    },
+    {
+     "type": "item",
+     "code": "P4-24",
+     "seq": 92,
+     "name": "สำลี (สำเร็จรูป) 1.40 g. (450 กรัม/ถุง)",
+     "unit": "ถุง",
+     "price": 70.0
+    }
+   ]
+  },
+  {
+   "code": "P5",
+   "order": 5,
+   "sheet": "แบบ พัสดุ 5",
+   "page_no": 5,
+   "title": "ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "subject": "เบิกวัสดุสำนักงานและวัสดุการแพทย์",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "section",
+     "title": "วัสดุการแพทย์"
+    },
+    {
+     "type": "item",
+     "code": "P5-01",
+     "seq": 93,
+     "name": "ไม้พันสำลี 2 ก้าน (ต้องโทรแจ้งก่อน 1 เดือน)",
+     "unit": "ซอง",
+     "price": 1.25
+    },
+    {
+     "type": "item",
+     "code": "P5-02",
+     "seq": 94,
+     "name": "Gauze drain 5\" (ต้องโทรแจ้งก่อน 1 เดือน)",
+     "unit": "ซอง",
+     "price": 3.15
+    },
+    {
+     "type": "item",
+     "code": "P5-03",
+     "seq": 95,
+     "name": "สำลี + แอลกอฮอร์ 8 ก้อน/แผง",
+     "unit": "แผง",
+     "price": 4.0
+    },
+    {
+     "type": "item",
+     "code": "P5-04",
+     "seq": 96,
+     "name": "ถุงมือ sterile เบอร์ XS",
+     "unit": "คู่",
+     "price": 9.39
+    },
+    {
+     "type": "item",
+     "code": "P5-05",
+     "seq": 97,
+     "name": "ถุงมือ sterile เบอร์ S",
+     "unit": "คู่",
+     "price": 9.39
+    },
+    {
+     "type": "item",
+     "code": "P5-06",
+     "seq": 98,
+     "name": "ถุงมือ sterile เบอร์ M",
+     "unit": "คู่",
+     "price": 9.39
+    },
+    {
+     "type": "item",
+     "code": "P5-07",
+     "seq": 99,
+     "name": "ก๊อส 5 แผ่น (ใช้ในงานหัตถการ)",
+     "unit": "ซอง",
+     "price": 4.0
+    },
+    {
+     "type": "item",
+     "code": "P5-08",
+     "seq": 100,
+     "name": "สำลี (0.35 g.) 10 ก้อน",
+     "unit": "ซอง",
+     "price": 3.0
+    },
+    {
+     "type": "item",
+     "code": "P5-09",
+     "seq": 101,
+     "name": "TOP Gauze 11*12\" (2 ชิ้น/ซอง) (ต้องโทรแจ้งก่อน 1 เดือน)",
+     "unit": "ซอง",
+     "price": 40.45
+    }
+   ]
+  },
+  {
+   "code": "CS",
+   "order": 6,
+   "sheet": "แบบ จ่ายกลาง",
+   "page_no": 6,
+   "title": "ใบเบิกว้สดุการแพทย์จากหน่วยงานจ่ายกลาง",
+   "subject": "เบิกวัสดุการแพทย์จากหน่วยงานจ่ายกลาง",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "item",
+     "code": "CS-01",
+     "seq": 102,
+     "name": "TOP Gauze 3*6\" (4 ชิ้น/ซอง) (ต้องโทรแจ้งก่อน 1 เดือน)",
+     "unit": "ซอง",
+     "price": 12.89
+    },
+    {
+     "type": "item",
+     "code": "CS-02",
+     "seq": 103,
+     "name": "Comply (ใช้ตรวจ Set ทันตกรรม/หัตถการ)",
+     "unit": "แผ่น",
+     "price": 6.4
+    },
+    {
+     "type": "item",
+     "code": "CS-03",
+     "seq": 104,
+     "name": "spore test",
+     "unit": "ชิ้น",
+     "price": 150.0
+    }
+   ]
+  },
+  {
+   "code": "LAB",
+   "order": 7,
+   "sheet": "แบบ LAB",
+   "page_no": 7,
+   "title": "ใบเบิกว้สดุการแพทย์จากกลุ่มงานพยาธิวิทยา",
+   "subject": "เบิกวัสดุการแพทย์จากกลุ่มงานพยาธิวิทยา",
+   "to": "ผู้อำนวยการโรงพยาบาลอ่างทอง",
+   "rows": [
+    {
+     "type": "item",
+     "code": "LAB-01",
+     "seq": 105,
+     "name": "แผ่นตรวจ urine Preg test ",
+     "unit": "แผ่น",
+     "price": 4.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-02",
+     "seq": 106,
+     "name": "แผ่นตรวจ Urine sugar / Albumine (100 แผ่น/กล่อง)",
+     "unit": "กล่อง",
+     "price": 120.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-03",
+     "seq": 107,
+     "name": "แผ่นตรวจน้ำตาลปลายนิ้ว",
+     "unit": "แผ่น",
+     "price": 5.1
+    },
+    {
+     "type": "item",
+     "code": "LAB-04",
+     "seq": 108,
+     "name": "เข็มเจาะเลือดปลายนิ้ว",
+     "unit": "อัน",
+     "price": 4.5
+    },
+    {
+     "type": "item",
+     "code": "LAB-05",
+     "seq": 109,
+     "name": "Tube FBS สีเทา",
+     "unit": "อัน",
+     "price": 2.2
+    },
+    {
+     "type": "item",
+     "code": "LAB-06",
+     "seq": 110,
+     "name": "Tube CBC (EDTA) สีม่วง",
+     "unit": "อัน",
+     "price": 2.2
+    },
+    {
+     "type": "item",
+     "code": "LAB-07",
+     "seq": 111,
+     "name": "Tube clot blood  (Heparin) สีเขียว",
+     "unit": "อัน",
+     "price": 1.75
+    },
+    {
+     "type": "item",
+     "code": "LAB-08",
+     "seq": 112,
+     "name": "กระป๋องใส่ปัสสาวะ",
+     "unit": "ใบ",
+     "price": 1.5
+    },
+    {
+     "type": "item",
+     "code": "LAB-09",
+     "seq": 113,
+     "name": "HCT tube (100 tube/ขวด)",
+     "unit": "ขวด",
+     "price": 58.0
+    },
+    {
+     "type": "section",
+     "title": "ชุดทดสอบสารปนเปื้อน"
+    },
+    {
+     "type": "item",
+     "code": "LAB-10",
+     "seq": 114,
+     "name": "ชุดทดสอบสารฆ่าแมลง MJPK (10 test)",
+     "unit": "กล่อง",
+     "price": 575.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-11",
+     "seq": 115,
+     "name": "ชุดทดสอบไอโอดีน I-kit (60 test)",
+     "unit": "กล่อง",
+     "price": 100.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-12",
+     "seq": 116,
+     "name": "ชุดทดสอบกันรา (50 test)",
+     "unit": "กล่อง",
+     "price": 120.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-13",
+     "seq": 117,
+     "name": "ชุดทดสอบสารบอแรกซ์  (50 test)",
+     "unit": "กล่อง",
+     "price": 90.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-14",
+     "seq": 118,
+     "name": "ชุดทดสอบสารฟอกขาว  (100 test)",
+     "unit": "กล่อง",
+     "price": 85.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-15",
+     "seq": 119,
+     "name": "ชุดทดสอบสารฟอร์มาลีน  (1 test)",
+     "unit": "กล่อง",
+     "price": 18.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-16",
+     "seq": 120,
+     "name": "ชุดทดสอบโพลาร์ในน้ำมันทอดซ้ำ  (25 test)",
+     "unit": "กล่อง",
+     "price": 500.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-17",
+     "seq": 121,
+     "name": "ชุดทดสอบไฮโดรควืนิน  (20 test)",
+     "unit": "กล่อง",
+     "price": 400.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-18",
+     "seq": 122,
+     "name": "ชุดทดสอบปรอท  (10 test)",
+     "unit": "กล่อง",
+     "price": 800.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-19",
+     "seq": 123,
+     "name": "ชุดทดสอบสาร steroids ในยาแผนโบราณ (10 test)",
+     "unit": "กล่อง",
+     "price": 650.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-20",
+     "seq": 124,
+     "name": "ชุดทดสอบกรดวิตามิน A  (25 test)",
+     "unit": "กล่อง",
+     "price": 550.0
+    },
+    {
+     "type": "item",
+     "code": "LAB-21",
+     "seq": 125,
+     "name": "ชุดทดสอบโคลิฟอร์มแบคทีเรีย SI-2 (1 test)",
+     "unit": "ขวด",
+     "price": 12.0
+    }
+   ]
+  }
+ ],
+ "pcus": [
+  {
+   "code": "PCU01",
+   "name": "มหาดไทย",
+   "print_name": "มหาดไทย",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU02",
+   "name": "คลองวัว",
+   "print_name": "คลองวัว",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU03",
+   "name": "บ้านแห",
+   "print_name": "บ้านแห",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU04",
+   "name": "จำปาหล่อ",
+   "print_name": "จำปาหล่อ",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU05",
+   "name": "ย่านซื่อ",
+   "print_name": "ย่านซื่อ",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU06",
+   "name": "ศาลาแดง",
+   "print_name": "ศาลาแดง",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU07",
+   "name": "ป่างิ้ว",
+   "print_name": "ป่างิ้ว",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU08",
+   "name": "โพสะ",
+   "print_name": "โพสะ",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU09",
+   "name": "หัวไผ่",
+   "print_name": "หัวไผ่",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU10",
+   "name": "บ้านยาง",
+   "print_name": "บ้านยาง",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU11",
+   "name": "บ้านอิฐ",
+   "print_name": "บ้านอิฐ",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU12",
+   "name": "ตลาดกรวด",
+   "print_name": "ตลาดกรวด",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU13",
+   "name": "บ้านรี",
+   "print_name": "บ้านรี",
+   "group": "ทั่วไป"
+  },
+  {
+   "code": "PCU14",
+   "name": "เรือนจำ",
+   "print_name": "เรือนจำ",
+   "group": "พิเศษ"
+  },
+  {
+   "code": "PCU15",
+   "name": "เทศบาลเมืองฯ",
+   "print_name": "เทศบาลเมืองฯ",
+   "group": "พิเศษ"
+  }
+ ]
+}

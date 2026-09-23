@@ -1,0 +1,110 @@
+/* A4 print sheet — reproduces the original xlsx form (spec §4).
+   Loaded with media="print,screen" so the on-screen preview matches the printed page. */
+
+@font-face {
+  font-family: "TH Sarabun New";
+  src: url("../fonts/THSarabunNew.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "TH Sarabun New";
+  src: url("../fonts/THSarabunNew-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+}
+
+@page {
+  size: A4 portrait;
+  margin: 0.75in 0.71in;
+}
+
+:root {
+  /* Fixed scale for every printed page (spec: same font size on every page,
+     sized so the worst-case sheet — 24 items + 2 section headers — fits one A4). */
+  --print-scale: 0.73;
+}
+
+.print-wrap { padding-bottom: 24px; }
+
+.print-page {
+  position: relative;
+  background: #ffffff;
+  color: #000000;
+  width: 8.27in;
+  min-height: 11.69in;
+  margin: 0 auto 28px;
+  padding: 0.75in 0.71in;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.18);
+  font-family: "TH Sarabun New", "Sarabun", serif;
+  overflow: hidden;
+}
+
+.print-table {
+  table-layout: fixed;
+  border-collapse: collapse;
+  width: fit-content;
+  margin: 0 auto;
+  font-family: "TH Sarabun New", "Sarabun", serif;
+  font-size: calc(16pt * var(--print-scale));
+  color: #000000;
+}
+
+.print-table td {
+  padding: 0 3pt;
+  overflow: hidden;
+  /* TH Sarabun's natural line box (~1.6em) is taller than Excel's 20–21pt rows; clamp so rows keep their set height */
+  line-height: 1.2;
+  vertical-align: middle;
+}
+
+.cell-border { border: 1pt solid #000; }
+.cell-noborder { border: none; }
+/* Excel lets unbordered text overflow into neighbouring empty cells instead of wrapping */
+.print-table td.cell-noborder { white-space: nowrap; overflow: visible; }
+.cell-border-lr { border-left: 1pt solid #000; border-right: 1pt solid #000; border-top: none; border-bottom: none; }
+.cell-i-top { border-top: 1pt solid #000; }
+.cell-i-bottom { border-bottom: 1pt solid #000; }
+.cell-jm-top { border-top: 1pt solid #000; }
+
+.cell-center { text-align: center; }
+.cell-left { text-align: left; }
+.cell-right { text-align: right; }
+.cell-bold { font-weight: 700; }
+
+.fill-slot {
+  display: inline-block;
+  min-width: 3em;
+  text-align: center;
+  border-bottom: 1px dotted #000;
+}
+
+.draft-watermark {
+  position: absolute;
+  top: 45%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-30deg);
+  font-size: 64pt;
+  font-weight: 700;
+  color: rgba(200, 30, 30, 0.35);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+@media print {
+  html, body { background: #fff; }
+  main.container > h1, .print-controls { display: none !important; }
+  main.container { padding: 0 !important; margin: 0 !important; max-width: none !important; }
+  .print-page {
+    width: auto;
+    min-height: auto;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    break-after: page;
+  }
+  .print-page:last-child { break-after: auto; }
+}
