@@ -38,7 +38,7 @@ Verify signature + exp + (pcu) `v == pcus.pin_version` / (backup) `v == BACKUP_V
 | action | params | data |
 |---|---|---|
 | `pcuList` (public) | – | `{ pcus:[{code,name,group}] }` |
-| `pcuLogin` (public) | `pcu, pin` | `{ token, exp, pcu:{code,name,print_name,group} }` · errors `BAD_PIN{remaining}`, `PIN_LOCKED{until}` |
+| `pcuLogin` (public) | `pcu, pin` | `{ token, exp, pcu:{code,name,print_name,group}, bootstrap:<pcuBootstrap data> }` (bootstrap included to save a round trip) · errors `BAD_PIN{remaining}`, `PIN_LOCKED{until}` |
 | `pcuBootstrap` | – | see below |
 | `saveLines` | `month, lines:{code:{stock,op,pp,updated_at}}, last_step?, submitter_name?` | `{ saved_at, status, request }` · `CONFLICT` if status is `submitted`/`received` |
 | `submit` | `month` | `{ request }` · `INCOMPLETE{missing}` (non-hidden items without stock) · `OVER_LIMIT{items}` only when `limit_mode=="enforce"` |

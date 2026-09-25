@@ -26,8 +26,9 @@ function parseHash() {
   return { segments, params };
 }
 
-async function loadBootstrap() {
-  const data = await call("pcuBootstrap", {}, { token: getPcuToken() });
+// `pre` = bootstrap already returned by pcuLogin (saves one 3–15 s round trip).
+async function loadBootstrap(pre) {
+  const data = pre || (await call("pcuBootstrap", {}, { token: getPcuToken() }));
   app.boot = data;
   data.rounds.forEach((r) => {
     const existing = data.byRound[r.month];
@@ -89,8 +90,8 @@ async function route() {
         location.hash = "#/home";
         return;
       }
-      await renderLogin(container, app, async () => {
-        await loadBootstrap();
+      await renderLogin(container, app, async (res) => {
+        await loadBootstrap(res && res.bootstrap);
         renderHeader();
         location.hash = "#/home";
       });
@@ -158,7 +159,7 @@ function wireBeforeUnload() {
 
 async function boot() {
   const container = document.getElementById("app");
-  container.innerHTML = '<p class="muted">กำลังโหลด...</p>';
+  container.innerHTML = '<p class="muted">กำลังโหลดข้อมูล… (ระบบออนไลน์อาจใช้เวลา 5–20 วินาที)</p>';
   wireFooter();
   wireBeforeUnload();
 

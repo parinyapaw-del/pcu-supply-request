@@ -17,7 +17,13 @@ export async function renderLogin(container, app, onLoggedIn) {
   const box = document.createElement("div");
   box.className = "login-page";
 
-  let pcuList = app.pcuList;
+  // The 15 PCUs are in the static form JSON — render instantly instead of waiting 3–15 s for the
+  // Apps Script `pcuList` call (only used as a fallback if the form data has no pcus).
+  let pcuList = app.pcuList || (app.form && app.form.pcus && app.form.pcus.length
+    ? (app.pcuList = app.form.pcus.map((p) => ({ code: p.code, name: p.name, group: p.group })))
+    : null);
+  // Warm up the Apps Script instance while the user types the PIN (first call after idle is slow).
+  auth.fetchPcuList().catch(() => {});
   if (!pcuList) {
     box.innerHTML = '<p class="muted">กำลังโหลดรายชื่อ รพ.สต. ...</p>';
     container.innerHTML = "";
@@ -98,10 +104,10 @@ export async function renderLogin(container, app, onLoggedIn) {
       return;
     }
     loginBtn.disabled = true;
-    showMsg("");
+    showMsg("กำลังเข้าสู่ระบบและโหลดข้อมูล… (ระบบออนไลน์อาจใช้เวลา 5–20 วินาที)");
     try {
-      await auth.login(pcu, pin);
-      await onLoggedIn();
+      const res = await auth.login(pcu, pin);
+      await onLoggedIn(res);
     } catch (err) {
       if (err instanceof ApiError && err.code === "BAD_PIN") {
         showMsg(`PIN ไม่ถูกต้อง — เหลือโอกาสอีก ${err.remaining} ครั้ง`);

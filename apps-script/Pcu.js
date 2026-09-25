@@ -16,7 +16,7 @@ function action_pcuLogin(p) {
   var pin = String(p.pin || "");
   if (!pcuCode || !/^[0-9]{5}$/.test(pin)) throw apiError_("BAD_REQUEST", "กรอก รพ.สต. และ PIN 5 หลัก");
 
-  return LockService_run_(function () {
+  var res = LockService_run_(function () {
     var pcus = readTable_(SHEET_NAMES.PCUS);
     var row = null;
     for (var i = 0; i < pcus.length; i++) if (pcus[i].code === pcuCode) { row = pcus[i]; break; }
@@ -40,7 +40,7 @@ function action_pcuLogin(p) {
       writeTable_(SHEET_NAMES.PCUS, getSheetHeaders_()[SHEET_NAMES.PCUS], pcus);
       var tok = makePcuToken_(row.code, Number(row.pin_version) || 1);
       auditLog_(row.code, "pcuLogin", row.code, "", "ok");
-      return { token: tok.token, exp: tok.exp, pcu: pcuPublicInfo_(row) };
+      return { token: tok.token, exp: tok.exp, pcu: pcuPublicInfo_(row), _row: row };
     }
 
     row.pin_fail = (Number(row.pin_fail) || 0) + 1;
@@ -53,6 +53,12 @@ function action_pcuLogin(p) {
     if (locked) throw apiError_("PIN_LOCKED", "ใส่ PIN ผิดครบ 5 ครั้ง ถูกล็อกชั่วคราว", { until: row.pin_locked_until });
     throw apiError_("BAD_PIN", "PIN ไม่ถูกต้อง", { remaining: PIN_MAX_FAIL - row.pin_fail });
   });
+  // Include the bootstrap payload (built outside the lock) so the client needs one round trip,
+  // not two — each Apps Script call costs 3–15 s.
+  var row = res._row;
+  delete res._row;
+  res.bootstrap = action_pcuBootstrap({}, { pcuRow: row });
+  return res;
 }
 
 function action_pcuBootstrap(p, auth) {
