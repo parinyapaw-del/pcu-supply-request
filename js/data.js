@@ -1,8 +1,10 @@
-// Loads the static JSON data (form + demo limits). Fetched once, cached in module state.
-import { ACTIVE_STEPS } from "./constants.js";
+// Loads the static form layout (data/form2569.json — public, non-sensitive: item names/units/
+// prices/step layout only, no PCU data). Fetched once, cached in module state.
+// NOTE: loadFormData / getStep / getItemRows are imported by the admin frontend too (checkpoint
+// C4) — keep these three exported with the same signatures even when adding/removing others.
+import { FORM_STEPS } from "./constants.js";
 
 let formDataPromise = null;
-let limitsDataPromise = null;
 
 export function loadFormData() {
   if (!formDataPromise) {
@@ -14,31 +16,24 @@ export function loadFormData() {
   return formDataPromise;
 }
 
-export function loadLimitsData() {
-  if (!limitsDataPromise) {
-    limitsDataPromise = fetch("data/limits_demo.json").then((r) => {
-      if (!r.ok) throw new Error("โหลด data/limits_demo.json ไม่สำเร็จ (" + r.status + ")");
-      return r.json();
-    });
-  }
-  return limitsDataPromise;
-}
-
-export async function loadAll() {
-  const [form, limits] = await Promise.all([loadFormData(), loadLimitsData()]);
-  return { form, limits };
-}
-
 export function getStep(form, code) {
   return form.steps.find((s) => s.code === code) || null;
 }
 
-export function getActiveSteps(form) {
-  return ACTIVE_STEPS.map((code) => getStep(form, code)).filter(Boolean);
+export function getFormSteps(form) {
+  return FORM_STEPS.map((code) => getStep(form, code)).filter(Boolean);
 }
 
 export function getItemRows(step) {
   return step.rows.filter((r) => r.type === "item");
+}
+
+export function getAllItemRows(form) {
+  const out = [];
+  form.steps.forEach((step) => {
+    getItemRows(step).forEach((item) => out.push({ item, step }));
+  });
+  return out;
 }
 
 export function findItem(form, itemCode) {

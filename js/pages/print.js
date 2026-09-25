@@ -1,12 +1,13 @@
-// A4 print sheet — reproduces the original xlsx layout (spec §4).
-// One <table> (13 cols, A..M) per step, fixed scale s=0.74 applied via the
-// --print-scale CSS custom property so every page uses the same font size.
-import { ACTIVE_STEPS } from "../constants.js";
-import { getStep, getItemRows } from "../data.js";
-import * as store from "../store.js";
+// A4 print sheet — reproduces the original xlsx layout (spec §4, phase 1.5 §3.5).
+// One <table> (13 cols, A..M) per step, fixed scale s=0.73 applied via the --print-scale CSS
+// custom property so every page uses the same font size. All 7 steps ticked by default; every
+// page prints every row (blank cells when nothing requested, incl. hidden items) — spec F1/Q61.
+import { FORM_STEPS } from "../constants.js";
+import { getStep, getItemRows, loadFormData } from "../data.js";
+import { call, getAdminToken } from "../api.js";
+import * as sync from "../sync.js";
 import { formatMoney, formatInt, formatThaiDateParts, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
 
-// Natural column widths in pt, columns A..M (sum ~601pt before scaling).
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
 
 const SIG_DOTS_LONG = "………………………………………..……………..";
@@ -26,22 +27,39 @@ function fillOrDots(dots, value, fill) {
   return `<span class="fill-slot" style="min-width:${(dots.length * 0.15).toFixed(1)}em">${esc(String(value))}</span>`;
 }
 
-export async function renderPrint(container, app) {
-  const request = store.getOrCreateRequest(app.pcu, app.monthKey);
-  const pcu = app.form.pcus.find((p) => p.code === app.pcu);
-  const isDraft = request.status !== "submitted";
+export async function renderPrint(container, app, params) {
+  const asAdmin = params && params.get("as") === "admin";
+  const form = app.form || (app.form = await loadFormData());
 
-  const stepTotalsMap = {};
-  ACTIVE_STEPS.forEach((code) => {
-    const step = getStep(app.form, code);
-    let sum = 0;
-    getItemRows(step).forEach((item) => {
-      if (store.getHiddenItems(app.pcu).includes(item.code)) return;
-      const line = (request.lines && request.lines[item.code]) || {};
-      sum += (Number(line.op) || 0) + (Number(line.pp) || 0);
-    });
-    stepTotalsMap[code] = sum;
-  });
+  let month, pcu, request, hidden;
+
+  if (asAdmin) {
+    const adminToken = getAdminToken();
+    const pcuCode = params.get("pcu");
+    month = params.get("month");
+    if (!adminToken) {
+      container.innerHTML = '<div class="notice notice-error">ต้องเข้าสู่ระบบผู้ดูแล</div>';
+      return;
+    }
+    let data;
+    try {
+      data = await call("adminGetRequest", { pcu: pcuCode, month }, { token: adminToken });
+    } catch (err) {
+      container.innerHTML = `<div class="notice notice-error">โหลดใบเบิกไม่สำเร็จ: ${esc(err.message)}</div>`;
+      return;
+    }
+    pcu = data.pcu;
+    request = data.request || blankRequestFor(pcuCode, month);
+    hidden = data.hidden || [];
+  } else {
+    month = (params && params.get("month")) || app.monthKey;
+    pcu = app.boot.pcu;
+    const session = sync.getSession(pcu.code, month);
+    request = session ? session.request : blankRequestFor(pcu.code, month);
+    hidden = app.boot.hidden || [];
+  }
+
+  const isDraft = request.status !== "submitted" && request.status !== "received";
 
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
@@ -52,10 +70,9 @@ export async function renderPrint(container, app) {
     <h2>ตัวอย่างใบพิมพ์</h2>
     <p class="muted">${isDraft ? "ยังไม่ส่งใบเบิก — ตัวอย่างนี้มีลายน้ำ “แบบร่าง – ยังไม่สมบูรณ์”" : "ใบเบิกฉบับสมบูรณ์ พร้อมพิมพ์"}</p>
     <div class="print-step-checks">
-      ${ACTIVE_STEPS.map((code) => {
-        const step = getStep(app.form, code);
-        const checked = stepTotalsMap[code] > 0 ? "checked" : "";
-        return `<label><input type="checkbox" class="print-step-chk" value="${code}" ${checked}> ${esc(step.title)}</label>`;
+      ${FORM_STEPS.map((code) => {
+        const step = getStep(form, code);
+        return `<label><input type="checkbox" class="print-step-chk" value="${code}" checked> ${esc(step.title)} (${esc(code)})</label>`;
       }).join("")}
     </div>
     <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
@@ -70,11 +87,13 @@ export async function renderPrint(container, app) {
   container.appendChild(wrap);
 
   function renderPages() {
-    const checkedCodes = Array.from(document.querySelectorAll(".print-step-chk:checked")).map((c) => c.value);
+    const checkedCodes = FORM_STEPS.filter((code) =>
+      Array.from(document.querySelectorAll(".print-step-chk:checked")).some((c) => c.value === code)
+    );
     pagesHost.innerHTML = "";
-    checkedCodes.forEach((code) => {
-      const step = getStep(app.form, code);
-      pagesHost.appendChild(buildPrintPage(app, step, request, pcu, isDraft));
+    checkedCodes.forEach((code, i) => {
+      const step = getStep(form, code);
+      pagesHost.appendChild(buildPrintPage(step, request, pcu, hidden, isDraft, month, i + 1));
     });
   }
   renderPages();
@@ -83,7 +102,11 @@ export async function renderPrint(container, app) {
   document.getElementById("btn-do-print").addEventListener("click", () => window.print());
 }
 
-function buildPrintPage(app, step, request, pcu, isDraft) {
+function blankRequestFor(pcuCode, month) {
+  return { pcu: pcuCode, month, status: "not_started", return_reason: "", submitter_name: "", lines: {}, submitted_at: "" };
+}
+
+function buildPrintPage(step, request, pcu, hidden, isDraft, monthKey, pageNumber) {
   const page = document.createElement("div");
   page.className = "print-page";
 
@@ -113,12 +136,12 @@ function buildPrintPage(app, step, request, pcu, isDraft) {
   tbody.appendChild(rowLabelValue("เรียน", step.to));
   tbody.appendChild(rowBlank());
   tbody.appendChild(rowIKhaphachao(pcu));
-  tbody.appendChild(rowMonthYear(app.monthKey));
+  tbody.appendChild(rowMonthYear(monthKey));
   appendTableHeader(tbody);
-  appendBodyRows(tbody, app, step);
-  appendTotalRow(tbody, app, step);
+  appendBodyRows(tbody, step, request, hidden);
+  appendTotalRow(tbody, step, request, hidden);
   tbody.appendChild(rowBlank());
-  appendSignatureBlock(tbody, step);
+  appendSignatureBlock(tbody, step, pageNumber);
 
   table.appendChild(tbody);
   page.appendChild(table);
@@ -224,8 +247,8 @@ function appendTableHeader(tbody) {
   tbody.appendChild(r11);
 }
 
-function appendBodyRows(tbody, app, step) {
-  const hidden = store.getHiddenItems(app.pcu);
+function appendBodyRows(tbody, step, request, hidden) {
+  const hiddenSet = new Set(hidden || []);
   step.rows.forEach((row) => {
     if (row.type === "section") {
       tbody.appendChild(tr("row-h21", [
@@ -240,8 +263,7 @@ function appendBodyRows(tbody, app, step) {
       ], 21));
       return;
     }
-    const isHidden = hidden.includes(row.code);
-    const request = store.getOrCreateRequest(app.pcu, app.monthKey);
+    const isHidden = hiddenSet.has(row.code);
     const line = isHidden ? { op: 0, pp: 0 } : (request.lines && request.lines[row.code]) || { op: 0, pp: 0 };
     const op = Number(line.op) || 0;
     const pp = Number(line.pp) || 0;
@@ -260,12 +282,11 @@ function appendBodyRows(tbody, app, step) {
   });
 }
 
-function appendTotalRow(tbody, app, step) {
-  const hidden = store.getHiddenItems(app.pcu);
-  const request = store.getOrCreateRequest(app.pcu, app.monthKey);
+function appendTotalRow(tbody, step, request, hidden) {
+  const hiddenSet = new Set(hidden || []);
   let op = 0, pp = 0, money = 0;
   getItemRows(step).forEach((item) => {
-    if (hidden.includes(item.code)) return;
+    if (hiddenSet.has(item.code)) return;
     const line = (request.lines && request.lines[item.code]) || {};
     const o = Number(line.op) || 0, p = Number(line.pp) || 0;
     op += o; pp += p; money += (o + p) * item.price;
@@ -273,10 +294,10 @@ function appendTotalRow(tbody, app, step) {
   const qty = op + pp;
   tbody.appendChild(tr("row-h21", [
     td("<strong>รวม</strong>", { colspan: 9, cls: "cell-border cell-center" }),
-    td(`<strong>${formatInt(op)}</strong>`, { cls: "cell-border cell-center" }),
-    td(`<strong>${formatInt(pp)}</strong>`, { cls: "cell-border cell-center" }),
-    td(`<strong>${formatInt(qty)}</strong>`, { cls: "cell-border cell-center" }),
-    td(`<strong>${formatMoney(money)}</strong>`, { cls: "cell-border cell-right" }),
+    td(qty ? `<strong>${formatInt(op)}</strong>` : "", { cls: "cell-border cell-center" }),
+    td(qty ? `<strong>${formatInt(pp)}</strong>` : "", { cls: "cell-border cell-center" }),
+    td(qty ? `<strong>${formatInt(qty)}</strong>` : "", { cls: "cell-border cell-center" }),
+    td(qty ? `<strong>${formatMoney(money)}</strong>` : "", { cls: "cell-border cell-right" }),
   ], 21));
 }
 
@@ -286,8 +307,7 @@ function gap(n) {
 
 // Column index reference: A0 B1 C2 D3 E4 F5 G6 H7 I8 J9 K10 L11 M12 (13 total).
 // Every row below must sum its colspans to exactly 13.
-function appendSignatureBlock(tbody, step) {
-  // r+0: A ลงชื่อ | B:E dots | F ผู้เบิก | G gap | H ลงชื่อ | I:L dots | M ผู้จ่าย
+function appendSignatureBlock(tbody, step, pageNumber) {
   tbody.appendChild(tr("row-h20", [
     td("ลงชื่อ", { cls: "cell-noborder cell-right" }),
     td(SIG_DOTS_LONG, { colspan: 4, cls: "cell-noborder cell-center" }),
@@ -297,7 +317,6 @@ function appendSignatureBlock(tbody, step) {
     td(SIG_DOTS_LONG, { colspan: 4, cls: "cell-noborder cell-center" }),
     td("ผู้จ่าย", { cls: "cell-noborder cell-left" }),
   ], 20));
-  // r+1: gap | B:E (name) | F,G,H gap | I:L (name) | M gap
   tbody.appendChild(tr("row-h20", [
     gap(1),
     td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
@@ -305,25 +324,21 @@ function appendSignatureBlock(tbody, step) {
     td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1),
   ], 20));
-  // r+2: A:H gap | I:L วันที่ | M gap
   tbody.appendChild(tr("row-h20", [
     gap(8),
     td(SIG_DATE_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1),
   ], 20));
-  // r+3: A:F statement | G:M gap
   tbody.appendChild(tr("row-h20", [
     td("ข้าพเจ้าได้รับของตามจำนวนและรายการที่จ่ายเรียบร้อยแล้ว", { colspan: 6, cls: "cell-noborder cell-center" }),
     gap(7),
   ], 20));
-  // r+4: A:G gap | H ลงชื่อ | I:L dots | M ผู้อนุมัติ
   tbody.appendChild(tr("row-h20", [
     gap(7),
     td("ลงชื่อ", { cls: "cell-noborder cell-right" }),
     td(SIG_DOTS_LONG, { colspan: 4, cls: "cell-noborder cell-center" }),
     td("ผู้อนุมัติ", { cls: "cell-noborder cell-left" }),
   ], 20));
-  // r+5: A ลงชื่อ | B:E dots | F ผู้รับ | G,H gap | I:L (name) | M gap
   tbody.appendChild(tr("row-h20", [
     td("ลงชื่อ", { cls: "cell-noborder cell-right" }),
     td(SIG_DOTS_LONG, { colspan: 4, cls: "cell-noborder cell-center" }),
@@ -332,7 +347,6 @@ function appendSignatureBlock(tbody, step) {
     td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1),
   ], 20));
-  // r+6: gap | B:E (name) | F,G,H gap | I:L วันที่ | M gap
   tbody.appendChild(tr("row-h20", [
     gap(1),
     td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
@@ -340,14 +354,12 @@ function appendSignatureBlock(tbody, step) {
     td(SIG_DATE_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1),
   ], 20));
-  // r+7: gap | B:E วันที่ | F:M gap
   tbody.appendChild(tr("row-h20", [
     gap(1),
     td(SIG_DATE_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(8),
   ], 20));
-  // r+8: A:M "< n >"
   tbody.appendChild(tr("row-h23", [
-    td(`&lt; ${step.page_no} &gt;`, { colspan: 13, cls: "cell-noborder cell-center" }),
+    td(`&lt; ${pageNumber} &gt;`, { colspan: 13, cls: "cell-noborder cell-center" }),
   ], 23));
 }

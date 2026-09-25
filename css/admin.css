@@ -1,0 +1,169 @@
+/* Admin back-office styles (phase 1.5, checkpoint C4). Loaded after css/main.css — reuses its
+   CSS variables (--bg, --surface, --text, --muted, --line, --accent, --danger, --warn, --success,
+   --muted-bg, --sim-tag, --focus) instead of redefining them. */
+
+.admin-shell { max-width: 1280px; margin: 0 auto; padding: 0 16px 40px; }
+
+/* ---- top banner ---- */
+.admin-top-banner {
+  background: var(--muted-bg);
+  color: var(--text);
+  padding: 10px 16px;
+  text-align: center;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+.admin-top-banner b { color: var(--accent); }
+.admin-top-banner .tag-sim { color: var(--sim-tag); font-weight: 700; }
+
+/* ---- login screen ---- */
+.admin-login-wrap {
+  max-width: 420px;
+  margin: 48px auto;
+  padding: 0 16px;
+}
+.admin-login-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+.admin-login-card h1 { font-size: 1.3rem; margin-top: 0; }
+#gsi-button-host { display: flex; justify-content: center; margin: 16px 0; min-height: 44px; }
+.admin-login-divider { color: var(--muted); margin: 18px 0 10px; font-size: 0.85rem; }
+.admin-backup-details { text-align: left; margin-top: 8px; }
+.admin-backup-details summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.admin-backup-form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.admin-backup-form input { width: 100%; }
+.admin-dev-login { margin-top: 18px; border-top: 1px dashed var(--line); padding-top: 12px; text-align: left; }
+.admin-dev-login .field-row { display: flex; gap: 8px; }
+.admin-dev-login input { flex: 1; min-width: 0; }
+
+/* ---- app shell ---- */
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 0 4px;
+}
+.admin-header h1 { font-size: 1.25rem; margin: 0; }
+.admin-me { color: var(--muted); font-size: 0.85rem; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.admin-tabbar {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin: 10px 0 16px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.admin-tabbar button {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.admin-tabbar button.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+
+.admin-panel-body { min-height: 200px; }
+.admin-panel-body.loading { opacity: 0.6; }
+
+.admin-loading-block { text-align: center; padding: 60px 16px; color: var(--muted); }
+.admin-spinner {
+  width: 32px; height: 32px; margin: 0 auto 14px;
+  border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%;
+  animation: admin-spin 0.8s linear infinite;
+}
+@keyframes admin-spin { to { transform: rotate(360deg); } }
+
+/* ---- toolbars / controls shared across tabs ---- */
+.admin-toolbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.admin-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 0.9rem; font-weight: 600; }
+.admin-toolbar .select-input { min-height: 38px; }
+.admin-inline-check { display: flex; align-items: center; gap: 6px; font-weight: 500 !important; }
+.admin-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.admin-seg button { border: none; background: var(--surface); color: var(--text); padding: 7px 14px; cursor: pointer; font-weight: 600; font-size: 0.85rem; }
+.admin-seg button.active { background: var(--accent); color: var(--accent-contrast); }
+.admin-seg button + button { border-left: 1px solid var(--line); }
+
+/* ---- tables ---- */
+.admin-table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+.admin-table th, .admin-table td { border: 1px solid var(--line); padding: 6px 9px; white-space: nowrap; }
+.admin-table thead th { background: var(--muted-bg); position: sticky; top: 0; z-index: 1; }
+.admin-table td.num, .admin-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.admin-table td.left, .admin-table th.left { text-align: left; white-space: normal; }
+.admin-table tbody tr:hover { background: var(--muted-bg); }
+.admin-table tr.group-row td { background: var(--muted-bg); font-weight: 700; text-align: left; }
+.admin-table tr.subtotal-row td { background: var(--muted-bg); font-weight: 700; }
+.admin-table tr.grand-row td { background: var(--muted-bg); font-weight: 700; border-top: 2px solid var(--accent); }
+.admin-table tr.zero-row { opacity: 0.55; }
+.admin-table-wide { min-width: 1000px; }
+
+/* ---- heatmap (tab 4) ---- */
+.heatmap-cell { text-align: right; font-variant-numeric: tabular-nums; color: #111; font-weight: 600; }
+.heatmap-cell.hm-lo { color: var(--text); }
+
+/* ---- badges / flags ---- */
+.badge-flag-over { background: var(--warn-bg); color: var(--warn); }
+.badge-flag-short { background: var(--danger-bg); color: var(--danger); }
+.badge-src-admin { background: var(--sim-tag); color: #fff; }
+.badge-src-stat68 { background: var(--muted-bg); color: var(--muted); }
+
+/* ---- progress bars (tab 3) ---- */
+.budget-bar-row { margin: 10px 0 16px; }
+.budget-bar-label { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 4px; }
+.budget-bar-track { background: var(--muted-bg); border-radius: 999px; height: 14px; overflow: hidden; }
+.budget-bar-fill { height: 100%; background: var(--accent); border-radius: 999px 0 0 999px; }
+.budget-bar-fill.over-budget { background: var(--danger); }
+
+/* ---- forms / cards ---- */
+.admin-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.admin-card h2 { font-size: 1.05rem; margin-top: 0; }
+.admin-card h3 { font-size: 0.95rem; }
+.limit-input { width: 68px; min-height: 36px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }
+.limit-input.saved { border-color: var(--success); }
+.limit-input.save-error { border-color: var(--danger); background: var(--danger-bg); }
+.cell-status { font-size: 0.75rem; margin-left: 4px; }
+.cell-status.ok { color: var(--success); }
+.cell-status.err { color: var(--danger); }
+
+/* ---- modal ---- */
+.admin-modal-backdrop {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center;
+  justify-content: center; z-index: 50; padding: 16px;
+}
+.admin-modal {
+  background: var(--surface); border-radius: 12px; padding: 20px; max-width: 480px; width: 100%;
+  max-height: 86vh; overflow-y: auto;
+}
+.admin-modal h2 { margin-top: 0; font-size: 1.1rem; }
+.admin-modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.hidden-editor-grid { display: grid; gap: 4px; }
+.hidden-editor-step { font-weight: 700; margin: 10px 0 4px; }
+.hidden-editor-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 0.88rem; }
+
+/* ---- pcu chips ---- */
+.pcu-group-tag { font-size: 0.75rem; color: var(--muted); }
+
+.admin-note { font-size: 0.85rem; color: var(--muted); }
+.admin-err-text { color: var(--danger); font-size: 0.88rem; margin-top: 6px; }
+.admin-ok-text { color: var(--success); font-size: 0.88rem; margin-top: 6px; }
+
+@media (max-width: 600px) {
+  .admin-header { flex-direction: column; align-items: flex-start; }
+  .admin-card { padding: 12px; }
+}
+
+@media print {
+  .admin-top-banner, .admin-tabbar, .admin-header, .app-footer { display: none !important; }
+}

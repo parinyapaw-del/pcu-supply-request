@@ -3,25 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ใบเบิกวัสดุการแพทย์ รพ.สต. — ต้นแบบทดลอง</title>
+<title>ใบเบิกวัสดุการแพทย์ รพ.สต. — รอบทดลองออนไลน์ (ฟอร์มปี 2569)</title>
 <link rel="stylesheet" href="css/main.css">
 <link rel="stylesheet" href="css/print.css" media="print,screen">
 </head>
 <body>
   <div class="demo-banner">
-    ต้นแบบทดลอง — ข้อมูลเก็บในเบราว์เซอร์เครื่องนี้เท่านั้น ยังไม่ส่งถึงโรงพยาบาล ·
-    <a id="banner-admin-link" href="admin.html">ดูหน้าตัวอย่างผู้ดูแล (demo)</a>
+    รอบทดลอง — ตัวเลขเดือนก่อน/แผนเป็นข้อมูลจริงปีงบ 2568 · คงเหลือเดือนก่อนเป็นค่าจำลอง ·
+    ข้อมูลที่กรอกบันทึกบน server (ล้างได้ก่อนใช้จริง) ·
+    <a id="banner-admin-link" href="admin.html">หน้าผู้ดูแลระบบ</a>
   </div>
+  <div id="app-header" class="app-header no-print" style="display:none"></div>
 
   <main class="container">
-    <h1>ใบเบิกวัสดุการแพทย์ รพ.สต. (ฟอร์มปี 2569)</h1>
+    <h1>ใบเบิกวัสดุการแพทย์ รพ.สต. (ฟอร์มปี 2569) — รอบทดลองออนไลน์</h1>
     <div id="app"><p class="muted">กำลังโหลด...</p></div>
   </main>
 
   <footer class="app-footer">
-    <button type="button" class="btn btn-secondary btn-sm no-print" id="btn-clear-demo">ล้างข้อมูลทดลองทั้งหมด</button>
+    <button type="button" class="btn btn-secondary btn-sm no-print" id="btn-clear-local">ล้างข้อมูลในเครื่องนี้ (ออกจากระบบ)</button>
     <p><a href="privacy.html">นโยบายความเป็นส่วนตัว</a></p>
-    <p>ต้นแบบ phase 1 — ไม่มีการเชื่อมต่อเซิร์ฟเวอร์ ข้อมูลอยู่ในเบราว์เซอร์เครื่องนี้เท่านั้น</p>
+    <p>phase 1.5 — รอบทดลองออนไลน์ ข้อมูลบันทึกบน server ของผู้ดูแลระบบ</p>
   </footer>
 
   <script type="module" src="js/main.js"></script>

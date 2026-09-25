@@ -1,41 +1,16 @@
-// Demo withdrawal-ceiling logic (spec §3.5). Only items present in
-// data/limits_demo.json for the chosen PCU are checked; everything else has no
-// ceiling at all. Counts OP+PP combined.
-import { monthsInFiscalYearBefore } from "./format.js";
-import { simMonth } from "./sim.js";
-import { getRequest } from "./store.js";
+// Withdrawal-ceiling + "cover" hint logic (spec §3.2 addendum, §3.5).
+// Phase 1.5: limits and used_fy come straight from pcuBootstrap (API.md) — no more client-side
+// simulation of past months. Counts OP+PP combined, per item, per PCU.
 
-export function getLimitEntry(limits, pcu, itemCode) {
-  const forPcu = limits[pcu];
-  if (!forPcu) return null;
-  return forPcu[itemCode] || null;
-}
-
-function lineOpPp(line) {
-  if (!line) return 0;
-  return (Number(line.op) || 0) + (Number(line.pp) || 0);
-}
-
-// Sum of OP+PP the PCU already has on record for `itemCode` in `monthKey`:
-// a submitted request's stored line if one exists, else the deterministic
-// simulated figure for that month (spec §"Simulated history").
-function usageForPastMonth(pcu, itemCode, price, monthKey, limitYear) {
-  const req = getRequest(pcu, monthKey);
-  if (req && req.status === "submitted" && req.lines && req.lines[itemCode]) {
-    return lineOpPp(req.lines[itemCode]);
-  }
-  const sim = simMonth(pcu, itemCode, price, monthKey, limitYear);
-  return sim.op + sim.pp;
-}
-
-// Full limit picture for one item, for the form currently being filled.
-// `liveOpPp` is this form's current (possibly unsaved) OP+PP for the item.
-// Returns null if the item has no limit entry for this PCU at all.
-export function computeLimitInfo(limits, pcu, itemCode, price, monthKey, liveOpPp) {
-  const entry = getLimitEntry(limits, pcu, itemCode);
+// `limitsForPcu`: { code: [limit_month|null, limit_year|null] } (pcuBootstrap.limits).
+// `usedFyForRound`: { code: qty } (pcuBootstrap.byRound[month].used_fy) — already excludes the
+// current round's request; this form's own live OP+PP is added in here.
+export function computeLimitInfo(limitsForPcu, usedFyForRound, itemCode, liveOpPp) {
+  const entry = limitsForPcu ? limitsForPcu[itemCode] : null;
   if (!entry) return null;
 
-  const { limit_month, limit_year, note } = entry;
+  const limit_month = entry[0];
+  const limit_year = entry[1];
   const requested = Number(liveOpPp) || 0;
 
   const monthForbidden = limit_month === 0;
@@ -47,13 +22,8 @@ export function computeLimitInfo(limits, pcu, itemCode, price, monthKey, liveOpP
   let yearExceedBy = 0;
   let yearRemaining = null;
   if (limit_year != null) {
-    const priorMonths = monthsInFiscalYearBefore(monthKey);
-    let sum = 0;
-    for (const m of priorMonths) {
-      sum += usageForPastMonth(pcu, itemCode, price, m, limit_year);
-    }
-    sum += requested; // this form counts too, live
-    yearUsed = sum;
+    const priorUsed = (usedFyForRound && usedFyForRound[itemCode]) || 0;
+    yearUsed = priorUsed + requested;
     yearOver = yearUsed > limit_year;
     yearExceedBy = yearOver ? yearUsed - limit_year : 0;
     yearRemaining = Math.max(limit_year - yearUsed, 0);
@@ -63,7 +33,6 @@ export function computeLimitInfo(limits, pcu, itemCode, price, monthKey, liveOpP
     itemCode,
     limit_month,
     limit_year,
-    note: note || "",
     requested,
     monthForbidden,
     monthOver,
@@ -76,6 +45,7 @@ export function computeLimitInfo(limits, pcu, itemCode, price, monthKey, liveOpP
 }
 
 export function monthOverMessage(info) {
+  if (!info) return "";
   if (info.monthForbidden && info.requested > 0) {
     return `ห้ามเบิกรายการนี้ในเดือนนี้ (เพดานรายเดือน = 0)`;
   }
@@ -84,15 +54,34 @@ export function monthOverMessage(info) {
 }
 
 export function yearInfoMessage(info) {
-  if (info.limit_year == null) return "";
+  if (!info || info.limit_year == null) return "";
   return `เพดานรายปี: ใช้ไปแล้ว ${info.yearUsed} จาก ${info.limit_year} · เหลือ ${info.yearRemaining}`;
 }
 
 export function yearOverMessage(info) {
-  if (info.limit_year == null || !info.yearOver) return "";
+  if (!info || info.limit_year == null || !info.yearOver) return "";
   return `เกินเพดานรายปี: ใช้ไปแล้ว ${info.yearUsed} จาก ${info.limit_year} → ต้องลดลง ${info.yearExceedBy}`;
 }
 
 export function isAnyLimitExceeded(info) {
   return !!info && (info.monthOver || info.yearOver);
+}
+
+// ---- "cover" hint (spec §3.2 เสริม) ----------------------------------------------------------
+// Once stock and/or op/pp are entered and avg3[code] > 0: "คงเหลือ + ขอเบิก พอใช้ ~n.n เดือน".
+// Never blocks; just informational (yellow once over config.cover_over months).
+export function computeCoverInfo(avg3ForCode, stock, op, pp) {
+  const avg3 = Number(avg3ForCode) || 0;
+  if (avg3 <= 0) return null;
+  const s = Number(stock) || 0;
+  const o = Number(op) || 0;
+  const p = Number(pp) || 0;
+  if (s === 0 && o === 0 && p === 0) return null;
+  const months = (s + o + p) / avg3;
+  return { months, avg3 };
+}
+
+export function coverMessage(coverInfo) {
+  if (!coverInfo) return "";
+  return `คงเหลือ + ขอเบิก พอใช้ ~${coverInfo.months.toFixed(1)} เดือน`;
 }

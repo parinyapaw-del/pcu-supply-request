@@ -1,210 +1,186 @@
-// Fake read-only admin dashboard (spec §2 / §5.2, phase-1 scope only).
-// Every number here except the limit-mode toggle is cosmetic random data —
-// deterministic (seeded), never real, and clearly labelled as such.
-import { ACTIVE_STEPS, DEMO_ROUNDS } from "./constants.js";
-import { loadAll, getStep, getItemRows } from "./data.js";
-import * as store from "./store.js";
-import { formatInt, formatMoney } from "./format.js";
-import { _internal } from "./sim.js";
+// js/admin.js — admin back-office entry point (checkpoint C4, phase 1.5).
+// Orchestrates: login -> adminBootstrap (loading state) -> tab shell -> lazy per-tab rendering.
+// Aggregation logic lives in js/admin/compute.js; each tab's DOM/rendering lives in js/admin/tabN_*.js.
+import { call, ApiError, getAdminToken, clearAdminToken } from "./api.js";
+import { loadFormData } from "./data.js";
+import { mountLogin } from "./admin/login.js";
+import { el, escapeHtml } from "./admin/util.js";
+import { buildItems, extraItemDescriptor } from "./admin/compute.js";
+import { renderTab1 } from "./admin/tab1_progress.js";
+import { renderTab2 } from "./admin/tab2_item_totals.js";
+import { renderTab3 } from "./admin/tab3_budget.js";
+import { renderTab4 } from "./admin/tab4_heatmap.js";
+import { renderTab5 } from "./admin/tab5_plan_vs_actual.js";
+import { renderTab6 } from "./admin/tab6_stock.js";
+import { renderTab7 } from "./admin/tab7_limits.js";
+import { renderTab8 } from "./admin/tab8_pcu_settings.js";
+import { renderTab9 } from "./admin/tab9_system.js";
 
-function rngFor(...parts) {
-  return _internal.mulberry32(_internal.hashStringToSeed("admin|" + parts.join("|")));
+const root = document.getElementById("admin-root");
+
+const TABS = [
+  { id: "tab1", label: "ความคืบหน้ารอบทดลอง", render: renderTab1 },
+  { id: "tab2", label: "ยอดรวมต่อรายการ (ใบจัดของ)", render: renderTab2 },
+  { id: "tab3", label: "งบสะสม vs เพดานเครือข่าย", render: renderTab3 },
+  { id: "tab4", label: "รพ.สต. × เดือน (บาท)", render: renderTab4 },
+  { id: "tab5", label: "แผนปี 68 vs เบิกจริง", render: renderTab5 },
+  { id: "tab6", label: "คงเหลือ [จำลอง]", render: renderTab6 },
+  { id: "tab7", label: "เพดานเบิก", render: renderTab7 },
+  { id: "tab8", label: "ตั้งค่า รพ.สต.", render: renderTab8 },
+  { id: "tab9", label: "ระบบ", render: renderTab9 }
+];
+
+const state = {}; // populated by initState(): bootstrap, items, extraItem, selected*, tab*Filter, ...
+const panels = {}; // tabId -> { section, rendered, lifecycle }
+let activeTabId = null;
+
+const ctx = {
+  state,
+  adminCall,
+  upsertRequest,
+  markStale
+};
+
+function showLoading(msg) {
+  root.innerHTML = "";
+  root.appendChild(el("div", { class: "admin-loading-block" }, [
+    el("div", { class: "admin-spinner" }),
+    el("p", {}, msg || "กำลังโหลดข้อมูล...")
+  ]));
 }
 
-const STATUS_OPTIONS = ["ยังไม่เริ่ม", "แบบร่าง", "ส่งแล้ว", "ส่งช้า", "รับเรื่องแล้ว"];
-
-function randomStatus(pcuCode, monthKey) {
-  const rand = rngFor("status", pcuCode, monthKey);
-  const idx = Math.floor(rand() * STATUS_OPTIONS.length);
-  return STATUS_OPTIONS[idx];
+function showLogin(msg) {
+  activeTabId = null;
+  for (const k of Object.keys(panels)) delete panels[k];
+  mountLogin(root, { onLoggedIn: () => boot(), initialError: msg });
 }
 
-async function main() {
-  const { form, limits } = await loadAll();
-  const tabs = document.querySelectorAll(".admin-tab");
-  const panels = document.querySelectorAll(".admin-panel");
-
-  tabs.forEach((tabBtn) => {
-    tabBtn.addEventListener("click", () => {
-      tabs.forEach((t) => t.classList.remove("active"));
-      panels.forEach((p) => p.classList.remove("active"));
-      tabBtn.classList.add("active");
-      document.getElementById(tabBtn.dataset.panel).classList.add("active");
-    });
-  });
-
-  renderRoundStatus(form);
-  renderItemTotals(form);
-  renderStockTable(form);
-  renderLimitModeToggle();
-}
-
-function renderRoundStatus(form) {
-  const host = document.getElementById("panel-status");
-  const roundSelect = document.createElement("select");
-  roundSelect.className = "select-input";
-  DEMO_ROUNDS.forEach((r) => {
-    const opt = document.createElement("option");
-    opt.value = r.monthKey;
-    opt.textContent = `${r.label} (กำหนดส่ง ${r.deadlineLabel})`;
-    roundSelect.appendChild(opt);
-  });
-
-  const tableHost = document.createElement("div");
-  tableHost.className = "table-scroll";
-
-  function draw() {
-    const monthKey = roundSelect.value;
-    const rows = form.pcus.map((pcu) => {
-      const real = store.getRequest(pcu.code, monthKey);
-      const status = real ? (real.status === "submitted" ? (real.late ? "ส่งช้า" : "ส่งแล้ว") : "แบบร่าง") : randomStatus(pcu.code, monthKey);
-      return `<tr>
-        <td>${pcu.code}</td>
-        <td>${escapeHtml(pcu.name)}${pcu.group === "พิเศษ" ? " (พิเศษ)" : ""}</td>
-        <td><span class="badge ${statusBadgeClass(status)}">${status}</span></td>
-        <td>
-          <button type="button" class="btn btn-secondary btn-sm" disabled title="ใช้ได้ใน phase 2">รับเรื่องแล้ว</button>
-          <button type="button" class="btn btn-secondary btn-sm" disabled title="ใช้ได้ใน phase 2">ส่งกลับแก้ไข</button>
-        </td>
-      </tr>`;
-    }).join("");
-    tableHost.innerHTML = `<table class="admin-table">
-      <thead><tr><th>รหัส</th><th>รพ.สต.</th><th>สถานะ</th><th>การดำเนินการ</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+async function adminCall(action, params = {}) {
+  try {
+    return await call(action, params, { token: getAdminToken() });
+  } catch (err) {
+    if (err instanceof ApiError && (err.code === "AUTH_REQUIRED" || err.code === "AUTH_EXPIRED")) {
+      clearAdminToken();
+      showLogin("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+    }
+    throw err;
   }
-
-  roundSelect.addEventListener("change", draw);
-  draw();
-
-  host.innerHTML = "";
-  const label = document.createElement("label");
-  label.className = "field-label";
-  label.textContent = "รอบเดือน: ";
-  label.appendChild(roundSelect);
-  host.appendChild(label);
-  host.appendChild(tableHost);
 }
 
-function statusBadgeClass(status) {
-  if (status === "ส่งแล้ว" || status === "รับเรื่องแล้ว") return "badge-success";
-  if (status === "ส่งช้า") return "badge-danger";
-  if (status === "แบบร่าง") return "badge-warn";
-  return "badge-muted";
+function upsertRequest(request) {
+  const list = state.bootstrap.requests;
+  const idx = list.findIndex((r) => r.pcu === request.pcu && r.month === request.month);
+  if (idx >= 0) list[idx] = request; else list.push(request);
+  markStale(["tab2", "tab6"]);
 }
 
-function renderItemTotals(form) {
-  const host = document.getElementById("panel-totals");
-  host.innerHTML = "";
-  const tableHost = document.createElement("div");
-  tableHost.className = "table-scroll";
-
-  const stepSelect = document.createElement("select");
-  stepSelect.className = "select-input";
-  ACTIVE_STEPS.forEach((code) => {
-    const step = getStep(form, code);
-    const opt = document.createElement("option");
-    opt.value = code;
-    opt.textContent = step.title;
-    stepSelect.appendChild(opt);
-  });
-
-  function draw() {
-    const step = getStep(form, stepSelect.value);
-    const rows = getItemRows(step).map((item) => {
-      const rand = rngFor("totals", item.code);
-      const op = Math.floor(rand() * 200);
-      const pp = Math.floor(rand() * 150);
-      const qty = op + pp;
-      const money = qty * item.price;
-      return `<tr><td>${item.seq}</td><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.unit || "")}</td><td>${formatInt(op)}</td><td>${formatInt(pp)}</td><td>${formatInt(qty)}</td><td>${formatMoney(money)}</td></tr>`;
-    }).join("");
-    tableHost.innerHTML = `<table class="admin-table">
-      <thead><tr><th>ลำดับ</th><th>รายการ</th><th>หน่วย</th><th>OP</th><th>PP</th><th>รวม</th><th>เป็นเงิน</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+function markStale(ids) {
+  ids.forEach((id) => { if (panels[id]) panels[id].rendered = false; });
+  if (activeTabId && ids.includes(activeTabId)) {
+    const id = activeTabId;
+    activeTabId = null;
+    activate(id);
   }
-
-  stepSelect.addEventListener("change", draw);
-  draw();
-
-  const label = document.createElement("label");
-  label.className = "field-label";
-  label.textContent = "ขั้นตอน: ";
-  label.appendChild(stepSelect);
-  host.appendChild(label);
-  host.appendChild(tableHost);
 }
 
-function renderStockTable(form) {
-  const host = document.getElementById("panel-stock");
-  host.innerHTML = "";
-  const tableHost = document.createElement("div");
-  tableHost.className = "table-scroll";
+function initState(bootstrap, form) {
+  state.bootstrap = bootstrap;
+  state.form = form;
+  state.items = buildItems(form, bootstrap);
+  state.extraItem = extraItemDescriptor(bootstrap);
+  state.selectedMonth = null;
+}
 
-  const stepSelect = document.createElement("select");
-  stepSelect.className = "select-input";
-  ACTIVE_STEPS.forEach((code) => {
-    const step = getStep(form, code);
-    const opt = document.createElement("option");
-    opt.value = code;
-    opt.textContent = step.title;
-    stepSelect.appendChild(opt);
-  });
-
-  function draw() {
-    const step = getStep(form, stepSelect.value);
-    const items = getItemRows(step);
-    const headerRow = `<tr><th>รหัส รพ.สต.</th>${items.map((it) => `<th>${it.code}</th>`).join("")}</tr>`;
-    const bodyRows = form.pcus.map((pcu) => {
-      const cells = items.map((it) => {
-        const rand = rngFor("stock", pcu.code, it.code);
-        return `<td>${formatInt(Math.floor(rand() * 30))}</td>`;
-      }).join("");
-      return `<tr><td>${pcu.code}</td>${cells}</tr>`;
-    }).join("");
-    tableHost.innerHTML = `<table class="admin-table admin-table-wide">
-      <thead>${headerRow}</thead>
-      <tbody>${bodyRows}</tbody>
-    </table>`;
+function activate(id) {
+  if (activeTabId === id) return;
+  if (activeTabId && panels[activeTabId] && panels[activeTabId].lifecycle && panels[activeTabId].lifecycle.onHide) {
+    panels[activeTabId].lifecycle.onHide();
   }
-
-  stepSelect.addEventListener("change", draw);
-  draw();
-
-  const label = document.createElement("label");
-  label.className = "field-label";
-  label.textContent = "ขั้นตอน: ";
-  label.appendChild(stepSelect);
-  host.appendChild(label);
-  host.appendChild(tableHost);
+  Object.entries(panels).forEach(([tid, p]) => p.section.classList.toggle("active", tid === id));
+  document.querySelectorAll(".admin-tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === id));
+  const p = panels[id];
+  if (!p.rendered) {
+    p.section.innerHTML = "";
+    const tabDef = TABS.find((t) => t.id === id);
+    let lifecycle = null;
+    try {
+      lifecycle = tabDef.render(p.section, ctx);
+    } catch (err) {
+      console.error(err);
+      p.section.innerHTML = `<p class="admin-err-text">แสดงผลไม่สำเร็จ: ${escapeHtml(err.message || String(err))}</p>`;
+    }
+    p.lifecycle = lifecycle || null;
+    p.rendered = true;
+  }
+  if (p.lifecycle && p.lifecycle.onShow) p.lifecycle.onShow();
+  activeTabId = id;
 }
 
-function renderLimitModeToggle() {
-  const host = document.getElementById("panel-mode");
-  host.innerHTML = "";
-  const cur = store.getLimitMode();
-  host.innerHTML = `
-    <p>โหมดเพดานเบิกทั้งระบบ (มีผลจริงกับฝั่ง รพ.สต. ทันที):</p>
-    <label class="radio-row"><input type="radio" name="limit-mode" value="warn" ${cur === "warn" ? "checked" : ""}> เตือน (ส่งได้แม้เกินเพดาน) — ค่าเริ่มต้น</label>
-    <label class="radio-row"><input type="radio" name="limit-mode" value="enforce" ${cur === "enforce" ? "checked" : ""}> บังคับ (ส่งไม่ได้ถ้าเกินเพดาน)</label>
-  `;
-  host.querySelectorAll('input[name="limit-mode"]').forEach((r) => {
-    r.addEventListener("change", (ev) => {
-      store.setLimitMode(ev.target.value);
-    });
+function renderShell() {
+  root.innerHTML = "";
+
+  const banner = el("div", { class: "admin-top-banner" }, [
+    document.createTextNode("ข้อมูลจริงปีงบ 2568 + คงเหลือ "),
+    el("span", { class: "tag-sim" }, "[จำลอง]"),
+    document.createTextNode(" + ใบรอบทดลอง")
+  ]);
+  root.appendChild(banner);
+
+  const shell = el("div", { class: "admin-shell" });
+  const header = el("div", { class: "admin-header" });
+  header.appendChild(el("h1", {}, "หน้าผู้ดูแลระบบ"));
+  const me = state.bootstrap.me.email === "backup" ? "รหัสสำรอง" : state.bootstrap.me.email;
+  const meBox = el("div", { class: "admin-me" });
+  meBox.appendChild(el("span", {}, `เข้าสู่ระบบ: ${escapeHtml(me)}`));
+  const logoutBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm" }, "ออกจากระบบ");
+  logoutBtn.addEventListener("click", () => { clearAdminToken(); showLogin(); });
+  meBox.appendChild(logoutBtn);
+  header.appendChild(meBox);
+  shell.appendChild(header);
+
+  const tabbar = el("div", { class: "admin-tabbar" });
+  TABS.forEach((t) => {
+    const btn = el("button", { type: "button", "data-tab": t.id }, t.label);
+    btn.addEventListener("click", () => activate(t.id));
+    tabbar.appendChild(btn);
   });
+  shell.appendChild(tabbar);
+
+  const panelBody = el("div", { class: "admin-panel-body" });
+  TABS.forEach((t) => {
+    const section = el("section", { class: "admin-panel" });
+    panels[t.id] = { section, rendered: false, lifecycle: null };
+    panelBody.appendChild(section);
+  });
+  shell.appendChild(panelBody);
+
+  root.appendChild(shell);
+  activate(TABS[0].id);
 }
 
-function escapeHtml(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+async function boot() {
+  const token = getAdminToken();
+  if (!token) { showLogin(); return; }
+  showLoading("กำลังโหลดข้อมูลผู้ดูแล (อาจใช้เวลาสักครู่)...");
+  try {
+    const [bootstrap, form] = await Promise.all([
+      call("adminBootstrap", {}, { token }),
+      loadFormData()
+    ]);
+    initState(bootstrap, form);
+    renderShell();
+  } catch (err) {
+    if (err instanceof ApiError && (err.code === "AUTH_REQUIRED" || err.code === "AUTH_EXPIRED" || err.code === "FORBIDDEN")) {
+      clearAdminToken();
+      showLogin(err.code === "FORBIDDEN" ? "บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ" : "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
+    } else {
+      root.innerHTML = "";
+      root.appendChild(el("div", { class: "admin-loading-block" }, [
+        el("p", { class: "admin-err-text" }, "โหลดข้อมูลไม่สำเร็จ: " + escapeHtml(err.message || String(err))),
+        (() => { const b = el("button", { type: "button", class: "btn btn-secondary" }, "ลองใหม่"); b.addEventListener("click", boot); return b; })()
+      ]));
+    }
+  }
 }
 
-main().catch((err) => {
-  console.error(err);
-  document.body.innerHTML = `<p style="color:red;padding:2rem">โหลดข้อมูลไม่สำเร็จ: ${escapeHtml(err.message)}</p>`;
-});
+boot();

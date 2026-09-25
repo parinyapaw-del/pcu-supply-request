@@ -1,137 +1,181 @@
-// Fill wizard: step 1 = P1, step 2 = LAB, step 3 = สรุป (summary).
-import { ACTIVE_STEPS } from "../constants.js";
+// Fill wizard: P1 -> P2 -> P3 -> P4 -> P5 -> CS (จ่ายกลาง) -> LAB -> สรุป (spec §3.2).
+import { WIZARD_STEPS, NEW_2569_ITEMS } from "../constants.js";
 import { getStep, getItemRows } from "../data.js";
-import * as store from "../store.js";
-import { simMonth } from "../sim.js";
-import { prevMonthKey, formatInt, formatMoney, nowTimeHHMM, isAfterDeadline } from "../format.js";
-import { computeLimitInfo, monthOverMessage, yearInfoMessage, yearOverMessage, isAnyLimitExceeded, getLimitEntry } from "../limits.js";
+import { getPcuToken, call, ApiError } from "../api.js";
+import * as sync from "../sync.js";
+import { formatInt, formatMoney, shortMonthKeyThai, nowTimeHHMM } from "../format.js";
+import {
+  computeLimitInfo,
+  monthOverMessage,
+  yearInfoMessage,
+  yearOverMessage,
+  isAnyLimitExceeded,
+  computeCoverInfo,
+  coverMessage,
+} from "../limits.js";
 
-const WIZARD_STEPS = [...ACTIVE_STEPS, "summary"];
+const STEP_LABELS = {
+  P1: "แบบ พัสดุ 1", P2: "แบบ พัสดุ 2", P3: "แบบ พัสดุ 3", P4: "แบบ พัสดุ 4",
+  P5: "แบบ พัสดุ 5", CS: "จ่ายกลาง", LAB: "LAB", summary: "สรุป",
+};
 
-// Module-scoped mutable state for whichever PCU/month is currently open in the wizard.
-let S = null;
+// Highlight-after-blocked-submit state; reset whenever the PCU/month changes.
+let UI = { pcu: null, month: null, missing: new Set() };
+let unsubStatus = null;
 
-function ensureState(app) {
-  if (S && S.pcu === app.pcu && S.monthKey === app.monthKey) return S;
-  S = {
-    pcu: app.pcu,
-    monthKey: app.monthKey,
-    request: store.getOrCreateRequest(app.pcu, app.monthKey),
-    saveTimer: null,
-    missing: new Set(),
-    over: new Set(),
-  };
-  return S;
-}
-
-function flushSave() {
-  if (!S) return;
-  if (S.saveTimer) {
-    clearTimeout(S.saveTimer);
-    S.saveTimer = null;
+function ensureUi(app, month) {
+  if (UI.pcu !== app.boot.pcu.code || UI.month !== month) {
+    UI = { pcu: app.boot.pcu.code, month, missing: new Set() };
   }
-  S.request.updated_at = new Date().toISOString();
-  store.saveRequest(S.pcu, S.monthKey, S.request);
-  S.lastSavedAt = new Date();
+  return UI;
 }
 
-function scheduleSave(onSaved) {
-  if (S.saveTimer) clearTimeout(S.saveTimer);
-  S.saveTimer = setTimeout(() => {
-    flushSave();
-    if (onSaved) onSaved();
-  }, 2000);
+function esc(str) {
+  return String(str == null ? "" : str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
-function isHidden(pcu, code) {
-  return store.getHiddenItems(pcu).includes(code);
+function pcuCode(app) {
+  return app.boot.pcu.code;
 }
 
-function getLine(code) {
-  return S.request.lines[code] || { stock: null, op: 0, pp: 0 };
+function hiddenSet(app) {
+  return new Set(app.boot.hidden || []);
 }
 
-function setLineField(code, field, value) {
-  if (!S.request.lines[code]) S.request.lines[code] = { stock: null, op: 0, pp: 0 };
-  S.request.lines[code][field] = value;
+function roundOf(app, month) {
+  return app.boot.rounds.find((r) => r.month === month);
 }
 
-function activeStepItems(step, pcu) {
-  return getItemRows(step).filter((it) => !isHidden(pcu, it.code));
+function byRoundOf(app, month) {
+  return app.boot.byRound[month] || { prev: { items: {} }, plan: null, used_fy: {}, avg3: {} };
 }
 
-function stepTotals(step, pcu) {
+function isReadonly(app, month) {
+  const session = sync.getSession(pcuCode(app), month);
+  const status = session && session.request.status;
+  return status === "submitted" || status === "received";
+}
+
+function activeStepItems(app, step) {
+  const hidden = hiddenSet(app);
+  return getItemRows(step).filter((it) => !hidden.has(it.code));
+}
+
+function stepTotals(app, step) {
   let op = 0, pp = 0, qty = 0, money = 0;
-  for (const it of activeStepItems(step, pcu)) {
-    const line = getLine(it.code);
+  for (const it of activeStepItems(app, step)) {
+    const line = sync.getLine(pcuCode(app), app.monthKey, it.code);
     const o = Number(line.op) || 0, p = Number(line.pp) || 0;
     op += o; pp += p; qty += o + p; money += (o + p) * it.price;
   }
   return { op, pp, qty, money };
 }
 
-function stepMissingCodes(step, pcu) {
-  return activeStepItems(step, pcu)
-    .filter((it) => getLine(it.code).stock == null)
+function stepMissingCodes(app, step) {
+  return activeStepItems(app, step)
+    .filter((it) => sync.getLine(pcuCode(app), app.monthKey, it.code).stock == null)
     .map((it) => it.code);
 }
 
+async function goToStep(app, month, stepCode, extraQuery = "") {
+  sync.setLastStep(pcuCode(app), month, stepCode);
+  sync.flush(pcuCode(app), month);
+  location.hash = `#/fill/${stepCode}?month=${month}${extraQuery}`;
+}
+
+async function goToPrint(app, month) {
+  await sync.flush(pcuCode(app), month);
+  location.hash = `#/print?month=${month}`;
+}
+
 export async function renderFill(container, app, stepCode, params) {
-  if (!WIZARD_STEPS.includes(stepCode)) stepCode = WIZARD_STEPS.find((c) => c.toLowerCase() === String(stepCode).toLowerCase()) || WIZARD_STEPS[0];
-  const state = ensureState(app);
-  const round = app.rounds.find((r) => r.monthKey === app.monthKey);
-  const pcuInfo = app.form.pcus.find((p) => p.code === app.pcu);
+  if (!WIZARD_STEPS.includes(stepCode)) stepCode = WIZARD_STEPS[0];
+  const month = app.monthKey;
+  const ui = ensureUi(app, month);
+  const round = roundOf(app, month);
+
+  if (unsubStatus) { unsubStatus(); unsubStatus = null; }
+
+  // Record wherever the user actually lands (nav buttons/pills already do this before navigating,
+  // but this also covers a reload, a bookmark, or the browser back/forward button — "last_step
+  // updated when the user changes step" should hold no matter how they got there).
+  sync.setLastStep(pcuCode(app), month, stepCode);
 
   const wrap = document.createElement("div");
   wrap.className = "fill-page";
 
-  wrap.appendChild(renderProgressBar(app, stepCode));
+  wrap.appendChild(renderProgressBar(app, month, stepCode));
+
+  const session = sync.getSession(pcuCode(app), month);
+  if (session && session.request.status === "draft" && session.request.return_reason) {
+    const banner = document.createElement("div");
+    banner.className = "notice notice-error";
+    banner.innerHTML = `<strong>ส่งกลับแก้ไข:</strong> ${esc(session.request.return_reason)}`;
+    wrap.appendChild(banner);
+  }
 
   const content = document.createElement("div");
   content.className = "fill-content";
   if (stepCode === "summary") {
-    content.appendChild(renderSummary(app, state, round, pcuInfo));
+    content.appendChild(renderSummary(app, month, round));
   } else {
     const step = getStep(app.form, stepCode);
     if (!step) {
       content.textContent = "ไม่พบขั้นตอนนี้";
     } else {
-      content.appendChild(renderStepForm(app, state, step));
+      content.appendChild(renderStepForm(app, month, step));
     }
   }
   wrap.appendChild(content);
 
-  wrap.appendChild(renderNav(app, state, stepCode));
+  wrap.appendChild(renderNav(app, month, stepCode));
 
   container.innerHTML = "";
   container.appendChild(wrap);
 
   if (stepCode !== "summary") {
-    wireStepEvents(app, state, getStep(app.form, stepCode));
-    markMissing(state, getStep(app.form, stepCode), content);
+    wireStepEvents(app, month, getStep(app.form, stepCode));
+    markMissing(ui, getStep(app.form, stepCode), content, app);
     if (params && params.get("focus")) {
       focusItem(params.get("focus"), params.get("field") || "stock");
     }
   }
 }
 
-function renderProgressBar(app, stepCode) {
+function renderProgressBar(app, month, stepCode) {
   const bar = document.createElement("div");
   bar.className = "progress-bar";
-  const labels = { P1: "1. แบบ พัสดุ 1", LAB: "2. แบบ LAB", summary: "3. สรุป" };
+  const idx = WIZARD_STEPS.indexOf(stepCode);
+
+  const pills = document.createElement("div");
+  pills.className = "progress-pills";
   WIZARD_STEPS.forEach((code, i) => {
     const dot = document.createElement("a");
-    const idx = WIZARD_STEPS.indexOf(stepCode);
-    dot.className = "progress-step" + (code === stepCode ? " active" : i < idx ? " done" : "");
-    dot.textContent = labels[code] || code;
-    dot.href = `#/fill/${code}?pcu=${app.pcu}&month=${app.monthKey}`;
-    dot.addEventListener("click", () => flushSave());
-    bar.appendChild(dot);
+    dot.className = "progress-pill" + (code === stepCode ? " active" : i < idx ? " done" : "");
+    dot.textContent = String(i + 1);
+    dot.title = STEP_LABELS[code] || code;
+    dot.href = `#/fill/${code}?month=${month}`;
+    dot.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      goToStep(app, month, code);
+    });
+    pills.appendChild(dot);
   });
+  bar.appendChild(pills);
+
+  const current = document.createElement("div");
+  current.className = "progress-current";
+  current.textContent = `ขั้นตอนที่ ${idx + 1}/${WIZARD_STEPS.length} — ${STEP_LABELS[stepCode] || stepCode}`;
+  bar.appendChild(current);
+
   return bar;
 }
 
-function renderNav(app, state, stepCode) {
+function renderNav(app, month, stepCode) {
   const nav = document.createElement("div");
   nav.className = "wizard-nav";
 
@@ -141,44 +185,54 @@ function renderNav(app, state, stepCode) {
   backBtn.className = "btn btn-secondary";
   backBtn.textContent = "ย้อนกลับ";
   backBtn.disabled = idx <= 0;
-  backBtn.addEventListener("click", () => {
-    flushSave();
-    location.hash = `#/fill/${WIZARD_STEPS[idx - 1]}?pcu=${app.pcu}&month=${app.monthKey}`;
-  });
+  backBtn.addEventListener("click", () => goToStep(app, month, WIZARD_STEPS[idx - 1]));
 
   const nextBtn = document.createElement("button");
   nextBtn.type = "button";
   nextBtn.className = "btn btn-primary";
   nextBtn.textContent = idx >= WIZARD_STEPS.length - 1 ? "ไปหน้าสรุป" : "ถัดไป";
   nextBtn.disabled = idx >= WIZARD_STEPS.length - 1;
-  nextBtn.addEventListener("click", () => {
-    flushSave();
-    location.hash = `#/fill/${WIZARD_STEPS[idx + 1]}?pcu=${app.pcu}&month=${app.monthKey}`;
-  });
+  nextBtn.addEventListener("click", () => goToStep(app, month, WIZARD_STEPS[idx + 1]));
 
   const status = document.createElement("span");
   status.className = "autosave-status";
   status.id = "autosave-status";
-  status.textContent = S.lastSavedAt ? `บันทึกแล้ว ${nowTimeHHMM(S.lastSavedAt)}` : "";
 
   nav.appendChild(backBtn);
   nav.appendChild(status);
   nav.appendChild(nextBtn);
+
+  unsubStatus = sync.subscribe(pcuCode(app), month, (st) => updateAutosaveStatus(st));
+
   return nav;
 }
 
-function updateAutosaveStatus() {
+function updateAutosaveStatus(st) {
   const el = document.getElementById("autosave-status");
-  if (el) el.textContent = `บันทึกแล้ว ${nowTimeHHMM(new Date())}`;
+  if (!el) return;
+  el.classList.remove("autosave-offline", "autosave-saving");
+  if (st.state === "saving") {
+    el.textContent = "กำลังบันทึก…";
+    el.classList.add("autosave-saving");
+  } else if (st.state === "offline") {
+    el.textContent = "ยังไม่ขึ้น server — จะลองใหม่อัตโนมัติ";
+    el.classList.add("autosave-offline");
+  } else if (st.state === "conflict") {
+    el.textContent = "แบบฟอร์มถูกส่งไปแล้ว — โหลดหน้าใหม่";
+  } else if (st.lastSavedAt) {
+    el.textContent = `บันทึกบน server แล้ว ${nowTimeHHMM(st.lastSavedAt)}`;
+  } else {
+    el.textContent = "";
+  }
 }
 
-// ---------------- item step (P1 / LAB) ----------------
+// ---------------- item step ----------------
 
-function renderStepForm(app, state, step) {
+function renderStepForm(app, month, step) {
   const box = document.createElement("div");
   box.className = "step-form";
 
-  const readonly = S.request.status === "submitted";
+  const readonly = isReadonly(app, month);
   if (readonly) {
     const note = document.createElement("div");
     note.className = "notice notice-info";
@@ -186,28 +240,34 @@ function renderStepForm(app, state, step) {
     box.appendChild(note);
   }
 
-  const hiddenCodes = store.getHiddenItems(app.pcu).filter((c) => getItemRows(step).some((it) => it.code === c));
+  const hidden = hiddenSet(app);
+  const hiddenCodes = Array.from(hidden).filter((c) => getItemRows(step).some((it) => it.code === c));
   const hiddenDrawer = document.createElement("details");
   hiddenDrawer.className = "hidden-drawer";
-  hiddenDrawer.innerHTML = `<summary>รายการที่ซ่อน (${hiddenCodes.length})</summary>`;
+  hiddenDrawer.innerHTML = `<summary>รายการที่ไม่เบิก ในขั้นตอนนี้ (${hiddenCodes.length})</summary>`;
   const hiddenList = document.createElement("div");
   hiddenList.className = "hidden-list";
   if (hiddenCodes.length === 0) {
-    hiddenList.innerHTML = `<p class="muted">ไม่มีรายการที่ซ่อนในขั้นตอนนี้</p>`;
+    hiddenList.innerHTML = `<p class="muted">ไม่มีรายการที่ไม่เบิกในขั้นตอนนี้</p>`;
   } else {
     hiddenCodes.forEach((code) => {
       const item = getItemRows(step).find((it) => it.code === code);
       const row = document.createElement("div");
       row.className = "hidden-item-row";
-      row.innerHTML = `<span>${escapeHtml(item.name)}</span>`;
+      row.innerHTML = `<span>${esc(item.name)}</span>`;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn btn-link";
       btn.textContent = "กู้คืน";
       btn.disabled = readonly;
-      btn.addEventListener("click", () => {
-        store.unhideItem(app.pcu, code);
-        renderFill(document.getElementById("app"), app, step.code);
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await toggleHidden(app, code, false);
+          renderFill(document.getElementById("app"), app, step.code);
+        } catch (err) {
+          btn.disabled = false;
+        }
       });
       row.appendChild(btn);
       hiddenList.appendChild(row);
@@ -216,23 +276,66 @@ function renderStepForm(app, state, step) {
   hiddenDrawer.appendChild(hiddenList);
   box.appendChild(hiddenDrawer);
 
-  box.appendChild(buildItemTable(app, state, step, readonly));
-  box.appendChild(buildMobileCards(app, state, step, readonly));
+  box.appendChild(buildItemTable(app, month, step, readonly));
+  box.appendChild(buildMobileCards(app, month, step, readonly));
 
   const totalsBar = document.createElement("div");
   totalsBar.className = "step-totals sticky-totals";
   totalsBar.id = "step-totals";
   box.appendChild(totalsBar);
-  refreshStepTotals(step, app.pcu);
+  refreshStepTotals(app, step);
 
   return box;
+}
+
+async function toggleHidden(app, code, hide) {
+  const cur = new Set(app.boot.hidden || []);
+  if (hide) cur.add(code); else cur.delete(code);
+  try {
+    const data = await call("setHidden", { codes: Array.from(cur) }, { token: getPcuToken() });
+    app.boot.hidden = data.hidden;
+  } catch (err) {
+    alert("บันทึกรายการที่ไม่เบิกไม่สำเร็จ: " + (err.message || ""));
+    throw err;
+  }
 }
 
 function itemHasPrice(item) {
   return item.price > 0;
 }
 
-function buildItemTable(app, state, step, readonly) {
+function hintHtml(app, month, item) {
+  if (NEW_2569_ITEMS.has(item.code)) {
+    return `<div class="ghost-line">รายการใหม่ปี 2569 — ไม่มีข้อมูลปี 2568</div>`;
+  }
+  const byRound = byRoundOf(app, month);
+  const prevMonthLabel = shortMonthKeyThai(byRound.prev.month);
+  const prevItem = byRound.prev.items[item.code];
+  let ghost = "";
+  if (prevItem) {
+    const tag = prevItem.stock_src === "sim" ? ' <span class="tag-sim">[จำลอง]</span>' : prevItem.stock_src === "trial" ? ' <span class="tag-sim">(จากใบทดลอง)</span>' : "";
+    ghost = `เดือนก่อน (${esc(prevMonthLabel)}): คงเหลือ ${formatInt(prevItem.stock)}${tag} · OP ${formatInt(prevItem.op)} · PP ${formatInt(prevItem.pp)}`;
+  } else {
+    ghost = `เดือนก่อน (${esc(prevMonthLabel)}): ไม่มีข้อมูล`;
+  }
+
+  let planLine = "";
+  if (byRound.plan !== null) {
+    const planEntry = byRound.plan[item.code];
+    const used = (byRound.used_fy && byRound.used_fy[item.code]) || 0;
+    const planTotal = planEntry ? (planEntry[0] || 0) + (planEntry[1] || 0) : 0;
+    if (planEntry && planTotal > 0) {
+      const pct = Math.round((used / planTotal) * 100);
+      planLine = `แผนปี 68: ${formatInt(planTotal)} · เบิกแล้ว ${formatInt(used)} (${pct}%)`;
+    } else if (used > 0) {
+      planLine = `ไม่มีในแผน · เบิกแล้ว ${formatInt(used)}`;
+    }
+  }
+
+  return `<div class="ghost-line">${ghost}</div>${planLine ? `<div class="ghost-line plan-line">${esc(planLine)}</div>` : ""}`;
+}
+
+function buildItemTable(app, month, step, readonly) {
   const table = document.createElement("table");
   table.className = "item-table";
   table.innerHTML = `<thead><tr>
@@ -248,66 +351,53 @@ function buildItemTable(app, state, step, readonly) {
     <th class="col-action"></th>
   </tr></thead>`;
   const tbody = document.createElement("tbody");
+  const hidden = hiddenSet(app);
 
   for (const row of step.rows) {
     if (row.type === "section") {
       const tr = document.createElement("tr");
       tr.className = "section-row";
-      tr.innerHTML = `<td colspan="10">${escapeHtml(row.title)}</td>`;
+      tr.innerHTML = `<td colspan="10">${esc(row.title)}</td>`;
       tbody.appendChild(tr);
       continue;
     }
-    if (isHidden(app.pcu, row.code)) continue;
-    tbody.appendChild(buildItemTr(app, step, row, readonly));
+    if (hidden.has(row.code)) continue;
+    tbody.appendChild(buildItemTr(app, month, row, readonly));
   }
   table.appendChild(tbody);
   return table;
 }
 
-function ghostInfo(app, item) {
-  const prevKey = prevMonthKey(app.monthKey);
-  const prevReq = store.getRequest(app.pcu, prevKey);
-  if (prevReq && prevReq.lines && prevReq.lines[item.code]) {
-    const l = prevReq.lines[item.code];
-    return { stock: l.stock, op: l.op || 0, pp: l.pp || 0, simulated: false };
-  }
-  const limitEntry = getLimitEntry(app.limits, app.pcu, item.code);
-  const limitYear = limitEntry ? limitEntry.limit_year : null;
-  const sim = simMonth(app.pcu, item.code, item.price, prevKey, limitYear);
-  return { stock: sim.stock, op: sim.op, pp: sim.pp, simulated: true };
-}
-
-function buildItemTr(app, step, item, readonly) {
+function buildItemTr(app, month, item, readonly) {
   const tr = document.createElement("tr");
   tr.className = "item-row";
   tr.dataset.code = item.code;
-  const line = getLine(item.code);
-  const ghost = ghostInfo(app, item);
+  const line = sync.getLine(pcuCode(app), month, item.code);
   const priceKnown = itemHasPrice(item);
 
-  const nameCell = `<div class="item-name">${escapeHtml(item.name)}${priceKnown ? "" : ' <span class="badge badge-warn">ยังไม่มีราคา</span>'}</div>
-    <div class="ghost-line" title="${ghost.simulated ? "ค่าเดือนก่อนเป็นข้อมูลจำลอง" : "ค่าเดือนก่อนจากข้อมูลจริงที่บันทึกไว้"}">
-      เดือนก่อน: คงเหลือ ${ghost.stock == null ? "-" : formatInt(ghost.stock)} · OP ${formatInt(ghost.op)} · PP ${formatInt(ghost.pp)}${ghost.simulated ? " <span class=\"tag-sim\">(จำลอง)</span>" : ""}
-    </div>
+  const nameCell = `<div class="item-name">${esc(item.name)}${priceKnown ? "" : ' <span class="badge badge-warn">ยังไม่มีราคา</span>'}</div>
+    ${hintHtml(app, month, item)}
+    <div class="cover-msg" data-cover-for="${item.code}"></div>
     <div class="limit-msg" data-limit-for="${item.code}"></div>`;
 
   tr.innerHTML = `
     <td class="col-seq">${item.seq}</td>
     <td class="col-name">${nameCell}</td>
-    <td class="col-unit">${escapeHtml(item.unit || "")}</td>
+    <td class="col-unit">${esc(item.unit || "")}</td>
     <td class="col-price">${formatMoney(item.price)}</td>
     <td class="col-num"><input class="num-input" data-field="stock" inputmode="numeric" autocomplete="off" value="${line.stock == null ? "" : line.stock}" ${readonly ? "disabled" : ""}></td>
     <td class="col-num"><input class="num-input" data-field="op" inputmode="numeric" autocomplete="off" value="${line.op || ""}" ${readonly ? "disabled" : ""}></td>
     <td class="col-num"><input class="num-input" data-field="pp" inputmode="numeric" autocomplete="off" value="${line.pp || ""}" ${readonly ? "disabled" : ""}></td>
     <td class="col-num row-total">${formatInt((line.op || 0) + (line.pp || 0))}</td>
     <td class="col-money row-money">${formatMoney(((line.op || 0) + (line.pp || 0)) * item.price)}</td>
-    <td class="col-action">${readonly ? "" : `<button type="button" class="btn btn-link btn-hide" data-hide="${item.code}">ซ่อน</button>`}</td>`;
+    <td class="col-action">${readonly ? "" : `<button type="button" class="btn btn-link btn-hide" data-hide="${item.code}">ไม่เบิก</button>`}</td>`;
   return tr;
 }
 
-function buildMobileCards(app, state, step, readonly) {
+function buildMobileCards(app, month, step, readonly) {
   const wrap = document.createElement("div");
   wrap.className = "item-cards";
+  const hidden = hiddenSet(app);
   for (const row of step.rows) {
     if (row.type === "section") {
       const h = document.createElement("div");
@@ -316,67 +406,71 @@ function buildMobileCards(app, state, step, readonly) {
       wrap.appendChild(h);
       continue;
     }
-    if (isHidden(app.pcu, row.code)) continue;
-    wrap.appendChild(buildItemCard(app, step, row, readonly));
+    if (hidden.has(row.code)) continue;
+    wrap.appendChild(buildItemCard(app, month, row, readonly));
   }
   return wrap;
 }
 
-function buildItemCard(app, step, item, readonly) {
+function buildItemCard(app, month, item, readonly) {
   const card = document.createElement("div");
   card.className = "item-card";
   card.dataset.code = item.code;
-  const line = getLine(item.code);
-  const ghost = ghostInfo(app, item);
+  const line = sync.getLine(pcuCode(app), month, item.code);
   const priceKnown = itemHasPrice(item);
 
   card.innerHTML = `
     <div class="item-card-head">
       <span class="item-seq">${item.seq}</span>
-      <span class="item-name">${escapeHtml(item.name)}${priceKnown ? "" : ' <span class="badge badge-warn">ยังไม่มีราคา</span>'}</span>
-      ${readonly ? "" : `<button type="button" class="btn btn-link btn-hide" data-hide="${item.code}">ซ่อน</button>`}
+      <span class="item-name">${esc(item.name)}${priceKnown ? "" : ' <span class="badge badge-warn">ยังไม่มีราคา</span>'}</span>
+      ${readonly ? "" : `<button type="button" class="btn btn-link btn-hide" data-hide="${item.code}">ไม่เบิก</button>`}
     </div>
-    <div class="item-card-meta">หน่วย: ${escapeHtml(item.unit || "")} · ราคา/หน่วย: ${formatMoney(item.price)}</div>
-    <div class="ghost-line" title="${ghost.simulated ? "ค่าเดือนก่อนเป็นข้อมูลจำลอง" : "ค่าเดือนก่อนจากข้อมูลจริงที่บันทึกไว้"}">
-      เดือนก่อน: คงเหลือ ${ghost.stock == null ? "-" : formatInt(ghost.stock)} · OP ${formatInt(ghost.op)} · PP ${formatInt(ghost.pp)}${ghost.simulated ? " <span class=\"tag-sim\">(จำลอง)</span>" : ""}
-    </div>
+    <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(item.price)}</div>
+    ${hintHtml(app, month, item)}
     <div class="item-card-inputs">
       <label>คงเหลือ<input class="num-input" data-field="stock" inputmode="numeric" autocomplete="off" value="${line.stock == null ? "" : line.stock}" ${readonly ? "disabled" : ""}></label>
       <label>OP<input class="num-input" data-field="op" inputmode="numeric" autocomplete="off" value="${line.op || ""}" ${readonly ? "disabled" : ""}></label>
       <label>PP<input class="num-input" data-field="pp" inputmode="numeric" autocomplete="off" value="${line.pp || ""}" ${readonly ? "disabled" : ""}></label>
     </div>
     <div class="item-card-total">รวม <span class="row-total">${formatInt((line.op || 0) + (line.pp || 0))}</span> · เป็นเงิน <span class="row-money">${formatMoney(((line.op || 0) + (line.pp || 0)) * item.price)}</span></div>
+    <div class="cover-msg" data-cover-for="${item.code}"></div>
     <div class="limit-msg" data-limit-for="${item.code}"></div>`;
   return card;
 }
 
-function refreshStepTotals(step, pcu) {
-  const t = stepTotals(step, pcu);
+function refreshStepTotals(app, step) {
+  const t = stepTotals(app, step);
   const el = document.getElementById("step-totals");
   if (!el) return;
   el.innerHTML = `<strong>รวมขั้นตอนนี้</strong> — OP ${formatInt(t.op)} · PP ${formatInt(t.pp)} · รวม ${formatInt(t.qty)} · เป็นเงิน ${formatMoney(t.money)} บาท`;
 }
 
-function refreshRowLimit(app, item) {
-  const line = getLine(item.code);
+function refreshRowLimit(app, month, item) {
+  const line = sync.getLine(pcuCode(app), month, item.code);
   const opPp = (Number(line.op) || 0) + (Number(line.pp) || 0);
-  const info = computeLimitInfo(app.limits, app.pcu, item.code, item.price, app.monthKey, opPp);
+  const byRound = byRoundOf(app, month);
+  const info = computeLimitInfo(app.boot.limits, byRound.used_fy, item.code, opPp);
   document.querySelectorAll(`[data-code="${item.code}"] input.num-input`).forEach((inp) => {
     inp.classList.toggle("input-error", !!info && isAnyLimitExceeded(info) && (inp.dataset.field === "op" || inp.dataset.field === "pp"));
   });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
-    if (!info) {
-      box.innerHTML = "";
-      return;
-    }
+    if (!info) { box.innerHTML = ""; return; }
     const parts = [];
     const monthMsg = monthOverMessage(info);
-    if (monthMsg) parts.push(`<div class="limit-line limit-danger">${escapeHtml(monthMsg)}</div>`);
+    if (monthMsg) parts.push(`<div class="limit-line limit-danger">${esc(monthMsg)}</div>`);
     const yearMsg = yearInfoMessage(info);
-    if (yearMsg && !info.yearOver) parts.push(`<div class="limit-line limit-info">${escapeHtml(yearMsg)}</div>`);
+    if (yearMsg && !info.yearOver) parts.push(`<div class="limit-line limit-info">${esc(yearMsg)}</div>`);
     const yearOver = yearOverMessage(info);
-    if (yearOver) parts.push(`<div class="limit-line limit-danger">${escapeHtml(yearOver)}</div>`);
+    if (yearOver) parts.push(`<div class="limit-line limit-danger">${esc(yearOver)}</div>`);
     box.innerHTML = parts.join("");
+  });
+
+  const cover = computeCoverInfo((byRound.avg3 || {})[item.code], line.stock, line.op, line.pp);
+  document.querySelectorAll(`[data-cover-for="${item.code}"]`).forEach((box) => {
+    if (!cover) { box.innerHTML = ""; return; }
+    // yellow only for regularly-withdrawn items (§2.3); sporadic items just show the number
+    const over = (byRound.regular || []).includes(item.code) && cover.months > (app.boot.config.cover_over || 3);
+    box.innerHTML = `<span class="cover-hint${over ? " cover-hint-warn" : ""}">${esc(coverMessage(cover))}</span>`;
   });
 }
 
@@ -384,8 +478,9 @@ function sanitizeDigits(str) {
   return str.replace(/[^0-9]/g, "");
 }
 
-function wireStepEvents(app, state, step) {
+function wireStepEvents(app, month, step) {
   const container = document.getElementById("app");
+  const ui = ensureUi(app, month);
 
   container.querySelectorAll(".num-input").forEach((input) => {
     input.addEventListener("input", () => {
@@ -396,52 +491,53 @@ function wireStepEvents(app, state, step) {
       const field = input.dataset.field;
       const item = getItemRows(step).find((it) => it.code === code);
 
+      const value = digits === "" ? (field === "stock" ? null : 0) : parseInt(digits, 10);
+      sync.setLine(pcuCode(app), month, code, field, value);
       if (field === "stock") {
-        setLineField(code, "stock", digits === "" ? null : parseInt(digits, 10));
         input.classList.remove("input-error");
-        state.missing.delete(code);
-      } else {
-        setLineField(code, field, digits === "" ? 0 : parseInt(digits, 10));
+        ui.missing.delete(code);
       }
 
       document.querySelectorAll(`[data-code="${code}"] .row-total`).forEach((el) => {
-        const line = getLine(code);
+        const line = sync.getLine(pcuCode(app), month, code);
         el.textContent = formatInt((line.op || 0) + (line.pp || 0));
       });
       document.querySelectorAll(`[data-code="${code}"] .row-money`).forEach((el) => {
-        const line = getLine(code);
+        const line = sync.getLine(pcuCode(app), month, code);
         el.textContent = formatMoney(((line.op || 0) + (line.pp || 0)) * item.price);
       });
-      refreshStepTotals(step, app.pcu);
-      refreshRowLimit(app, item);
-      scheduleSave(updateAutosaveStatus);
+      refreshStepTotals(app, step);
+      refreshRowLimit(app, month, item);
     });
 
-    input.addEventListener("blur", () => flushSave());
+    input.addEventListener("blur", () => sync.flush(pcuCode(app), month));
 
     input.addEventListener("keydown", (ev) => {
       if (ev.key !== "Enter") return;
       ev.preventDefault();
-      moveToNextInput(input, step, app.pcu);
+      moveToNextInput(app, input, step);
     });
   });
 
   container.querySelectorAll("[data-hide]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const code = btn.dataset.hide;
-      store.hideItem(app.pcu, code);
-      flushSave();
-      renderFill(container, app, step.code);
+      btn.disabled = true;
+      try {
+        await toggleHidden(app, code, true);
+        renderFill(container, app, step.code);
+      } catch (err) {
+        btn.disabled = false;
+      }
     });
   });
 
-  // pre-existing limit/refresh pass for items that already have values on load
-  getItemRows(step).forEach((item) => refreshRowLimit(app, item));
+  getItemRows(step).forEach((item) => refreshRowLimit(app, month, item));
 }
 
-function moveToNextInput(currentInput, step, pcu) {
+function moveToNextInput(app, currentInput, step) {
   const order = ["stock", "op", "pp"];
-  const items = activeStepItems(step, pcu);
+  const items = activeStepItems(app, step);
   const tr = currentInput.closest("[data-code]");
   const code = tr.dataset.code;
   const field = currentInput.dataset.field;
@@ -455,9 +551,8 @@ function moveToNextInput(currentInput, step, pcu) {
     const nextCode = items[itemIdx + 1].code;
     nextSelector = `[data-code="${nextCode}"] input[data-field="stock"]`;
   } else {
-    return; // last input of the step: Enter does nothing special
+    return;
   }
-  // Prefer the visible layout (table row vs mobile card) matching current input's container type.
   const isCard = !!currentInput.closest(".item-card");
   const scopeClass = isCard ? ".item-cards" : ".item-table";
   const scope = document.querySelector(scopeClass);
@@ -465,14 +560,13 @@ function moveToNextInput(currentInput, step, pcu) {
   if (next) next.focus();
 }
 
-// After a blocked submit, keep every still-missing คงเหลือ input red and show a count at the top of the step.
-function markMissing(state, step, content) {
-  if (!state.missing.size || !step) return;
-  const hidden = new Set(store.getHiddenItems(state.pcu));
+function markMissing(ui, step, content, app) {
+  if (!ui.missing.size || !step) return;
+  const hidden = hiddenSet(app);
   let n = 0;
   getItemRows(step).forEach((item) => {
-    const line = getLine(item.code);
-    if (!state.missing.has(item.code) || hidden.has(item.code) || line.stock != null) return;
+    const line = sync.getLine(pcuCode(app), ui.month, item.code);
+    if (!ui.missing.has(item.code) || hidden.has(item.code) || line.stock != null) return;
     n++;
     document.querySelectorAll(`[data-code="${item.code}"] input[data-field="stock"]`).forEach((el) => el.classList.add("input-error"));
   });
@@ -506,30 +600,30 @@ function focusItem(code, field) {
 
 // ---------------- summary step ----------------
 
-function renderSummary(app, state, round, pcuInfo) {
+function renderSummary(app, month, round) {
   const box = document.createElement("div");
   box.className = "summary-page";
-
-  const readonly = S.request.status === "submitted";
+  const session = sync.getSession(pcuCode(app), month);
+  const request = session.request;
+  const readonly = request.status === "submitted" || request.status === "received";
+  const byRound = byRoundOf(app, month);
 
   let grandOp = 0, grandPp = 0, grandQty = 0, grandMoney = 0;
-  const stepRows = ACTIVE_STEPS.map((code) => {
-    const step = getStep(app.form, code);
-    const t = stepTotals(step, app.pcu);
+  const stepRows = app.form.steps.map((step) => {
+    const t = stepTotals(app, step);
     grandOp += t.op; grandPp += t.pp; grandQty += t.qty; grandMoney += t.money;
-    return { code, title: step.title, t };
+    return { code: step.code, title: step.title, t };
   });
 
   const missing = [];
   const overLimit = [];
-  ACTIVE_STEPS.forEach((code) => {
-    const step = getStep(app.form, code);
-    activeStepItems(step, app.pcu).forEach((item) => {
-      const line = getLine(item.code);
-      if (line.stock == null) missing.push({ code: item.code, name: item.name, stepCode: code });
+  app.form.steps.forEach((step) => {
+    activeStepItems(app, step).forEach((item) => {
+      const line = sync.getLine(pcuCode(app), month, item.code);
+      if (line.stock == null) missing.push({ code: item.code, name: item.name, stepCode: step.code });
       const opPp = (Number(line.op) || 0) + (Number(line.pp) || 0);
-      const info = computeLimitInfo(app.limits, app.pcu, item.code, item.price, app.monthKey, opPp);
-      if (isAnyLimitExceeded(info)) overLimit.push({ code: item.code, name: item.name, stepCode: code, info });
+      const info = computeLimitInfo(app.boot.limits, byRound.used_fy, item.code, opPp);
+      if (isAnyLimitExceeded(info)) overLimit.push({ code: item.code, name: item.name, stepCode: step.code, info });
     });
   });
 
@@ -538,35 +632,37 @@ function renderSummary(app, state, round, pcuInfo) {
     <table class="summary-table">
       <thead><tr><th>ขั้นตอน</th><th>OP</th><th>PP</th><th>รวม</th><th>เป็นเงิน</th></tr></thead>
       <tbody>
-        ${stepRows.map((s) => `<tr><td>${escapeHtml(s.title)}</td><td>${formatInt(s.t.op)}</td><td>${formatInt(s.t.pp)}</td><td>${formatInt(s.t.qty)}</td><td>${formatMoney(s.t.money)}</td></tr>`).join("")}
+        ${stepRows.map((s) => `<tr><td>${esc(s.title)} (${esc(s.code)})</td><td>${formatInt(s.t.op)}</td><td>${formatInt(s.t.pp)}</td><td>${formatInt(s.t.qty)}</td><td>${formatMoney(s.t.money)}</td></tr>`).join("")}
         <tr class="grand-row"><td>รวมทั้งหมด</td><td>${formatInt(grandOp)}</td><td>${formatInt(grandPp)}</td><td>${formatInt(grandQty)}</td><td>${formatMoney(grandMoney)}</td></tr>
       </tbody>
     </table>
 
     <div class="summary-section" id="missing-box">
       <h3>รายการที่ยังไม่กรอกคงเหลือ (${missing.length})</h3>
-      ${missing.length === 0 ? '<p class="muted">กรอกครบทุกรายการแล้ว</p>' : `<ul class="jump-list">${missing.map((m) => `<li><a href="#" data-jump="${m.stepCode}" data-code="${m.code}">${escapeHtml(m.name)} (${m.code})</a></li>`).join("")}</ul>`}
+      ${missing.length === 0 ? '<p class="muted">กรอกครบทุกรายการแล้ว</p>' : `<ul class="jump-list">${missing.map((m) => `<li><a href="#" data-jump="${m.stepCode}" data-code="${m.code}">${esc(m.name)} (${m.code})</a></li>`).join("")}</ul>`}
     </div>
 
     <div class="summary-section" id="over-box">
       <h3>รายการที่เกินเพดาน (${overLimit.length})</h3>
-      ${overLimit.length === 0 ? '<p class="muted">ไม่มีรายการเกินเพดาน</p>' : `<ul class="jump-list">${overLimit.map((m) => `<li><a href="#" data-jump="${m.stepCode}" data-code="${m.code}" data-field="op">${escapeHtml(m.name)} (${m.code}) — ${escapeHtml(monthOverMessage(m.info) || yearOverMessage(m.info))}</a></li>`).join("")}</ul>`}
+      ${overLimit.length === 0 ? '<p class="muted">ไม่มีรายการเกินเพดาน</p>' : `<ul class="jump-list">${overLimit.map((m) => `<li><a href="#" data-jump="${m.stepCode}" data-code="${m.code}" data-field="op">${esc(m.name)} (${m.code}) — ${esc(monthOverMessage(m.info) || yearOverMessage(m.info))}</a></li>`).join("")}</ul>`}
     </div>
 
     <div class="summary-section">
       <label class="field-label">ชื่อผู้กรอก (ไม่บังคับ, ไม่พิมพ์ในใบเบิก)
-        <input type="text" id="submitter-name" value="${escapeHtml(S.request.submitter_name || "")}" ${readonly ? "disabled" : ""}>
+        <input type="text" id="submitter-name" value="${esc(request.submitter_name || "")}" ${readonly ? "disabled" : ""}>
       </label>
     </div>
 
     <div class="summary-actions">
       <button type="button" class="btn btn-secondary" id="btn-preview">ดูตัวอย่างใบพิมพ์</button>
       ${readonly
-        ? `<button type="button" class="btn btn-secondary" id="btn-withdraw">ถอนการส่ง</button>
-           <button type="button" class="btn btn-primary" id="btn-print">พิมพ์ใบเบิก</button>`
+        ? (request.status === "submitted"
+          ? `<button type="button" class="btn btn-secondary" id="btn-withdraw">ถอนการส่ง</button>
+             <button type="button" class="btn btn-primary" id="btn-print">พิมพ์ใบเบิก</button>`
+          : `<button type="button" class="btn btn-primary" id="btn-print">พิมพ์ใบเบิก</button>`)
         : `<button type="button" class="btn btn-primary" id="btn-submit">ส่งใบเบิก</button>`}
     </div>
-    <div class="status-line">${statusLine(round)}</div>
+    <div class="status-line">${statusLine(request, round)}</div>
   `;
 
   box.querySelectorAll("[data-jump]").forEach((a) => {
@@ -575,95 +671,86 @@ function renderSummary(app, state, round, pcuInfo) {
       const stepCode = a.dataset.jump;
       const code = a.dataset.code;
       const field = a.dataset.field || "stock";
-      location.hash = `#/fill/${stepCode}?pcu=${app.pcu}&month=${app.monthKey}&focus=${code}&field=${field}`;
+      location.hash = `#/fill/${stepCode}?month=${month}&focus=${code}&field=${field}`;
     });
   });
 
   const nameInput = box.querySelector("#submitter-name");
   if (nameInput) {
-    nameInput.addEventListener("input", () => {
-      S.request.submitter_name = nameInput.value;
-      scheduleSave();
-    });
-    nameInput.addEventListener("blur", () => flushSave());
+    nameInput.addEventListener("input", () => sync.setSubmitterName(pcuCode(app), month, nameInput.value));
+    nameInput.addEventListener("blur", () => sync.flush(pcuCode(app), month));
   }
 
-  box.querySelector("#btn-preview").addEventListener("click", () => {
-    flushSave();
-    location.hash = `#/print?pcu=${app.pcu}&month=${app.monthKey}`;
-  });
+  box.querySelector("#btn-preview").addEventListener("click", () => goToPrint(app, month));
 
   const printBtn = box.querySelector("#btn-print");
-  if (printBtn) {
-    printBtn.addEventListener("click", () => {
-      location.hash = `#/print?pcu=${app.pcu}&month=${app.monthKey}`;
-    });
-  }
+  if (printBtn) printBtn.addEventListener("click", () => goToPrint(app, month));
 
   const withdrawBtn = box.querySelector("#btn-withdraw");
   if (withdrawBtn) {
-    withdrawBtn.addEventListener("click", () => {
-      S.request.status = "draft";
-      S.request.submitted_at = null;
-      S.request.late = false;
-      flushSave();
-      renderFill(document.getElementById("app"), app, "summary");
+    withdrawBtn.addEventListener("click", async () => {
+      withdrawBtn.disabled = true;
+      try {
+        await sync.withdrawRequest(pcuCode(app), month);
+        renderFill(document.getElementById("app"), app, "summary");
+      } catch (err) {
+        alert("ถอนการส่งไม่สำเร็จ: " + (err.message || ""));
+        withdrawBtn.disabled = false;
+      }
     });
   }
 
   const submitBtn = box.querySelector("#btn-submit");
   if (submitBtn) {
-    submitBtn.addEventListener("click", () => handleSubmit(app, round, missing, overLimit));
+    submitBtn.addEventListener("click", () => handleSubmit(app, month, missing, overLimit, submitBtn));
   }
 
   return box;
 }
 
-function statusLine(round) {
-  if (S.request.status === "submitted") {
-    const late = S.request.late ? ' <span class="badge badge-danger">ส่งช้า</span>' : "";
-    return `สถานะ: ส่งแล้ว${late}`;
-  }
+function statusLine(request, round) {
+  if (request.status === "submitted") return "สถานะ: ส่งแล้ว";
+  if (request.status === "received") return "สถานะ: รับเรื่องแล้ว";
   return `สถานะ: แบบร่าง${round ? ` · กำหนดส่งภายใน ${round.deadlineLabel}` : ""}`;
 }
 
-function handleSubmit(app, round, missing, overLimit) {
+async function handleSubmit(app, month, missing, overLimit, submitBtn) {
   if (missing.length > 0) {
     alert(`กรอกคงเหลือไม่ครบ ${missing.length} รายการ — ระบบจะพาไปยังรายการแรกที่ยังขาด`);
-    missing.forEach((m) => S.missing.add(m.code));
+    const ui = ensureUi(app, month);
+    missing.forEach((m) => ui.missing.add(m.code));
     const first = missing[0];
-    location.hash = `#/fill/${first.stepCode}?pcu=${app.pcu}&month=${app.monthKey}&focus=${first.code}&field=stock`;
+    location.hash = `#/fill/${first.stepCode}?month=${month}&focus=${first.code}&field=stock`;
     return;
   }
 
+  const mode = app.boot.config.limit_mode;
   if (overLimit.length > 0) {
-    const mode = store.getLimitMode();
     const lines = overLimit.map((m) => `- ${m.name}: ${monthOverMessage(m.info) || yearOverMessage(m.info)}`).join("\n");
     if (mode === "enforce") {
       alert(`ส่งไม่ได้ — โหมดบังคับเพดาน มีรายการเกินเพดาน:\n${lines}`);
       return;
     }
-    const ok = confirm(`มีรายการเกินเพดาน (โหมดเตือน สามารถส่งได้):\n${lines}\n\nยืนยันส่งใบเบิก?`);
-    if (!ok) return;
+    if (!confirm(`มีรายการเกินเพดาน (โหมดเตือน สามารถส่งได้):\n${lines}\n\nยืนยันส่งใบเบิก?`)) return;
   }
 
-  S.request.status = "submitted";
-  S.request.submitted_at = new Date().toISOString();
-  S.request.late = round ? isAfterDeadline(new Date(), round.deadline) : false;
-  ACTIVE_STEPS.forEach((code) => {
-    const step = getStep(app.form, code);
-    getItemRows(step).forEach((item) => {
-      S.request.price_snapshot[item.code] = item.price;
-    });
-  });
-  flushSave();
-  renderFill(document.getElementById("app"), app, "summary");
-}
-
-function escapeHtml(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  submitBtn.disabled = true;
+  try {
+    await sync.submitRequest(pcuCode(app), month);
+    renderFill(document.getElementById("app"), app, "summary");
+  } catch (err) {
+    if (err instanceof ApiError && err.code === "INCOMPLETE") {
+      alert("เซิร์ฟเวอร์แจ้งว่ากรอกคงเหลือไม่ครบ: " + (err.missing || []).join(", "));
+    } else if (err instanceof ApiError && err.code === "OVER_LIMIT") {
+      const lines = (err.items || []).map((i) => `- ${i.code}: ขอ ${i.total}${i.limit_month != null ? ` (เพดานเดือน ${i.limit_month})` : ""}${i.limit_year != null ? ` (เพดานปี ${i.limit_year})` : ""}`).join("\n");
+      alert("เซิร์ฟเวอร์ปฏิเสธ — มีรายการเกินเพดาน:\n" + lines);
+    } else if (err instanceof ApiError && err.code === "CONFLICT") {
+      alert("แบบฟอร์มถูกส่งไปแล้ว (อาจจากเครื่องอื่น) — จะโหลดข้อมูลล่าสุด");
+      location.reload();
+    } else {
+      alert("ส่งไม่สำเร็จ: " + (err.message || ""));
+    }
+  } finally {
+    submitBtn.disabled = false;
+  }
 }

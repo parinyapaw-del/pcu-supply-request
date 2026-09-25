@@ -104,8 +104,19 @@ export function nowTimeHHMM(date = new Date()) {
   return `${hh}:${mm}`;
 }
 
-export function isAfterDeadline(nowDate, deadlineMonthKeyDateStr) {
-  // deadlineMonthKeyDateStr: "YYYY-MM-DD" in CE, deadline is end-of-day.
-  const deadline = new Date(deadlineMonthKeyDateStr + "T23:59:59");
-  return nowDate.getTime() > deadline.getTime();
+// HH:MM in Asia/Bangkok, from a JS Date or an ISO string (server times are UTC ISO strings —
+// spec §3.1 wants the PIN lock-until time shown as Bangkok wall-clock, not the browser's TZ).
+export function formatBangkokHHMM(dateOrIso) {
+  const date = dateOrIso instanceof Date ? dateOrIso : new Date(dateOrIso);
+  if (isNaN(date.getTime())) return "-";
+  try {
+    return new Intl.DateTimeFormat("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Asia/Bangkok",
+    }).format(date);
+  } catch (err) {
+    return nowTimeHHMM(date);
+  }
 }
