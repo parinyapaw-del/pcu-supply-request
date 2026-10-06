@@ -1,6 +1,7 @@
 // views.js — shared read-side builders: RequestObj, RoundInfo, per-month PCU view, issue summaries, limit checks.
 import { loadForm, latestForm, priceMap } from "./db.js";
 import { computeDeadline, fyMonths, monthFy, prevMonth } from "./time.js";
+import { UNITS } from "./auth.js";
 
 export const REQ_COLS =
   "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at";
@@ -92,26 +93,81 @@ export async function prevLinesFor(DB, pcu, month) {
   return out;
 }
 
-// Issue summary of one request from its (admin-shaped) lines + issue_status units + form. null when nothing has been issued.
-export async function issueSummary(DB, reqRow, lines, issuedUnits, fallbackFy) {
-  if (!issuedUnits.length) return null;
-  const form = reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : await latestForm(DB, fallbackFy);
-  const unitOf = (code) => (form && form.index.get(code) ? form.index.get(code).step.dispense_unit : null);
+// ---- issue (2c) -------------------------------------------------------------------------------------------------------
+// The form a request resolves its codes against: the bound version, else the latest of the round's fy.
+export async function formOfRequest(DB, reqRow, fallbackFy) {
+  return reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : latestForm(DB, fallbackFy ?? monthFy(reqRow.month));
+}
+export const unitOfCode = (form, code) => (form && form.index.get(code) ? form.index.get(code).step.dispense_unit : null);
+export const requestedQty = (l) => (l.op || 0) + (l.pp || 0);
+
+// Dispense units that have at least one requested line (op+pp > 0) → Set.
+export function neededUnits(form, lines) {
   const needed = new Set();
-  let complete = 0, incomplete = 0;
   for (const l of lines) {
-    const req = (l.op || 0) + (l.pp || 0);
-    if (req <= 0) continue;
-    const u = unitOf(l.item_code);
+    if (requestedQty(l) <= 0) continue;
+    const u = unitOfCode(form, l.item_code);
     if (u) needed.add(u);
+  }
+  return needed;
+}
+
+// IssueInfo (API.md §4.1) from already-loaded data. `doneRows` = issue_status rows [{dispense_unit, done_at?, done_by?}] (or plain unit names).
+// pcuView: the PCU only sees what belongs to units already marked done (Q78) → counts are restricted to done units, done_by is hidden,
+// and the result is null until at least one unit is done. Staff view: null only when the request has no requested line.
+export function issueInfoFrom(form, issuedSeenAt, lines, doneRows, opts = {}) {
+  const pcuView = !!opts.pcuView;
+  const rows = doneRows.map((r) => (typeof r === "string" ? { dispense_unit: r } : r));
+  if (pcuView && !rows.length) return null;
+  const doneBy = new Map(rows.map((r) => [r.dispense_unit, r]));
+  const units = {};
+  const unit = (u) => (units[u] ||= {
+    needed: false, done: doneBy.has(u),
+    done_at: (doneBy.get(u) && doneBy.get(u).done_at) || null,
+    done_by: pcuView ? null : (doneBy.get(u) && doneBy.get(u).done_by) || null,
+    lines: 0, issued_lines: 0,
+  });
+  for (const u of UNITS) unit(u);
+  let complete = 0, incomplete = 0, any = false;
+  for (const l of lines) {
+    const req = requestedQty(l);
+    if (req <= 0) continue;
+    const u = unitOfCode(form, l.item_code);
+    if (!u) continue;
+    any = true;
+    const e = unit(u);
+    e.needed = true; e.lines++;
     if (l.issued_total === null || l.issued_total === undefined) continue;
+    if (pcuView && !e.done) continue;
+    e.issued_lines++;
     if (l.issued_total >= req) complete++; else incomplete++;
   }
-  const done = [...needed].filter((u) => issuedUnits.includes(u)).length;
+  if (!any) return null;
+  const needed = Object.keys(units).filter((u) => units[u].needed);
+  const done = needed.filter((u) => units[u].done).length;
   return {
-    units_total: needed.size, units_done: done, done: needed.size > 0 && done === needed.size,
-    complete, incomplete, issued_seen_at: reqRow.issued_seen_at || null,
+    units_total: needed.length, units_done: done, done: needed.length > 0 && done === needed.length,
+    complete, incomplete, issued_seen_at: issuedSeenAt || null, units,
   };
+}
+
+// PCU-facing summary of one request (null until a unit is done). Kept for callers that only hold the lines + unit names.
+export async function issueSummary(DB, reqRow, lines, issuedUnits, fallbackFy) {
+  if (!issuedUnits.length) return null;
+  const form = await formOfRequest(DB, reqRow, fallbackFy);
+  return issueInfoFrom(form, reqRow.issued_seen_at, lines, issuedUnits, { pcuView: true });
+}
+
+// request.issued for the PCU view: { code: {total, op, pp, reason, note} } for lines of DONE units only (Q78: `lines` stay unchanged).
+export function pcuIssuedMap(form, lines, doneRows) {
+  const done = new Set(doneRows.map((r) => (typeof r === "string" ? r : r.dispense_unit)));
+  const out = {};
+  for (const l of lines) {
+    if (requestedQty(l) <= 0 || l.issued_total === null || l.issued_total === undefined) continue;
+    if (!done.has(unitOfCode(form, l.item_code))) continue;
+    out[l.item_code] = { total: l.issued_total, op: l.issued_op ?? 0, pp: l.issued_pp ?? 0, reason: l.issue_reason ?? null, note: l.issue_note ?? null };
+  }
+  return out;
 }
 
 // The PCU-facing view of one month (shared by pcuBootstrap.byMonth and pcuGetMonth).
@@ -126,10 +182,14 @@ export async function pcuMonthView(DB, pcu, month, fallbackFy) {
   if (reqRow) {
     const [lines, units] = await Promise.all([
       getLines(DB, reqRow.id),
-      DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(reqRow.id).all(),
+      DB.prepare(`SELECT dispense_unit, done_at, done_by FROM issue_status WHERE request_id = ?`).bind(reqRow.id).all(),
     ]);
     request = requestObj(reqRow, lines, false);
-    issue = await issueSummary(DB, reqRow, lines, units.results.map((u) => u.dispense_unit), fallbackFy);
+    if (units.results.length) { // 2c: something has been issued → expose the done units' figures
+      const form = await formOfRequest(DB, reqRow, fallbackFy);
+      issue = issueInfoFrom(form, reqRow.issued_seen_at, lines, units.results, { pcuView: true });
+      request.issued = pcuIssuedMap(form, lines, units.results);
+    }
   }
   const unlocks = {};
   for (const u of unlocksRes.results) unlocks[u.item_code] = u.reason || "";

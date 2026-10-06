@@ -7,6 +7,7 @@ import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
 import { adminExportSeed, adminFormGet, adminFormSave } from "../_lib/form_editor.js";
 import * as pdf from "../_lib/pdf.js";
+import * as issue from "../_lib/issue.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 
 const PUBLIC = {
@@ -30,6 +31,12 @@ const STAFF = {
   adminRequests: admin.adminRequests,
   adminGetRequest: admin.adminGetRequest,
   adminRequestPdf: pdf.adminRequestPdf,
+  // 2c — บันทึกจ่ายจริง (a dispenser is restricted to its own units/time window inside issue.js)
+  issueLines: issue.issueLines,
+  issueAll: issue.issueAll,
+  issueDone: issue.issueDone,
+  issueItem: issue.issueItem,
+  adminItemIssue: issue.adminItemIssue,
 };
 // admin only
 const ADMIN = {
@@ -65,8 +72,7 @@ const REMOVED = {
   adminReturn: "ใช้ adminNote (โน้ตขอให้แก้) แทน adminReturn",
   adminSetMode: "ใช้ adminSetLimitMode (off/warn/enforce) แทน adminSetMode",
 };
-const RESERVED = new Set(["issueLines", "issueAll", "issueDone"]);
-const isReserved = (a) => RESERVED.has(a) || (/^adminImport/.test(a) && a !== "adminImportSeed");
+const isReserved = (a) => /^adminImport/.test(a) && a !== "adminImportSeed"; // 2e
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 
 // dev-only helpers (DEV_FAKE_GOOGLE=1)

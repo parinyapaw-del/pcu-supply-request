@@ -2,7 +2,7 @@
 
 Spec: `../../phase 2.md` (§1, §3, §4.3, §5). Supersedes `apps-script/API.md` (phase 1.5). Import format: `../seed/FORMAT.md`.
 This file is the single contract between the backend (`functions/**`), the PCU frontend and the admin frontend.
-Items marked **2b–2e** (except 2d, now live) are reserved: the action name exists and returns `NOT_IMPLEMENTED`.
+Items marked **2e** are reserved: the action name exists and returns `NOT_IMPLEMENTED` (2b PDF, 2c issuing and 2d form editor are live).
 
 ## 1. Transport
 - `POST /api` — body JSON `{ "action": "<name>", "token": "<token|omit>", ...params }`. Content-Type may be `text/plain` (no CORS preflight,
@@ -43,7 +43,8 @@ Items marked **2b–2e** (except 2d, now live) are reserved: the action name exi
   `first_submitted_at` (once), `submit_count++`, `form_version_id` = latest version for the round's fy, `price_snapshot` on every line.
   Re-submit overwrites. No withdraw.
 - `edited_after_submit = (updated_at > submitted_at)` (request has autosaved edits after its last submit). Submit sets both to the same `now`.
-- Not editable (`CONFLICT`): round locked (`rounds.locked=1`) · **2c**: a changed line belongs to a step whose `dispense_unit` has an `issue_status` row.
+- Not editable (`CONFLICT`): round locked (`rounds.locked=1`) · **2c**: a changed line belongs to a step whose `dispense_unit` has an `issue_status` row ("หน้า … ถูกจ่ายแล้ว"; saving the same values again is fine).
+- `issued` (2c, §5.3): set when every dispense unit that has requested lines is marked done (`issueDone`); undoing a unit sets it back to `submitted`.
 - Admin note (`admin_note`) never changes status.
 
 ## 4. PCU actions
@@ -58,7 +59,7 @@ Items marked **2b–2e** (except 2d, now live) are reserved: the action name exi
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
 | `requestPdf` | `month` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}` |
 | `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code]}` for `print.html` |
-| `issueLines`, `issueAll`, `issueDone` (staff) | – | **2c** `NOT_IMPLEMENTED` |
+| `issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue` | – | staff actions (admin or dispenser), not PCU — §5.3 |
 
 `saveLines` rules
 - `month`: `YYYY-MM`, must be the current month, the previous month, or a month where this PCU already has a request; never a future month.
@@ -94,19 +95,33 @@ Items marked **2b–2e** (except 2d, now live) are reserved: the action name exi
       request: RequestObj | null,
       used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in that month's fy, excluding that month
       prev_lines: { code: {op,pp} }, // from the previous calendar month's submitted/issued request (only op+pp>0); {} if none
-      issue: null | {units_total, units_done, done:bool, complete, incomplete, issued_seen_at}   // 2c data; null in 2a
+      issue: null | IssueInfo        // 2c; null until >= 1 unit is marked done (PCU view, see below)
   } },
-  issue_notices: [ {month, complete, incomplete} ]   // issued requests with issued_seen_at null (notice bar); [] in 2a
+  issue_notices: [ {month, complete, incomplete} ]   // status 'issued' requests with issued_seen_at null (notice bar) — cleared by pcuAck
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
-               edited_after_submit:bool, lines: { code: {stock,op,pp,updated_at} } }
+               edited_after_submit:bool, lines: { code: {stock,op,pp,updated_at} },
+               issued?: { code: {total,op,pp,reason:"out_of_stock"|"other"|null,note:string|null} } }   // issued: PCU view only, see below
+IssueInfo = { units_total, units_done, done:bool, complete, incomplete, issued_seen_at|null,
+              units: { "พัสดุ"|"จ่ายกลาง"|"LAB": {needed:bool, done:bool, done_at|null, done_by|null, lines:n, issued_lines:n} } }
 ```
 PCU-side lines never include price/issued fields (Q78).
 Form fallback: if no `form_versions` row exists for the round's fy, the latest version of any fy is used (so Sep 2026 = FY2569 still works).
 
+**IssueInfo** (2c). `needed` = the unit has >= 1 requested line (`op+pp > 0`); `lines` = its requested lines, `issued_lines` = those with an `issued_total`;
+`units_total` = number of needed units, `units_done` = needed units with an `issue_status` row, `done` = `units_total > 0 && units_done == units_total`;
+`complete` / `incomplete` = lines with `issued_total >= requested` / `< requested` (lines with no figure count in neither). `units` always has all three keys
+(the `dispense_unit` names). The whole object is `null` when the request has no requested line.
+- **Staff view** (`adminRequests[].issue`, `adminGetRequest.issue`, `issue*` responses): counts cover every unit; `done_at` / `done_by` (e-mail) filled for done units.
+- **PCU view** (`byMonth[m].issue`, `pcuGetMonth`): `null` until >= 1 unit is done; then the counts, `issued_lines` and `done_at` only cover **done units** (figures of units still being handled are
+  not leaked) and `done_by` is always `null`. `units[u].done` is what the fill page uses to lock the pages of issued units (the server enforces it: `saveLines` -> `CONFLICT`).
+- **`request.issued`** (PCU view only; present only when the request has >= 1 `issue_status` row): `{ code: {total, op, pp, reason, note} }` for requested lines of **done units** that have a figure
+  (`op`/`pp` = the OP-first split of `total`). `request.lines` stays exactly as the PCU filled it (Q78); issued figures never feed limits / `used_fy` / `prev_lines`.
+
 ## 5. Admin / dispenser actions
-Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, `GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN`.
+Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue`; own units + time window only),
+`GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN`.
 `adminLoginGoogle` / `adminLoginBackup` are public.
 
 | action | params | data |
@@ -115,8 +130,13 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminRequestPdf` (admin or dispenser) | `pcu, month` | §6b — same result as `requestPdf` for that PCU's request |
 | `adminLoginBackup` | `password` | `{token, exp, role:"admin"}` · `BAD_PASSWORD{remaining}` · `LOCKED{until}` · `NOT_FOUND` if none set |
 | `adminBootstrap` | – | §5.1 |
-| `adminRequests` | `month?` (omitted = current + previous month) | `{requests:[RequestObj without lines + pcu_name + progress], rounds:[RoundInfo], server_time, current_month}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` |
-| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot & issued_* per line)|null, pcu:{...}, hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}}` (form = version bound to the request, else latest of the round's fy). A **dispenser** only gets the lines of items on pages of its own `units`. |
+| `adminRequests` | `month?` (omitted = current + previous month) | `{requests:[RequestObj without lines + pcu_name + progress + issue], rounds:[RoundInfo], server_time, current_month}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` · `issue` = IssueInfo (§4.1) or `null` when the request has no requested line (2c) |
+| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot & issued_* per line)|null, issue: IssueInfo|null, pcu:{...}, hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}}` (form = version bound to the request, else latest of the round's fy). A **dispenser** only gets the lines of items on pages of its own `units` (`issue` is still computed over all lines/units). `issued_*` per line = `issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by` (all `null` until issued). |
+| `issueLines` (staff) | `pcu, month, lines:{code:{issued_total:int\|null, reason?:"out_of_stock"\|"other"\|null, note?:string\|null}}` | `{request: RequestObj(admin view), issue: IssueInfo}` — §5.3 |
+| `issueAll` (staff) | `pcu, month, unit?` | same — every requested line of the unit(s) = requested qty — §5.3 |
+| `issueDone` (staff) | `pcu, month, unit, done:0\|1` | same — §5.3 |
+| `issueItem` (staff) | `month, item_code, entries:{pcu:{issued_total, reason?, note?}}` | `{updated:[pcu], skipped:[{pcu, why}]}` — §5.3 |
+| `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price,dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
 | `adminNote` | `pcu, month, note` (empty/blank clears) | `{request}` — creates a `draft` row if none; status unchanged |
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
 | `adminLockRound` | `month, locked:0\|1` | `{round}` |
@@ -204,11 +224,40 @@ every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips t
 `config` (fy_current, limit_mode, stock_required, budget_op/pp/total, deadline_day). No `verify` block. Re-importing it is a no-op: `form:"same"`, `limits_inserted:0`
 (the importer skips a limits row identical to the stored one), every table keeps its row count, and export → import → export is a fixed point.
 
+### 5.3 Issuing — บันทึกจ่ายจริง (2c) — `issueLines` · `issueAll` · `issueDone` · `issueItem` · `adminItemIssue`
+Who: admin, or a dispenser (role `dispenser`, `units` subset of {พัสดุ, จ่ายกลาง, LAB}). The unit of a line = `dispense_unit` of the form step that holds its item, resolved on the form version
+**bound to the request** (`form_version_id`, else latest of the round's fy). Round lock does **not** block issuing.
+- **Request** must exist with status `submitted` or `issued` -> else `NOT_FOUND` "ยังไม่ได้ส่งใบเบิก". Only lines with `op+pp > 0` ("requested") can be issued -> else `BAD_REQUEST`; unknown code -> `BAD_REQUEST`.
+- **Dispenser limits**: every touched line's unit must be in its `units` else `FORBIDDEN`; writes allowed only while `currentMonth() <= nextMonth(request month)` (until the end of the month after the request month)
+  else `FORBIDDEN` "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)" — applies to undo (`done:0`) and `issueItem` too, never to reads (`adminItemIssue`). Admin (incl. backup login): unlimited.
+- **Values**: `issued_total` = integer `0 … requested`, or `null` = clear the line (all `issued_*`, reason, note, `issued_at`, `issued_by` -> `null`). `> requested` -> `BAD_REQUEST` "จ่ายเกินขอไม่ได้ (ขอ n)";
+  not an integer / `< 0` / key missing -> `BAD_REQUEST`. `issued_total < requested` -> `reason` in `out_of_stock` | `other` required; `other` needs a non-blank `note` (trimmed, <= 200 chars; `out_of_stock` may carry a note too);
+  `issued_total == requested` -> `reason`/`note` stored as `null` (whatever was sent). Writes set `issued_at = now`, `issued_by` = actor e-mail (`"backup"` for the backup login).
+- **OP-first split**: `short = op+pp - issued_total`; `issued_op = max(0, op - short)`; `issued_pp = pp - max(0, short - op)` (OP 10 / PP 5: 12 -> 7/5 · 15 -> 10/5 · 3 -> 0/3 · 0 -> 0/0).
+- **All-or-nothing**: every line/entry is validated (permissions first) before anything is written; one bad line rejects the whole call. Each call = one D1 batch with its `audit_log` row(s).
+- **Responses** of `issueLines` / `issueAll` / `issueDone`: `{request: RequestObj(admin view: price_snapshot + issued_* per line; a dispenser only gets its own units' lines), issue: IssueInfo}` after the write.
+
+`issueLines{pcu, month, lines}` — up to 400 lines; audit `issue_lines` (detail `CODE=total(reason:note) …`).
+`issueAll{pcu, month, unit?}` — sets every requested line of the unit(s) to `issued_total = requested` (overwrites shortfalls, reason/note -> `null`). `unit` omitted: dispenser = all of its units, admin = all three;
+unit given: unknown name -> `BAD_REQUEST`, dispenser not owning it -> `FORBIDDEN`. Does not touch `issue_status`. Audit `issue_all`.
+`issueDone{pcu, month, unit, done:0|1}` — `issue_status(request, unit)` = "this unit has finished issuing this request".
+- `done:1`: the unit must have requested lines (else `BAD_REQUEST`); every still-`null` requested line of that unit gets `issued_total = requested` (default = ขอ; existing figures are kept); the row is inserted (`done_at`, `done_by`; idempotent).
+  If **every needed unit** (units having requested lines) is now done and the status is `submitted` -> `requests.status = 'issued'`, `issued_seen_at = null` (re-arms the PCU notice).
+- `done:0`: the row is deleted (figures stay); if the status was `issued` -> back to `submitted` (`submitted_at`, `first_submitted_at`, `updated_at` untouched). Same unit/time rules as marking done.
+- While a unit is done, PCU `saveLines` cannot change its lines (`CONFLICT`, §3). Audit `issue_done` (detail `unit=… done=… filled=n status=…`).
+`issueItem{month, item_code, entries:{PCU:{issued_total, reason?, note?}}}` — the per-item (network-wide) screen. The item must exist in the latest form of the month's fy (`BAD_REQUEST`), a dispenser must own its unit (`FORBIDDEN`),
+<= 60 entries. Applies the rules above to each PCU's request of `month`. Entries that cannot apply are **skipped, not errors**: `{pcu, why}` with why = "ไม่พบ รพ.สต. นี้" · "ยังไม่ได้ส่งใบเบิก" ·
+"ไม่ได้ขอรายการนี้" · (dispenser) the item sits on a unit it does not own in that request's bound form. A validation error in an applicable entry rejects the whole call. Does not change `issue_status`/status.
+Audit `issue_item`, one row per updated PCU (`pcu`/`month` filled, detail `CODE=total(reason)`).
+`adminItemIssue{month, item_code}` — read-only table for that screen: `item = {code,name,unit,price}` from the latest form of the month's fy + `dispense_unit` and `step` (step code, e.g. `"P1"`) / `step_title` of its page;
+`rows` = one per PCU (ordered by code) whose `submitted`/`issued` request of `month` has the item requested: `op, pp, requested = op+pp`, `issued_total/issued_op/issued_pp` (`null` = not issued yet),
+`reason`, `note` (= `issue_reason`/`issue_note`), `unit_done` = that request's unit for the item has an `issue_status` row. Dispenser: `FORBIDDEN` unless the item's unit is theirs. `form_version_id` = the latest form it resolved against.
+
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
 Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else form price) ·
-OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม · เหตุผล · สถานะ · เวลาส่ง(Bangkok) · form version; all statuses) ·
-**รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (0 in 2a); submitted/issued only) ·
+OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version; all statuses) ·
+**รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (Σ `issued_total`); submitted/issued only) ·
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
 
 ## 6b. PDF (phase 2b) — `requestPdf` · `adminRequestPdf` · `printData` · `GET /api/pdf/:id`

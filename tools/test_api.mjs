@@ -195,7 +195,7 @@ async function main() {
     expectErr(await api("requestPdf", {}), "AUTH_REQUIRED", "requestPdf is a PCU action (2b)");
     expectErr(await api("adminFormSave", {}), "AUTH_REQUIRED", "adminFormSave needs a token (2d is live)");
     expectErr(await api("adminFormDelete", {}), "BAD_REQUEST", "unknown adminForm* action is a plain unknown action");
-    expectErr(await api("issueLines", {}), "NOT_IMPLEMENTED", "issueLines reserved (2c)");
+    expectErr(await api("issueLines", {}), "AUTH_REQUIRED", "issueLines is a staff action (2c is live)");
     const bad = await (await fetch(BASE + "/api", { method: "POST", body: "{not json" })).json();
     expectErr(bad, "BAD_REQUEST", "malformed JSON body");
     const pdf = await get("/api/pdf/abc");
@@ -919,6 +919,269 @@ async function main() {
     eq(again.byMonth[CUR].request, null, "PCU sees an empty month after the trial wipe");
   }
 
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("issue (2c)");
+  {
+    // ---- fixture: two dispensers (LAB · พัสดุ+จ่ายกลาง), four PCUs, items of 3 dispense units ----
+    const D_LAB = "issue.lab@example.com", D_STORE = "issue.store@example.com";
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+    await mustOk("adminUsersAdd", { email: D_LAB, role: "dispenser", units: ["LAB"] }, ADM2);
+    await mustOk("adminUsersAdd", { email: D_STORE, role: "dispenser", units: ["พัสดุ", "จ่ายกลาง"] }, ADM2);
+    const DL = (await mustOk("adminLoginGoogle", { id_token: "dev:" + D_LAB })).token;
+    const DS = (await mustOk("adminLoginGoogle", { id_token: "dev:" + D_STORE })).token;
+    const login = async (code) => (await mustOk("pcuLogin", { pcu: code, pin: "12345" })).token;
+    const [P3, P4, P5] = [await login("PCU03"), await login("PCU04"), await login("PCU05")];
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-20T00:00:00Z") + ++n * 1000).toISOString();
+    const A2 = seedItems.find((i) => i.step === "P1" && i.code !== A.code);
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, [op, pp]]) => [c, { stock: 1, op, pp, updated_at: tsn() }]));
+    const save = (tok, lines, send) => api("saveLines", { month: CUR, lines: L(lines), send: !!send }, tok);
+    const lineOf = (res, code) => res.request.lines[code];
+    const issueOf = (res) => res.issue;
+    ok(A.unit_of === "พัสดุ" && B.unit_of === "พัสดุ" && CSI.unit_of === "จ่ายกลาง" && LABI.unit_of === "LAB", "fixture items map to พัสดุ / พัสดุ / จ่ายกลาง / LAB");
+
+    // ---- auth + draft ----
+    expectErr(await api("issueLines", { pcu: "PCU03", month: CUR, lines: {} }), "AUTH_REQUIRED", "issueLines without a token");
+    expectErr(await api("issueLines", { pcu: "PCU03", month: CUR, lines: {} }, P3), "FORBIDDEN", "issueLines with a PCU token");
+    await mustOk("saveLines", { month: CUR, lines: L({ [A.code]: [10, 5], [B.code]: [4, 0], [CSI.code]: [2, 0], [LABI.code]: [3, 2] }) }, P3); // draft
+    expectErr(await api("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 1 } } }, ADM2), "NOT_FOUND", "issueLines on a draft → NOT_FOUND");
+    expectErr(await api("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 1 }, DL), "NOT_FOUND", "issueDone on a draft → NOT_FOUND");
+    expectErr(await api("issueAll", { pcu: "PCU12", month: CUR }, ADM2), "NOT_FOUND", "issueAll without any request → NOT_FOUND");
+    ok((await save(P3, {}, true)).ok, "PCU03 submits (A 10/5 · B 4/0 · CS 2/0 · LAB 3/2)");
+    const sub3 = (await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2)).request;
+    ok((await save(P4, { [A.code]: [2, 0], [LABI.code]: [6, 0] }, true)).ok, "PCU04 submits (A 2/0 · LAB 6/0)");
+    ok((await save(P5, { [A.code]: [1, 0] }, true)).ok, "PCU05 submits (A 1/0)");
+
+    // ---- validation ----
+    const il = (lines, tok = ADM2, pcu = "PCU03", extra = {}) => api("issueLines", { pcu, month: CUR, lines, ...extra }, tok);
+    const over = await il({ [A.code]: { issued_total: 16 } });
+    expectErr(over, "BAD_REQUEST", "over-request is rejected");
+    ok(/จ่ายเกินขอไม่ได้ \(ขอ 15\)/.test(over.error.message), "over-request message names the requested qty (ขอ 15)");
+    expectErr(await il({ [A.code]: { issued_total: 12 } }), "BAD_REQUEST", "short without a reason → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 12, reason: "x" } }), "BAD_REQUEST", "unknown reason → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 12, reason: "other" } }), "BAD_REQUEST", "reason other without a note → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 12, reason: "other", note: "   " } }), "BAD_REQUEST", "reason other with a blank note → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 12, reason: "other", note: "x".repeat(201) } }), "BAD_REQUEST", "note longer than 200 → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 1.5, reason: "out_of_stock" } }), "BAD_REQUEST", "fractional issued_total → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: -1, reason: "out_of_stock" } }), "BAD_REQUEST", "negative issued_total → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { reason: "out_of_stock" } }), "BAD_REQUEST", "missing issued_total → BAD_REQUEST");
+    expectErr(await il({ [A2.code]: { issued_total: 0, reason: "out_of_stock" } }), "BAD_REQUEST", "a line that was not requested cannot be issued");
+    expectErr(await il({ "ZZ-99": { issued_total: 0, reason: "out_of_stock" } }), "BAD_REQUEST", "unknown item code → BAD_REQUEST");
+    expectErr(await il({}), "BAD_REQUEST", "empty lines → BAD_REQUEST");
+    expectErr(await api("issueLines", { pcu: "PCU03", month: "2026-13", lines: { [A.code]: { issued_total: 1 } } }, ADM2), "BAD_REQUEST", "bad month → BAD_REQUEST");
+    expectErr(await il({ [A.code]: { issued_total: 12, reason: "out_of_stock" }, [B.code]: { issued_total: 99 } }), "BAD_REQUEST", "one bad line rejects the whole call");
+    eq((await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2)).request.lines[A.code].issued_total, null, "…and nothing was written (atomic)");
+
+    // ---- permissions: dispenser LAB vs P1 item, admin ----
+    expectErr(await il({ [A.code]: { issued_total: 15 } }, DL), "FORBIDDEN", "dispenser LAB cannot issue a P1 (พัสดุ) item");
+    expectErr(await il({ [LABI.code]: { issued_total: 4, reason: "out_of_stock" }, [A.code]: { issued_total: 15 } }, DL), "FORBIDDEN", "mixed call with a foreign-unit line is rejected as a whole");
+    eq((await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2)).request.lines[LABI.code].issued_total, null, "…and the LAB line was not touched");
+    const r1 = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [LABI.code]: { issued_total: 4, reason: "out_of_stock" } } }, DL);
+    eq([lineOf(r1, LABI.code).issued_total, lineOf(r1, LABI.code).issued_op, lineOf(r1, LABI.code).issued_pp], [4, 2, 2], "dispenser LAB issues a LAB item (LAB 3/2 → 4: OP short first → 2/2)");
+    ok(lineOf(r1, LABI.code).issued_by === D_LAB && lineOf(r1, LABI.code).issued_at, "issued_by = dispenser e-mail, issued_at set");
+    ok(Object.keys(r1.request.lines).every((c) => seedItems.find((i) => i.code === c).unit_of === "LAB"), "dispenser response carries only own-unit lines");
+    ok(r1.issue && r1.issue.units_total === 3 && r1.issue.units_done === 0 && r1.issue.units.LAB.issued_lines === 1, "response.issue: 3 needed units, none done, LAB issued_lines 1");
+
+    // ---- the OP-first split + reason rules (admin) ----
+    let r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 12, reason: "out_of_stock" } } }, ADM2);
+    let la = lineOf(r, A.code);
+    eq([la.issued_total, la.issued_op, la.issued_pp, la.issue_reason, la.issue_note, la.issued_by], [12, 7, 5, "out_of_stock", null, ADMIN_EMAIL], "OP 10 / PP 5, issued 12 → 7/5 (reason out_of_stock, admin as issued_by)");
+    r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 3, reason: "other", note: " รอของเข้า " } } }, ADM2);
+    la = lineOf(r, A.code);
+    eq([la.issued_op, la.issued_pp, la.issue_reason, la.issue_note], [0, 3, "other", "รอของเข้า"], "issued 3 → shortfall hits OP first (0/3); note trimmed, reason other");
+    r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 15, reason: "out_of_stock", note: "ignored" } } }, ADM2);
+    la = lineOf(r, A.code);
+    eq([la.issued_total, la.issued_op, la.issued_pp, la.issue_reason, la.issue_note], [15, 10, 5, null, null], "issued = requested → 10/5, reason + note cleared");
+    r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 0, reason: "out_of_stock", note: "หมดทั้งเครือข่าย" } } }, ADM2);
+    la = lineOf(r, A.code);
+    eq([la.issued_total, la.issued_op, la.issued_pp, la.issue_note], [0, 0, 0, "หมดทั้งเครือข่าย"], "issued 0 → 0/0 (out_of_stock may carry a note)");
+    r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: null, reason: "other", note: "x" } } }, ADM2);
+    la = lineOf(r, A.code);
+    eq([la.issued_total, la.issued_op, la.issued_pp, la.issue_reason, la.issue_note, la.issued_at, la.issued_by], [null, null, null, null, null, null, null], "issued_total null clears every issued field");
+    eq([r.issue.complete, r.issue.incomplete], [0, 1], "IssueInfo counts: LAB 4/5 → incomplete 1, complete 0");
+
+    // ---- issueAll ----
+    expectErr(await api("issueAll", { pcu: "PCU03", month: CUR, unit: "โกดัง" }, ADM2), "BAD_REQUEST", "issueAll with an unknown unit → BAD_REQUEST");
+    expectErr(await api("issueAll", { pcu: "PCU03", month: CUR, unit: "พัสดุ" }, DL), "FORBIDDEN", "dispenser LAB cannot issueAll the พัสดุ unit");
+    r = await mustOk("issueAll", { pcu: "PCU03", month: CUR, unit: "พัสดุ" }, ADM2);
+    eq([lineOf(r, A.code).issued_total, lineOf(r, A.code).issued_op, lineOf(r, A.code).issued_pp, lineOf(r, B.code).issued_total], [15, 10, 5, 4], "admin issueAll(unit พัสดุ): requested lines = requested qty");
+    eq([lineOf(r, CSI.code).issued_total, lineOf(r, LABI.code).issued_total], [null, 4], "…other units untouched (CS still empty, LAB keeps 4)");
+    r = await mustOk("issueAll", { pcu: "PCU03", month: CUR }, DL);
+    eq([lineOf(r, LABI.code).issued_total, lineOf(r, LABI.code).issue_reason, lineOf(r, LABI.code).issued_op, lineOf(r, LABI.code).issued_pp], [5, null, 3, 2], "dispenser LAB issueAll without unit = its own units → LAB 5 (3/2), reason cleared");
+    eq(lineOf(r, CSI.code), undefined, "…and the response still hides foreign-unit lines from the dispenser");
+    r = await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 12, reason: "out_of_stock" } } }, DS);
+    eq([lineOf(r, A.code).issued_total, lineOf(r, A.code).issued_op, lineOf(r, A.code).issued_pp], [12, 7, 5], "dispenser พัสดุ sets A back to 12 (7/5) — final state used below");
+
+    // ---- issueDone: LAB first ----
+    expectErr(await api("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 1 }, DS), "FORBIDDEN", "dispenser พัสดุ cannot mark LAB done");
+    expectErr(await api("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 2 }, DL), "BAD_REQUEST", "issueDone: done must be 0|1");
+    expectErr(await api("issueDone", { pcu: "PCU03", month: CUR, unit: "ห้องเก็บ", done: 1 }, ADM2), "BAD_REQUEST", "issueDone: unknown unit");
+    expectErr(await api("issueDone", { pcu: "PCU05", month: CUR, unit: "LAB", done: 1 }, ADM2), "BAD_REQUEST", "issueDone for a unit with no requested lines → BAD_REQUEST");
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 1 }, DL);
+    const U = r.issue.units;
+    ok(U.LAB.done && U.LAB.done_at && U.LAB.done_by === D_LAB && U.LAB.needed && U.LAB.lines === 1, "issue.units.LAB done (done_at, done_by = dispenser)");
+    eq([r.issue.units_total, r.issue.units_done, r.issue.done, r.request.status], [3, 1, false, "submitted"], "status stays submitted while พัสดุ / จ่ายกลาง are pending");
+    eq(Object.keys(U).sort(), ["LAB", "จ่ายกลาง", "พัสดุ"].sort(), "issue.units has one entry per unit");
+    ok(["needed", "done", "done_at", "done_by", "lines", "issued_lines"].every((k) => k in U["พัสดุ"]), "issue.units[unit] shape {needed,done,done_at,done_by,lines,issued_lines}");
+    eq([U["พัสดุ"].lines, U["พัสดุ"].issued_lines, U["จ่ายกลาง"].lines, U["จ่ายกลาง"].issued_lines], [2, 2, 1, 0], "units: พัสดุ 2 lines / 2 issued · จ่ายกลาง 1 line / 0 issued");
+
+    // PCU side: lines of the done unit are locked, other pages still editable (CONFLICT rule of 2a)
+    const labLine = (stock) => ({ [LABI.code]: { stock, op: 3, pp: 2, updated_at: tsn() } });
+    expectErr(await api("saveLines", { month: CUR, lines: labLine(9) }, P3), "CONFLICT", "PCU cannot change a LAB line after LAB is issued → CONFLICT");
+    ok((await api("saveLines", { month: CUR, lines: labLine(1) }, P3)).ok, "…re-saving the same LAB values is fine");
+    const aPcu = (await api("saveLines", { month: CUR, lines: { [A.code]: { stock: 7, op: 10, pp: 5, updated_at: tsn() } } }, P3));
+    ok(aPcu.ok && aPcu.data.status === "submitted", "PCU can still change a P1 line (its unit is not done)");
+    let pb2 = await mustOk("pcuBootstrap", {}, P3);
+    let m3 = pb2.byMonth[CUR];
+    eq(Object.keys(m3.request.issued), [LABI.code], "PCU request.issued has only the done unit's lines");
+    eq(m3.request.issued[LABI.code], { total: 5, op: 3, pp: 2, reason: null, note: null }, "PCU request.issued[code] = {total,op,pp,reason,note}");
+    eq(Object.keys(m3.request.lines[LABI.code]).sort(), ["op", "pp", "stock", "updated_at"], "PCU request.lines unchanged (no issued fields, Q78)");
+    ok(m3.issue && m3.issue.units.LAB.done && m3.issue.units["พัสดุ"].done === false && m3.issue.units.LAB.done_by === null, "PCU IssueInfo.units present; done_by hidden from PCU");
+    eq([m3.issue.complete, m3.issue.incomplete, m3.issue.units["พัสดุ"].issued_lines], [1, 0, 0], "PCU IssueInfo counts only done units (พัสดุ figures not leaked)");
+    eq(pb2.issue_notices, [], "no notice yet (status not issued)");
+    eq((await mustOk("pcuGetMonth", { month: CUR }, P3)).request.issued, m3.request.issued, "pcuGetMonth carries request.issued too");
+    eq((await mustOk("pcuBootstrap", {}, P4)).byMonth[CUR].request.issued, undefined, "a request with no issue_status rows has no request.issued");
+
+    // ---- the remaining units → issued ----
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "พัสดุ", done: 1 }, DS);
+    eq([lineOf(r, A.code).issued_total, lineOf(r, B.code).issued_total, r.request.status], [12, 4, "submitted"], "พัสดุ done keeps existing figures (A 12), still submitted");
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "จ่ายกลาง", done: 1 }, DS);
+    eq(lineOf(r, CSI.code).issued_total, 2, "marking done fills still-empty requested lines with the requested qty (CS 2)");
+    eq([r.request.status, r.issue.done, r.issue.units_done, r.request.issued_seen_at], ["issued", true, 3, null], "all needed units done → status issued, issued_seen_at null");
+    eq([r.issue.complete, r.issue.incomplete], [3, 1], "IssueInfo: 3 complete (B, CS, LAB) · 1 incomplete (A)");
+    ok(r.request.submitted_at === sub3.submitted_at, "submitted_at untouched by issuing");
+    pb2 = await mustOk("pcuBootstrap", {}, P3);
+    m3 = pb2.byMonth[CUR];
+    eq(pb2.issue_notices, [{ month: CUR, complete: 3, incomplete: 1 }], "issue_notices lists the month (3 complete / 1 incomplete)");
+    eq(m3.request.status, "issued", "PCU sees status issued");
+    eq(Object.keys(m3.request.issued).sort(), [A.code, B.code, CSI.code, LABI.code].sort(), "request.issued now has all four lines");
+    eq(m3.request.issued[A.code], { total: 12, op: 7, pp: 5, reason: "out_of_stock", note: null }, "request.issued[A] shows the short line with its reason");
+    ok((await mustOk("pcuAck", { month: CUR }, P3)).issued_seen_at, "pcuAck");
+    pb2 = await mustOk("pcuBootstrap", {}, P3);
+    eq([pb2.issue_notices, pb2.byMonth[CUR].request.status, !!pb2.byMonth[CUR].issue.issued_seen_at], [[], "issued", true], "pcuAck clears the notice; status stays issued");
+
+    // ---- undo / redo ----
+    expectErr(await api("issueDone", { pcu: "PCU03", month: CUR, unit: "พัสดุ", done: 0 }, DL), "FORBIDDEN", "undo follows the unit rule (LAB dispenser cannot undo พัสดุ)");
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 0 }, DL);
+    eq([r.request.status, r.issue.units.LAB.done, r.issue.units_done, r.issue.done], ["submitted", false, 2, false], "issueDone LAB=0 → status back to submitted");
+    ok(r.request.submitted_at === sub3.submitted_at && r.request.first_submitted_at === sub3.first_submitted_at, "undo keeps submitted_at / first_submitted_at");
+    eq(lineOf(r, LABI.code).issued_total, 5, "undo keeps the issued figures (only the done flag goes)");
+    pb2 = await mustOk("pcuBootstrap", {}, P3);
+    eq([pb2.byMonth[CUR].request.status, Object.keys(pb2.byMonth[CUR].request.issued).includes(LABI.code), pb2.issue_notices], ["submitted", false, []], "PCU: status submitted, LAB figures hidden again, no notice");
+    ok((await api("saveLines", { month: CUR, lines: labLine(3) }, P3)).ok, "PCU may change the LAB page again after the undo");
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 1 }, ADM2);
+    eq([r.request.status, r.request.issued_seen_at], ["issued", null], "re-marking LAB done → issued again, notice re-armed (issued_seen_at null)");
+    eq((await mustOk("pcuBootstrap", {}, P3)).issue_notices.length, 1, "notice shown again");
+    r = await mustOk("issueDone", { pcu: "PCU03", month: CUR, unit: "LAB", done: 1 }, ADM2);
+    eq([r.request.status, r.issue.units_done], ["issued", 3], "issueDone is idempotent");
+    r = await mustOk("issueDone", { pcu: "PCU05", month: CUR, unit: "พัสดุ", done: 1 }, ADM2);
+    eq([r.request.status, r.issue.units_total, lineOf(r, A.code).issued_total], ["issued", 1, 1], "a request needing one unit is issued as soon as it is done (PCU05)");
+
+    // ---- dispenser time window ----
+    const lab5 = { [LABI.code]: { issued_total: 5 } };
+    const win = (action, params, tok, month) => api(action, { pcu: "PCU03", month: CUR, ...params }, tok, { month });
+    expectErr(await win("issueLines", { lines: lab5 }, DL, "2027-01"), "FORBIDDEN", "dispenser two months after the request month → FORBIDDEN");
+    const wm = await win("issueLines", { lines: lab5 }, DL, "2027-01");
+    ok(/หมดเวลา/.test(wm.error.message), "window error message says the time is over (หมดเวลา…)");
+    expectErr(await win("issueDone", { unit: "LAB", done: 0 }, DL, "2027-01"), "FORBIDDEN", "undo outside the window → FORBIDDEN");
+    expectErr(await win("issueAll", { unit: "LAB" }, DL, "2027-01"), "FORBIDDEN", "issueAll outside the window → FORBIDDEN");
+    expectErr(await api("issueItem", { month: CUR, item_code: LABI.code, entries: { PCU03: { issued_total: 5 } } }, DL, { month: "2027-01" }), "FORBIDDEN", "issueItem outside the window → FORBIDDEN");
+    ok((await win("issueLines", { lines: lab5 }, ADM2, "2027-01")).ok, "admin is not limited by the window");
+    ok((await win("issueLines", { lines: lab5 }, DL, "2026-12")).ok, "dispenser still allowed in the month after the request month");
+    ok((await api("adminItemIssue", { month: CUR, item_code: LABI.code }, DL, { month: "2027-01" })).ok, "reading (adminItemIssue) is never time-limited");
+
+    // ---- issueItem across PCUs + adminItemIssue ----
+    const ie = (entries, tok = ADM2, code = LABI.code) => api("issueItem", { month: CUR, item_code: code, entries }, tok);
+    expectErr(await ie({ PCU03: { issued_total: 5 } }, DL, A.code), "FORBIDDEN", "issueItem: item of another unit → FORBIDDEN for a dispenser");
+    expectErr(await ie({ PCU04: { issued_total: 99 }, PCU03: { issued_total: 1, reason: "out_of_stock" } }), "BAD_REQUEST", "issueItem: an over-request entry rejects the call");
+    eq((await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2)).request.lines[LABI.code].issued_total, 5, "…and no PCU was touched (atomic)");
+    expectErr(await ie({}), "BAD_REQUEST", "issueItem: empty entries → BAD_REQUEST");
+    expectErr(await api("issueItem", { month: CUR, item_code: "ZZ-99", entries: { PCU03: { issued_total: 1 } } }, ADM2), "BAD_REQUEST", "issueItem: unknown item");
+    const ii = await mustOk("issueItem", { month: CUR, item_code: LABI.code, entries: {
+      PCU03: { issued_total: 3, reason: "other", note: "ส่งไม่ทัน" }, PCU04: { issued_total: 0, reason: "out_of_stock" },
+      PCU05: { issued_total: 1 }, PCU12: { issued_total: 1 }, PCU99: { issued_total: 1 },
+    } }, DL);
+    eq(ii.updated, ["PCU03", "PCU04"], "issueItem: updated = PCUs that requested the item");
+    eq(ii.skipped.map((s) => s.pcu).sort(), ["PCU05", "PCU12", "PCU99"], "issueItem: skipped = no request / item not requested / unknown PCU (not an error)");
+    ok(ii.skipped.every((s) => s.why) && ii.skipped.find((s) => s.pcu === "PCU05").why !== ii.skipped.find((s) => s.pcu === "PCU12").why, "issueItem: each skip carries a Thai reason");
+    const g3 = (await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2)).request.lines[LABI.code];
+    const g4 = (await mustOk("adminGetRequest", { pcu: "PCU04", month: CUR }, ADM2)).request.lines[LABI.code];
+    eq([g3.issued_total, g3.issued_op, g3.issued_pp, g3.issue_reason, g3.issue_note, g3.issued_by], [3, 1, 2, "other", "ส่งไม่ทัน", D_LAB], "issueItem PCU03: 3 of 3/2 → 1/2, reason other + note, issued_by dispenser");
+    eq([g4.issued_total, g4.issued_op, g4.issued_pp, g4.issue_reason], [0, 0, 0, "out_of_stock"], "issueItem PCU04: set to 0, out of stock (ตัดรายการ)");
+    const ai = await mustOk("adminItemIssue", { month: CUR, item_code: LABI.code }, DL);
+    eq([ai.item.code, ai.item.name, ai.item.unit, ai.item.price, ai.item.dispense_unit, ai.item.step], [LABI.code, LABI.name, LABI.unit, LABI.price, "LAB", "LAB"], "adminItemIssue.item {code,name,unit,price,dispense_unit,step}");
+    eq(ai.rows.map((x) => x.pcu), ["PCU03", "PCU04"], "adminItemIssue: one row per PCU that requested the item");
+    eq(ai.rows[0], { pcu: "PCU03", pcu_name: ai.rows[0].pcu_name, status: "issued", op: 3, pp: 2, requested: 5, issued_total: 3, issued_op: 1, issued_pp: 2, reason: "other", note: "ส่งไม่ทัน", unit_done: true }, "adminItemIssue row shape (PCU03, LAB unit done)");
+    ok(ai.rows[0].pcu_name && ai.rows[1].status === "submitted" && ai.rows[1].unit_done === false && ai.rows[1].requested === 6, "adminItemIssue: PCU04 row (submitted, unit not done)");
+    expectErr(await api("adminItemIssue", { month: CUR, item_code: A.code }, DL), "FORBIDDEN", "adminItemIssue: item of another unit → FORBIDDEN for a dispenser");
+    const aiA = await mustOk("adminItemIssue", { month: CUR, item_code: A.code }, ADM2);
+    eq(aiA.rows.map((x) => x.pcu), ["PCU03", "PCU04", "PCU05"], "adminItemIssue (admin): all PCUs that requested A");
+    eq(aiA.rows.map((x) => x.unit_done), [true, false, true], "adminItemIssue.unit_done per request (พัสดุ done on PCU03 and PCU05)");
+    expectErr(await api("adminItemIssue", { month: CUR, item_code: "ZZ-99" }, ADM2), "BAD_REQUEST", "adminItemIssue: unknown item");
+    expectErr(await api("adminItemIssue", { month: "x", item_code: A.code }, ADM2), "BAD_REQUEST", "adminItemIssue: bad month");
+    const dsp4 = await mustOk("issueAll", { pcu: "PCU04", month: CUR }, DS);
+    eq([lineOf(dsp4, A.code).issued_total, dsp4.issue.units.LAB.issued_lines], [2, 1], "dispenser พัสดุ+จ่ายกลาง issueAll(no unit) on PCU04 fills A but never LAB");
+
+    // ---- adminRequests / adminGetRequest shape ----
+    const ar = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests;
+    const q3 = ar.find((x) => x.pcu === "PCU03");
+    eq(Object.keys(q3.issue).sort(), ["complete", "done", "incomplete", "issued_seen_at", "units", "units_done", "units_total"].sort(), "adminRequests[].issue keys");
+    eq([q3.issue.units_total, q3.issue.units_done, q3.issue.done, q3.status], [3, 3, true, "issued"], "adminRequests PCU03: 3/3 units done, status issued");
+    ok(q3.issue.units.LAB.done_by === ADMIN_EMAIL && q3.issue.units["พัสดุ"].done_by === D_STORE, "adminRequests: units carry done_by (staff view)");
+    const q4 = ar.find((x) => x.pcu === "PCU04");
+    eq([q4.issue.units_done, q4.issue.units_total, q4.issue.units.LAB.needed, q4.issue.units["จ่ายกลาง"].needed, q4.status], [0, 2, true, false, "submitted"], "adminRequests PCU04: 0 of 2 needed units done");
+    await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 3, op: null, pp: null, updated_at: tsn() } } }, await login("PCU08"));
+    const q8 = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests.find((x) => x.pcu === "PCU08");
+    eq(q8.issue, null, "adminRequests: issue is null when the request has no requested lines");
+    eq((await mustOk("adminRequests", { month: PREV }, ADM2)).requests.every((x) => x.issue === null || typeof x.issue.units_total === "number"), true, "adminRequests{month: previous} carries issue too");
+    const g = await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM2);
+    eq([g.issue.units_done, g.issue.done, g.issue.units_total], [3, true, 3], "adminGetRequest.issue");
+    const gd = await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, DL);
+    ok(gd.issue.units_total === 3 && Object.keys(gd.request.lines).every((c) => seedItems.find((i) => i.code === c).unit_of === "LAB"), "adminGetRequest for a dispenser: issue covers all units, lines only its own");
+    eq((await mustOk("adminGetRequest", { pcu: "PCU12", month: CUR }, ADM2)).issue, null, "adminGetRequest without a request → issue null");
+
+    // ---- Excel export carries the issued columns ----
+    {
+      const xr = await get(`/api/export.xlsx?month=${CUR}`, { authorization: "Bearer " + ADM2 });
+      eq(xr.status, 200, "export.xlsx after issuing → 200");
+      const wb = XLSX.read(Buffer.from(await xr.arrayBuffer()), { type: "buffer" });
+      const s1 = XLSX.utils.sheet_to_json(wb.Sheets["รายบรรทัด"], { header: 1 });
+      eq(s1[0].slice(12, 17), ["จ่ายจริง OP", "จ่ายจริง PP", "จ่ายจริงรวม", "เหตุผล", "สถานะ"], "export line sheet: issued headers");
+      const ra = s1.find((x) => x[1] === "PCU03" && x[4] === A.code), rl = s1.find((x) => x[1] === "PCU03" && x[4] === LABI.code), r4 = s1.find((x) => x[1] === "PCU04" && x[4] === LABI.code);
+      eq([ra[12], ra[13], ra[14], ra[15], ra[16]], [7, 5, 12, "ของหมด/รอจัดซื้อ", "จ่ายแล้ว"], "export: PCU03 A → issued 7/5 = 12, reason ของหมด/รอจัดซื้อ, status จ่ายแล้ว");
+      eq([rl[12], rl[13], rl[14], rl[15]], [1, 2, 3, "ส่งไม่ทัน"], "export: reason 'other' prints the typed note");
+      eq([r4[12], r4[13], r4[14], r4[16]], [0, 0, 0, "ส่งแล้ว"], "export: an issued-0 line is exported (0/0/0) on a still-submitted request");
+      const s2 = XLSX.utils.sheet_to_json(wb.Sheets["รพ.สต. × รายการ"], { header: 1 });
+      const at = s2.findIndex((x) => x[0] && String(x[0]).startsWith("จำนวนที่จ่ายจริง"));
+      const rowA2 = s2.slice(at).find((x) => x[0] === A.code);
+      ok(at > 0 && rowA2 && rowA2[rowA2.length - 1] >= 12 + 2, "export sheet 2: second block (จ่ายจริง) has A ≥ 12 + 2");
+      let expBaht = 0;
+      for (const pc of ["PCU03", "PCU04", "PCU05"]) {
+        const lines = (await mustOk("adminGetRequest", { pcu: pc, month: CUR }, ADM2)).request.lines;
+        for (const l of Object.values(lines)) expBaht += ((l.issued_op || 0) + (l.issued_pp || 0)) * (l.price_snapshot || 0);
+      }
+      const s3 = XLSX.utils.sheet_to_json(wb.Sheets["สรุปเงินต่อ รพ.สต."], { header: 1 });
+      const tot = s3[s3.length - 1];
+      ok(tot[10] > 0 && near(tot[10], expBaht, 0.05), `export sheet 3: จ่ายจริงรวม = Σ issued × price_snapshot (${Math.round(expBaht * 100) / 100})`);
+    }
+
+    // ---- audit ----
+    {
+      const a = (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries;
+      for (const act of ["issue_lines", "issue_all", "issue_done", "issue_item"]) ok(a.some((e) => e.action === act), `audit has "${act}"`);
+      const dl = a.find((e) => e.action === "issue_lines" && e.actor === D_LAB);
+      ok(dl && dl.role === "dispenser" && dl.pcu === "PCU03" && dl.month === CUR && dl.detail.includes(LABI.code), "audit: issue_lines by the dispenser (actor, role, pcu, month, detail)");
+      ok(a.some((e) => e.action === "issue_done" && e.detail.includes("status=issued") && e.detail.includes("done=1")), "audit: issue_done records the resulting status");
+      ok(a.filter((e) => e.action === "issue_item").length === 2, "audit: issue_item has one row per updated PCU");
+    }
+
+    // ---- clean up ----
+    ok((await api("adminUsersRemove", { email: D_LAB }, ADM2)).ok && (await api("adminUsersRemove", { email: D_STORE }, ADM2)).ok, "temporary dispensers removed again");
+    ok((await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2)).deleted_issue_status >= 4, "adminClearTrial wipes issue_status rows too");
+  }
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("form editor (2d)");

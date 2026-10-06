@@ -12,7 +12,7 @@ import {
   computeDeadline, currentMonth, fyMonths, isDate, isMonth, monthFy, nowIso, prevMonth,
 } from "./time.js";
 import {
-  LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, requestId, requestObj, roundInfo,
+  LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, roundInfo,
 } from "./views.js";
 import { runBackup } from "./backup.js";
 
@@ -264,14 +264,18 @@ export async function adminRequests(ctx, p) {
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
 
-  const [reqRes, lineRes, hidRes, roundRows] = await Promise.all([
+  const [reqRes, lineRes, hidRes, roundRows, doneRes] = await Promise.all([
     DB.prepare(`SELECT ${REQ_COLS.split(",").map((c) => "r." + c).join(",")}, p.name AS pcu_name FROM requests r LEFT JOIN pcus p ON p.code = r.pcu
                 WHERE r.month IN (${ph}) ORDER BY r.month DESC, r.pcu`).bind(...months).all(),
-    DB.prepare(`SELECT request_id, item_code, stock, op, pp, price_snapshot FROM request_lines
+    DB.prepare(`SELECT request_id, item_code, stock, op, pp, price_snapshot, issued_total FROM request_lines
                 WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
     DB.prepare(`SELECT pcu, COUNT(*) AS n FROM hidden_items GROUP BY pcu`).all(),
     getRoundRows(DB, months),
+    DB.prepare(`SELECT request_id, dispense_unit, done_at, done_by FROM issue_status
+                WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
   ]);
+  const doneBy = new Map();
+  for (const d of doneRes.results) { if (!doneBy.has(d.request_id)) doneBy.set(d.request_id, []); doneBy.get(d.request_id).push(d); }
   const hiddenN = new Map(hidRes.results.map((r) => [r.pcu, r.n]));
   const byReq = new Map();
   for (const l of lineRes.results) { if (!byReq.has(l.request_id)) byReq.set(l.request_id, []); byReq.get(l.request_id).push(l); }
@@ -299,6 +303,7 @@ export async function adminRequests(ctx, p) {
       items_requested: items, stock_filled: filled, stock_required: Math.max(0, activeN - (hiddenN.get(r.pcu) || 0)),
       lines: lines.length, qty_op: qop, qty_pp: qpp, baht: round2(baht), last_step: r.last_step || "",
     };
+    obj.issue = issueInfoFrom(form, r.issued_seen_at, lines, doneBy.get(r.id) || []); // 2c (null when no requested lines)
     requests.push(obj);
   }
   return {
@@ -315,6 +320,11 @@ export async function adminGetRequest(ctx, p) {
   const bound = reqRow && reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null;
   const form = bound || (await latestForm(DB, monthFy(p.month)));
   let lines = reqRow ? await getLines(DB, reqRow.id) : [];
+  let issue = null;
+  if (reqRow) { // 2c: computed from ALL lines, before a dispenser's own-unit filtering
+    const { results: done } = await DB.prepare(`SELECT dispense_unit, done_at, done_by FROM issue_status WHERE request_id = ?`).bind(reqRow.id).all();
+    issue = issueInfoFrom(form, reqRow.issued_seen_at, lines, done);
+  }
   if (who.role === "dispenser" && form) {
     // dispensers only see the pages of their own dispense units
     lines = lines.filter((l) => {
@@ -325,6 +335,7 @@ export async function adminGetRequest(ctx, p) {
   const { results: hid } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcuRow.code).all();
   return {
     request: reqRow ? requestObj(reqRow, lines, true) : null,
+    issue,
     pcu: { code: pcuRow.code, name: pcuRow.name, print_name: pcuRow.print_name || pcuRow.name, group: pcuRow.grp },
     hidden: hid.map((r) => r.item_code),
     form_version_id: form ? form.id : null,
