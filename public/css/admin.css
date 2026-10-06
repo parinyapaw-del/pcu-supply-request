@@ -323,3 +323,41 @@
   .t10-foot-btns { flex-wrap: nowrap; gap: 6px; }
   .t10-foot-btns .btn { min-height: 38px; padding: 4px 8px; font-size: 0.8rem; white-space: normal; line-height: 1.2; }
 }
+
+/* ---- tab 11: นำเข้า / เปิดปีงบใหม่ (2e) ---- */
+.t11-steps { display: flex; gap: 6px; flex-wrap: wrap; list-style: none; padding: 0; margin: 10px 0 0; }
+.t11-steps li { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 0.88rem; background: var(--surface); }
+.t11-steps li.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.t11-steps li.done { color: var(--success); }
+.t11-step-no { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--muted-bg); font-size: 0.75rem; }
+.t11-steps li.active .t11-step-no { background: var(--accent); color: var(--accent-contrast); }
+.t11-fy-input { width: 96px; }
+.t11-src-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0; }
+.t11-src { border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+.t11-src h4 { margin: 0 0 8px; }
+.t11-src input[type="file"] { max-width: 100%; }
+.t11-nav { margin-top: 14px; }
+.t11-details { margin: 8px 0; }
+.t11-details summary { cursor: pointer; color: var(--accent); }
+.t11-warn-list, .t11-sum { margin: 4px 0 8px; padding-left: 20px; }
+.t11-counts { font-size: 0.85rem; color: var(--muted); }
+.t11-map-table td { vertical-align: top; }
+.t11-map-table .name-cell { min-width: 200px; }
+.t11-sel-cell { min-width: 260px; }
+.t11-sel { max-width: 360px; width: 100%; min-height: 34px; font-size: 0.85rem; }
+.t11-kind { display: inline-block; margin: 0 0 4px; }
+.t11-cur { color: var(--muted); margin-top: 3px; max-width: 360px; }
+.t11-ok-cell { text-align: center; }
+.t11-ok-cell input { width: 20px; height: 20px; }
+.admin-table tr.t11-todo td { background: var(--warn-bg); }
+.admin-table tr.t11-dup td { background: var(--danger-bg); }
+.t11-mark { text-align: center; font-weight: 700; }
+#t11-plan-tbl td.small { white-space: nowrap; }
+.t11-mode { font-size: 1rem; }
+@media (max-width: 600px) {
+  .t11-src-grid { grid-template-columns: 1fr; }
+  .t11-steps li { padding: 4px 8px; font-size: 0.8rem; }
+  .t11-sel-cell { min-width: 220px; }
+  .t11-map-table .name-cell { min-width: 160px; }
+  .t11-nav .btn { flex: 1 1 auto; }
+}
