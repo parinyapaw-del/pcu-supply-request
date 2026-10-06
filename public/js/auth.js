@@ -7,7 +7,7 @@ export function isLoggedIn() {
 }
 
 // The PCU code carried by the current token, WITHOUT re-verifying it server-side — for routing/UI
-// only (which PCU's page to show before pcuBootstrap confirms it). Never trust for authorization.
+// only. Never trust for authorization.
 export function tokenPcuCode() {
   const payload = decodeTokenPayload(getPcuToken());
   return payload && payload.t === "pcu" ? payload.pcu : null;
@@ -18,6 +18,7 @@ export async function fetchPcuList() {
   return data.pcus;
 }
 
+// pcuLogin returns { token, exp, pcu, bootstrap } (functions/API.md §4).
 export async function login(pcu, pin) {
   const data = await call("pcuLogin", { pcu, pin });
   setPcuToken(data.token, data.exp);

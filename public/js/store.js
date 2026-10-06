@@ -1,10 +1,9 @@
-// Safe localStorage primitives + tiny per-viewer preferences (last PCU used).
-// Every read/write is wrapped in try/catch with an in-memory fallback so the app keeps working
-// (for the current page load) if storage throws (private browsing, quota exceeded, disabled, ...).
-// Request data itself is NOT stored here anymore (phase 1.5: server is the source of truth) —
-// see js/sync.js for the online-save layer + its local "dirty lines" mirror, which reuses these
-// primitives.
-import { LAST_PCU_KEY } from "./constants.js";
+// Safe localStorage primitives + tiny per-viewer preferences (last PCU used) + the cached login
+// bootstrap (offline resume). Every read/write is wrapped in try/catch with an in-memory fallback so the
+// app keeps working (for the current page load) if storage throws (private browsing, quota exceeded, ...).
+// Request data itself is NOT stored here (the server is the source of truth) — see js/sync.js for the
+// online-save layer + its local "dirty lines" mirror, which reuses these primitives.
+import { LAST_PCU_KEY, STORAGE_PREFIX } from "./constants.js";
 
 const memoryFallback = new Map();
 let storageBroken = false;
@@ -79,4 +78,16 @@ export function getLastPcu() {
 }
 export function setLastPcu(pcuCode) {
   safeSet(LAST_PCU_KEY, pcuCode);
+}
+
+// ---- cached bootstrap (offline resume; one per PCU — never contains PIN/token) ----
+const BOOT_PREFIX = STORAGE_PREFIX + "bootstrap:";
+export function getCachedBootstrap(pcuCode) {
+  return getJSON(BOOT_PREFIX + pcuCode, null);
+}
+export function setCachedBootstrap(pcuCode, boot) {
+  setJSON(BOOT_PREFIX + pcuCode, boot);
+}
+export function clearCachedBootstraps() {
+  safeKeys().filter((k) => k.startsWith(BOOT_PREFIX)).forEach((k) => safeRemove(k));
 }

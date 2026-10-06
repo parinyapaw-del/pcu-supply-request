@@ -1,10 +1,9 @@
 // js/admin/login.js — admin sign-in screen: Google Identity Services + backup password + a
 // dev-only email box (GIS's OAuth client only allows the github.io origin, so it cannot complete
-// on localhost; the dev box calls adminLoginGoogle with "dev:<email>", which tools/gas_mock.mjs's
-// mocked tokeninfo endpoint accepts as that email — see API.md "Local dev server").
+// on localhost; the dev box calls adminLoginGoogle with "dev:<email>", which the local dev API accepts when DEV_FAKE_GOOGLE=1 — see functions/API.md §2).
 import { call, ApiError, setAdminToken } from "../api.js";
 import { GOOGLE_CLIENT_ID } from "../constants.js";
-import { el, escapeHtml } from "./util.js";
+import { el, formatBangkokDateTime } from "./util.js";
 
 const GIS_SRC = "https://accounts.google.com/gsi/client";
 let gisLoadPromise = null;
@@ -37,7 +36,7 @@ export function mountLogin(root, { onLoggedIn, initialError } = {}) {
   const wrap = el("div", { class: "admin-login-wrap" });
   const card = el("div", { class: "admin-login-card" });
   card.appendChild(el("h1", {}, "เข้าสู่ระบบผู้ดูแล"));
-  card.appendChild(el("p", { class: "muted" }, "ระบบเบิกวัสดุ รพ.สต. — รอบทดลอง 1.5"));
+  card.appendChild(el("p", { class: "muted" }, "ระบบเบิกวัสดุ รพ.สต. — ผู้ดูแล / ผู้จ่าย"));
 
   if (initialError) {
     card.appendChild(el("p", { class: "admin-err-text" }, initialError));
@@ -65,7 +64,7 @@ export function mountLogin(root, { onLoggedIn, initialError } = {}) {
       onLoggedIn && onLoggedIn();
     } catch (err) {
       if (err instanceof ApiError) {
-        if (err.code === "FORBIDDEN") showError("บัญชีนี้ไม่มีสิทธิ์ผู้ดูแลระบบ — ติดต่อ parinya.paw@gmail.com");
+        if (err.code === "FORBIDDEN") showError("บัญชีนี้ไม่มีสิทธิ์ใช้งาน — ติดต่อผู้ดูแลระบบ (parinya.paw@gmail.com)");
         else showError(err.message || "เข้าสู่ระบบไม่สำเร็จ");
       } else {
         showError("เข้าสู่ระบบไม่สำเร็จ");
@@ -75,10 +74,15 @@ export function mountLogin(root, { onLoggedIn, initialError } = {}) {
 
   loadGis()
     .then(() => {
-      window.google.accounts.id.initialize({
-        client_id: GOOGLE_CLIENT_ID,
-        callback: (resp) => handleIdToken(resp.credential)
-      });
+      // initialize() may only run once per page load; later logins (after logout) reuse the latest callback
+      window.__adminGisCallback = handleIdToken;
+      if (!window.__adminGisInit) {
+        window.__adminGisInit = true;
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: (resp) => window.__adminGisCallback && window.__adminGisCallback(resp.credential)
+        });
+      }
       gsiHost.innerHTML = "";
       window.google.accounts.id.renderButton(gsiHost, { theme: "outline", size: "large", text: "signin_with" });
     })
@@ -113,7 +117,7 @@ export function mountLogin(root, { onLoggedIn, initialError } = {}) {
       backupMsg.style.display = "";
       if (err instanceof ApiError) {
         if (err.code === "BAD_PASSWORD") backupMsg.textContent = `รหัสผ่านไม่ถูกต้อง (เหลือ ${err.remaining ?? "?"} ครั้ง)`;
-        else if (err.code === "LOCKED") backupMsg.textContent = `ถูกล็อกชั่วคราว — ลองใหม่หลัง ${escapeHtml(err.until || "")}`;
+        else if (err.code === "LOCKED") backupMsg.textContent = `ถูกล็อกชั่วคราว — ลองใหม่หลัง ${formatBangkokDateTime(err.until)}`;
         else if (err.code === "NOT_FOUND") backupMsg.textContent = "ยังไม่ได้ตั้งรหัสผ่านสำรอง — เข้าด้วย Google ก่อนแล้วตั้งในหน้า \"ระบบ\"";
         else backupMsg.textContent = err.message || "เข้าสู่ระบบไม่สำเร็จ";
       } else {

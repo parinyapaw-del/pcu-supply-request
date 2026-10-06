@@ -1,481 +1,787 @@
 #!/usr/bin/env node
-// test_api.mjs — plain-assert test suite for the apps-script backend, run through gas_mock.mjs
-// against a FRESH in-memory instance (never touches tools/.devstate.json). No test framework:
-// prints "PASS ..." / "FAIL ..." lines and exits non-zero if anything failed.
+// test_api.mjs — plain-assert HTTP test suite for the Cloudflare Pages Functions backend (phase 2a).
+// Prints "PASS …" / "FAIL …" lines and exits non-zero if anything failed.
 //
-// Usage: node webapp/tools/test_api.mjs
-
+//   npm test                          (starts `wrangler pages dev` itself if nothing listens on API_BASE)
+//   API_BASE=http://localhost:8788 node tools/test_api.mjs     (use an already running `npm run dev`)
+//
+// WARNING: the suite calls the dev-only action `devReset`, which WIPES the database it talks to.
+// Needs DEV_FAKE_GOOGLE=1 in .dev.vars (dev:<email> id_tokens, devReset, X-Dev-Month header).
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createRuntime, freshState } from "./gas_mock.mjs";
+import XLSX from "xlsx";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WEBAPP_DIR = path.resolve(__dirname, "..");
-const APPS_SCRIPT_DIR = path.join(WEBAPP_DIR, "apps-script");
-const SEED_PATH = path.resolve(WEBAPP_DIR, "..", "phase15_seed", "seed_2568.json");
+const REPO = path.resolve(__dirname, "..");
+const BASE = (process.env.API_BASE || "http://localhost:8788").replace(/\/$/, "");
+const CUR = "2026-11", PREV = "2026-10", NEXT = "2026-12"; // pinned "current month" (X-Dev-Month) → deterministic fiscal-year edges
+const ADMIN_EMAIL = "parinya.paw@gmail.com";
 
+// ---- dev vars ------------------------------------------------------------------------------------------------------
+function readDevVars() {
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(path.join(REPO, ".dev.vars"), "utf8").split("\n")) {
+      const m = /^([A-Z_]+)=(.*)$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+  } catch { /* fine */ }
+  return out;
+}
+const DEV = readDevVars();
+const BACKUP_KEY = process.env.BACKUP_KEY || DEV.BACKUP_KEY || "dev-backup-key";
+const TOKEN_SECRET = process.env.TOKEN_SECRET || DEV.TOKEN_SECRET || "";
+
+// ---- tiny assert framework -----------------------------------------------------------------------------------------
 let pass = 0, fail = 0;
 function ok(cond, label) {
-  if (cond) { pass++; console.log("PASS " + label); }
-  else { fail++; console.log("FAIL " + label); }
+  if (cond) { pass++; console.log("PASS " + label); } else { fail++; console.log("FAIL " + label); }
 }
-function okEq(actual, expected, label) {
+function eq(actual, expected, label) {
   const a = JSON.stringify(actual), e = JSON.stringify(expected);
   ok(a === e, label + (a === e ? "" : ` (got ${a}, expected ${e})`));
 }
+const near = (a, b, tol = 0.005) => typeof a === "number" && Math.abs(a - b) <= tol;
+function expectErr(res, code, label) {
+  ok(res && res.ok === false && res.error && res.error.code === code, `${label} → ${code}` + (res && res.error && res.error.code !== code ? ` (got ${res.error && res.error.code}: ${res.error && res.error.message})` : ""));
+}
+function section(t) { console.log("\n=== " + t + " ==="); }
 
-// ---------------------------------------------------------------------------------------------
-const state = freshState();
-const rt = createRuntime({ appsScriptDir: APPS_SCRIPT_DIR, state });
-
-function post(obj) {
-  const out = rt.call("doPost", { postData: { contents: JSON.stringify(obj), type: "text/plain" }, parameter: {} });
-  return JSON.parse(out.getContent());
+// ---- http ----------------------------------------------------------------------------------------------------------------
+let devMonth = CUR;
+async function api(action, params = {}, token, opts = {}) {
+  const res = await fetch(BASE + "/api", {
+    method: "POST",
+    headers: { "content-type": opts.json ? "application/json" : "text/plain;charset=utf-8", "x-dev-month": opts.month || devMonth },
+    body: JSON.stringify({ action, token, ...params }),
+  });
+  return res.json();
+}
+async function mustOk(action, params, token, label) {
+  const r = await api(action, params, token);
+  if (!r.ok) { console.log(`FAIL ${label || action} (unexpected ${r.error && r.error.code}: ${r.error && r.error.message})`); fail++; throw new Error("fatal: " + action); }
+  return r.data;
+}
+async function get(url, headers = {}) {
+  return fetch(BASE + url, { headers: { "x-dev-month": devMonth, ...headers } });
 }
 
-console.log("=== setup() ===");
-rt.call("setup");
-ok(fs.existsSync(path.join(APPS_SCRIPT_DIR, "_seed.html")), "seed file present (run tools/make_seed_html.py first)");
-
-const seed = JSON.parse(fs.readFileSync(SEED_PATH, "utf8"));
-
-// =================================================================================================
-console.log("\n=== pcuList / pcuLogin ===");
-{
-  const list = post({ action: "pcuList" });
-  ok(list.ok, "pcuList ok");
-  ok(Array.isArray(list.data.pcus) && list.data.pcus.length === 15, "pcuList returns 15 pcus");
-
-  const login = post({ action: "pcuLogin", pcu: "PCU01", pin: "12345" });
-  ok(login.ok, "pcuLogin PCU01 12345 ok");
-  ok(!!login.data.token && !!login.data.exp, "pcuLogin returns token+exp");
-  ok(login.data.pcu.code === "PCU01", "pcuLogin returns pcu info");
+// ---- token forging (tests that need an expired / tampered token) -------------------------------------------------------
+const b64u = (buf) => Buffer.from(buf).toString("base64url");
+function forgeToken(payload, secret = TOKEN_SECRET) {
+  const a = b64u(JSON.stringify(payload));
+  return a + "." + b64u(crypto.createHmac("sha256", secret).update(a).digest());
 }
 
-// =================================================================================================
-console.log("\n=== PIN lockout ===");
-{
-  let lastErr;
-  for (let i = 0; i < 5; i++) {
-    const r = post({ action: "pcuLogin", pcu: "PCU02", pin: "00000" });
-    lastErr = r;
+// ---- server lifecycle ------------------------------------------------------------------------------------------------------
+let server = null;
+async function reachable() {
+  try { const r = await fetch(BASE + "/api"); return r.ok; } catch { return false; }
+}
+async function ensureServer() {
+  if (await reachable()) { console.log(`using running server at ${BASE}`); return; }
+  const u = new URL(BASE);
+  if (!["localhost", "127.0.0.1"].includes(u.hostname)) throw new Error(`no server at ${BASE}`);
+  const state = path.join(REPO, ".wrangler", "test-state");
+  fs.rmSync(state, { recursive: true, force: true });
+  console.log(`starting wrangler pages dev on :${u.port || 8788} (persist: .wrangler/test-state) …`);
+  server = spawn("npx", ["wrangler", "pages", "dev", "public", "--local", "--port", String(u.port || 8788), "--persist-to", state], {
+    cwd: REPO, stdio: ["ignore", "pipe", "pipe"], detached: true,
+  });
+  let log = "";
+  server.stdout.on("data", (d) => (log += d)); server.stderr.on("data", (d) => (log += d));
+  for (let i = 0; i < 120; i++) {
+    if (await reachable()) return;
+    await new Promise((r) => setTimeout(r, 500));
   }
-  ok(!lastErr.ok && lastErr.error.code === "PIN_LOCKED" && !!lastErr.error.until, "5x wrong PIN -> PIN_LOCKED with until");
-
-  const stillLocked = post({ action: "pcuLogin", pcu: "PCU02", pin: "12345" });
-  ok(!stillLocked.ok && stillLocked.error.code === "PIN_LOCKED", "correct PIN still locked during lock window");
-
-  const adminTok0 = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const unlock = post({ action: "adminUnlockPin", token: adminTok0, pcu: "PCU02" });
-  ok(unlock.ok && unlock.data.ok === true, "adminUnlockPin ok");
-
-  const afterUnlock = post({ action: "pcuLogin", pcu: "PCU02", pin: "12345" });
-  ok(afterUnlock.ok, "pcuLogin works again after adminUnlockPin");
+  console.log(log.slice(-2000));
+  throw new Error("wrangler did not become ready");
+}
+function stopServer() {
+  if (server) { try { process.kill(-server.pid, "SIGTERM"); } catch { /* gone */ } }
 }
 
-// =================================================================================================
-console.log("\n=== token isolation (PCU01 cannot touch PCU02) ===");
-{
-  const tok1 = post({ action: "pcuLogin", pcu: "PCU01", pin: "12345" }).data.token;
-  // PCU actions take NO pcu parameter at all — token alone determines the pcu. Smuggling a `pcu`
-  // param must have zero effect: the write still lands on PCU01, never PCU02.
-  const save = post({ action: "saveLines", token: tok1, pcu: "PCU02", month: "2025-09", lines: { "P1-01": { stock: 1, op: 0, pp: 0, updated_at: new Date().toISOString() } } });
-  ok(save.ok && save.data.request.pcu === "PCU01", "saveLines with token=PCU01 always writes pcu=PCU01, ignoring a smuggled `pcu` param");
+// ---- fixture ---------------------------------------------------------------------------------------------------------------------
+const fyMonths = (fy) => { const out = []; let y = fy - 543 - 1, m = 10; for (let i = 0; i < 12; i++) { out.push(`${y}-${String(m).padStart(2, "0")}`); m++; if (m === 13) { m = 1; y++; } } return out; };
+const ceil = (x) => Math.ceil(x - 1e-9);
 
-  const boot2 = post({ action: "pcuBootstrap", token: post({ action: "pcuLogin", pcu: "PCU02", pin: "12345" }).data.token });
-  const pcu02SepLines = boot2.data.byRound["2025-09"].request;
-  ok(!pcu02SepLines || !pcu02SepLines.lines || !pcu02SepLines.lines["P1-01"] || pcu02SepLines.lines["P1-01"].stock !== 1,
-    "PCU02's own data was not touched by PCU01's saveLines call");
+function pct(sorted, q) { // linear interpolation percentile
+  const k = (sorted.length - 1) * q, f = Math.floor(k), c = Math.min(f + 1, sorted.length - 1);
+  return sorted[f] + (sorted[c] - sorted[f]) * (k - f);
 }
 
-// =================================================================================================
-console.log("\n=== pcuBootstrap shapes + numbers vs seed_2568.json ===");
-{
-  function expectedSep(pcu, code) {
-    const a = (seed.actual[pcu] || {})[code];
-    const stockArr = (seed.stock_sim[pcu] || {})[code];
-    const op = a ? a.op[10] : 0, pp = a ? a.pp[10] : 0;
-    const stock = stockArr ? stockArr[10] : 0;
-    const plan = (seed.plan[pcu] || {})[code] || null;
-    let usedFy = 0;
-    if (a) for (let i = 0; i <= 10; i++) usedFy += (a.op[i] || 0) + (a.pp[i] || 0);
-    return { op, pp, stock, plan, usedFy };
-  }
-
-  const samplePcus = ["PCU01", "PCU05", "PCU10"];
-  let allGood = true;
-  const details = [];
-  samplePcus.forEach((pcu) => {
-    const tok = post({ action: "pcuLogin", pcu, pin: pcu === "PCU02" ? "12345" : "12345" }).data.token;
-    const boot = post({ action: "pcuBootstrap", token: tok });
-    const codes = Object.keys(seed.actual[pcu] || {}).slice(0, 5);
-    codes.forEach((code) => {
-      const exp = expectedSep(pcu, code);
-      const gotItem = boot.data.byRound["2025-09"].prev.items[code] || { op: 0, pp: 0, stock: 0 };
-      const gotPlan = boot.data.byRound["2025-09"].plan[code] || null;
-      const gotUsedFy = boot.data.byRound["2025-09"].used_fy[code] || 0;
-      const good = gotItem.op === exp.op && gotItem.pp === exp.pp && gotItem.stock === exp.stock &&
-        JSON.stringify(gotPlan) === JSON.stringify(exp.plan) && gotUsedFy === exp.usedFy;
-      if (!good) { allGood = false; details.push({ pcu, code, exp, got: { item: gotItem, plan: gotPlan, usedFy: gotUsedFy } }); }
+function buildSyntheticSeed() {
+  const f = JSON.parse(fs.readFileSync(path.join(REPO, "public", "data", "form2569.json"), "utf8"));
+  const steps = f.steps.map((s) => ({
+    ...s,
+    dispense_unit: s.code === "CS" ? "จ่ายกลาง" : s.code === "LAB" ? "LAB" : "พัสดุ",
+    rows: s.rows.map((r) => (r.type === "item" ? { ...r, active: true } : r)),
+  }));
+  const items = steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
+  const plans70 = {}, plans69 = {}, actual = {}, stats = {}, limits = {};
+  const months69 = fyMonths(2569);
+  f.pcus.forEach((p, i) => {
+    plans70[p.code] = {}; plans69[p.code] = {}; actual[p.code] = {}; stats[p.code] = {}; limits[p.code] = {};
+    items.forEach((it, j) => {
+      let plan = null;
+      if ((i + j) % 4 === 0) { plan = [(j % 6) + 1, j % 3]; plans70[p.code][it.code] = plan; }
+      if ((i + j) % 3 === 0) plans69[p.code][it.code] = [(j % 5) + 2, 1];
+      let sums = null;
+      if ((i * 3 + j) % 5 === 0) {
+        const op = months69.map((_, m) => ((j + m) % 4 === 0 ? (j % 7) + 1 : 0));
+        const pp = months69.map((_, m) => (m % 5 === 0 ? 2 : 0));
+        actual[p.code][it.code] = { op, pp };
+        sums = op.map((v, m) => v + pp[m]);
+        const sorted = [...sums].sort((a, b) => a - b);
+        stats[p.code][it.code] = [pct(sorted, 0.5), pct(sorted, 0.9), sums.reduce((a, b) => a + b, 0)];
+      }
+      const st = stats[p.code][it.code];
+      if (plan || st) {
+        const d = defaultLimitRule(plan, st, 2570);
+        if (d.lm !== null || d.ly !== null) limits[p.code][it.code] = [d.lm, d.ly, d.source];
+      }
     });
   });
-  ok(allGood, "pcuBootstrap 2025-09 prev/plan/used_fy match seed for 3 pcus x 5 codes" + (allGood ? "" : " " + JSON.stringify(details.slice(0, 3))));
+  const prices = Object.fromEntries(items.map((it) => [it.code, Math.round(it.price * 0.9 * 100) / 100]));
+  return {
+    format: "pcu-supply-import/1", fy: 2570, generated_at: "2026-10-06T00:00:00Z", generated_by: "tools/test_api.mjs (synthetic)",
+    pcus: f.pcus,
+    form: { fy: 2570, note: "synthetic test form", steps },
+    plans: { 2570: plans70, 2569: plans69 },
+    prices_prev: { 2569: prices },
+    actual_prev: { 2569: { months: months69, data: actual } },
+    stats: { 2569: stats },
+    limits: { 2570: limits },
+    config: { fy_current: 2570, limit_mode: "warn", stock_required: 0, budget_op: 520000, budget_pp: 390000, budget_total: 910000, deadline_day: null },
+  };
+}
+// same rule as FORMAT.md / backend defaultLimit()
+function defaultLimitRule(plan, stat, fy) {
+  const yy = (n) => String(n % 100).padStart(2, "0");
+  const sum = plan ? plan[0] + plan[1] : 0;
+  const ly = sum > 0 ? ceil(sum) : null;
+  let lm = null, source = `plan${yy(fy)}`;
+  if (stat && stat[1] > 0) { lm = ceil(stat[1]); source = `stat${yy(fy - 1)}`; }
+  else if (ly) lm = ceil((ly / 12) * 2);
+  return { lm, ly, source };
 }
 
-// =================================================================================================
-console.log("\n=== saveLines upsert + LWW + last_step persisted across devices ===");
-{
-  const tokDeviceA = post({ action: "pcuLogin", pcu: "PCU03", pin: "12345" }).data.token;
-  const t1 = new Date(Date.now() - 60000).toISOString();
-  const save1 = post({ action: "saveLines", token: tokDeviceA, month: "2025-09", last_step: "P2", lines: { "P1-01": { stock: 5, op: 1, pp: 0, updated_at: t1 } } });
-  ok(save1.ok && save1.data.request.lines["P1-01"].stock === 5, "saveLines creates draft + line");
+// ====================================================================================================================================
+async function main() {
+  await ensureServer();
+  const realSeedPath = path.join(REPO, "seed", "seed_2570.json");
+  const useReal = fs.existsSync(realSeedPath) && process.env.FORCE_SYNTHETIC !== "1";
+  const seed = useReal ? JSON.parse(fs.readFileSync(realSeedPath, "utf8")) : buildSyntheticSeed();
+  console.log(`fixture: ${useReal ? "seed/seed_2570.json (real)" : "synthetic seed built from public/data/form2569.json"}`);
+  const pcuCodes = seed.pcus.map((p) => p.code);
+  const itemsOf = (form) => form.steps.flatMap((s) => s.rows.filter((r) => r.type === "item").map((r) => ({ ...r, step: s.code, unit_of: s.dispense_unit })));
+  const seedItems = itemsOf(seed.form);
+  const A = seedItems.find((i) => i.step === "P1"), B = seedItems.find((i) => i.step === "P2");
+  const CSI = seedItems.find((i) => i.step === "CS"), LABI = seedItems.find((i) => i.step === "LAB");
 
-  const tOlder = new Date(Date.parse(t1) - 30000).toISOString(); // older than t1 -> must be ignored
-  const save2 = post({ action: "saveLines", token: tokDeviceA, month: "2025-09", lines: { "P1-01": { stock: 999, op: 9, pp: 9, updated_at: tOlder } } });
-  ok(save2.ok && save2.data.request.lines["P1-01"].stock === 5, "older updated_at is ignored (last-write-wins keeps newer value)");
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("transport / routing");
+  {
+    const h = await (await fetch(BASE + "/api")).json();
+    ok(h.ok && h.data.service === "pcu-supply", "GET /api health check");
+    expectErr(await api("nope"), "BAD_REQUEST", "unknown action");
+    const sub = await api("submit", { month: CUR });
+    expectErr(sub, "BAD_REQUEST", "removed action submit");
+    ok(/saveLines/.test(sub.error.message), "submit message points to saveLines (Thai hint)");
+    expectErr(await api("withdraw", { month: CUR }), "BAD_REQUEST", "removed action withdraw");
+    expectErr(await api("requestPdf", {}), "NOT_IMPLEMENTED", "requestPdf reserved (2b)");
+    expectErr(await api("adminFormSave", {}), "NOT_IMPLEMENTED", "adminForm* reserved (2d)");
+    expectErr(await api("issueLines", {}), "NOT_IMPLEMENTED", "issueLines reserved (2c)");
+    const bad = await (await fetch(BASE + "/api", { method: "POST", body: "{not json" })).json();
+    expectErr(bad, "BAD_REQUEST", "malformed JSON body");
+    const pdf = await get("/api/pdf/abc");
+    eq(pdf.status, 501, "GET /api/pdf/:id stub → HTTP 501");
+  }
 
-  const tNewer = new Date(Date.parse(t1) + 30000).toISOString();
-  const save3 = post({ action: "saveLines", token: tokDeviceA, month: "2025-09", lines: { "P1-01": { stock: 7, op: 2, pp: 0, updated_at: tNewer } } });
-  ok(save3.ok && save3.data.request.lines["P1-01"].stock === 7, "newer updated_at overwrites");
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("devReset + admin login (env admins) + seed import");
+  expectErr(await api("adminBootstrap", {}), "AUTH_REQUIRED", "adminBootstrap without token");
+  ok((await api("devReset")).ok, "devReset wipes D1 and recreates the schema");
+  eq((await mustOk("pcuList")).pcus.length, 0, "pcuList empty after reset");
+  const bad1 = await api("adminLoginGoogle", { id_token: "dev:stranger@example.com" });
+  expectErr(bad1, "FORBIDDEN", "Google login of a non-admin e-mail");
+  const login = await api("adminLoginGoogle", { id_token: "dev:" + ADMIN_EMAIL }, undefined, { json: true });
+  ok(login.ok && login.data.role === "admin" && login.data.token, "adminLoginGoogle (ADMIN_EMAILS, users table empty), application/json body");
+  const ADM = login.data.token;
+  expectErr(await api("adminImportSeed", { seed }, undefined), "AUTH_REQUIRED", "import without token");
+  expectErr(await api("adminImportSeed", { seed: { format: "x", fy: 2570 } }, ADM), "BAD_REQUEST", "import rejects wrong format");
+  const imp = await mustOk("adminImportSeed", { seed }, ADM, "import");
+  eq(imp.imported.pcus, 15, "import: 15 pcus");
+  eq(imp.imported.form, "inserted", "import: form version inserted");
+  ok(imp.imported.plans > 0 && imp.imported.actual_rows > 0 && imp.imported.stats > 0, "import: plans/actual_prev/stats rows written");
+  ok(imp.imported.limits_inserted > 0, "import: limits inserted");
+  ok(imp.imported.config_set.includes("fy_current"), "import: fy_current set (config was empty)");
+  eq(imp.warnings, [], "import: no warnings");
 
-  // "second device" = a brand new login token for the same PCU
-  const tokDeviceB = post({ action: "pcuLogin", pcu: "PCU03", pin: "12345" }).data.token;
-  const boot = post({ action: "pcuBootstrap", token: tokDeviceB });
-  const req = boot.data.byRound["2025-09"].request;
-  ok(req.last_step === "P2", "last_step persisted and visible from a second device/token");
-  ok(req.lines["P1-01"].stock === 7, "line values visible from a second device/token");
+  let boot = await mustOk("adminBootstrap", {}, ADM);
+  eq(boot.pcus.length, 15, "adminBootstrap: 15 pcus");
+  eq(boot.me, { email: ADMIN_EMAIL, role: "admin", units: ["พัสดุ", "จ่ายกลาง", "LAB"] }, "adminBootstrap: me");
+  eq(boot.config.fy_current, 2570, "config.fy_current = 2570");
+  eq(boot.config.limit_mode, "warn", "config.limit_mode default warn");
+  eq(boot.config.stock_required, 0, "config.stock_required default 0");
+  eq(boot.config.budget_total, 910000, "config.budget_total");
+  ok(boot.form && boot.form.id && boot.form.steps.length === seed.form.steps.length, "adminBootstrap: form (latest of fy_current)");
+  eq(boot.form_versions.length, 1, "form_versions list has 1 version");
+  let expectedTotal = 0;
+  for (const [pcu, byItem] of Object.entries(seed.plans["2570"])) for (const [code, v] of Object.entries(byItem)) {
+    const it = seedItems.find((x) => x.code === code); expectedTotal += (v[0] + v[1]) * (it ? it.price : 0);
+  }
+  expectedTotal = Math.round(expectedTotal * 100) / 100;
+  if (useReal) ok(near(boot.plan_totals.total, 1933576.87), "plan total = 1,933,576.87 (real seed)");
+  else ok(near(boot.plan_totals.total, expectedTotal), `plan total = Σ plan × price (${expectedTotal}) (synthetic seed)`);
+  ok(boot.prev["2569"] && boot.prev["2569"].months.length === 12 && Object.keys(boot.prev["2569"].actual).length > 0, "adminBootstrap: prev[2569] actual/plans/prices present");
+  ok(Object.keys(boot.prev["2569"].prices).length > 100, "adminBootstrap: prev prices");
+  eq(boot.stats.fy, 2569, "adminBootstrap: stats basis fy = 2569");
+  ok(Object.keys(boot.limits).length > 0, "adminBootstrap: limits present");
+  eq(boot.users_source, "env", "adminBootstrap: users from env while table empty");
+  ok(boot.rounds.some((r) => r.month === CUR) && boot.rounds.some((r) => r.month === PREV), "adminBootstrap: rounds include current + previous month");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("PCU login / PIN lock / PIN change");
+  const lst = await mustOk("pcuList");
+  eq(lst.pcus.length, 15, "pcuList: 15 pcus");
+  ok(lst.pcus[0].code && lst.pcus[0].name, "pcuList: code+name");
+  const l1 = await api("pcuLogin", { pcu: "PCU01", pin: "12345" });
+  ok(l1.ok && l1.data.token && l1.data.exp && l1.data.pcu.code === "PCU01", "pcuLogin PCU01 default PIN 12345");
+  ok(l1.data.bootstrap && l1.data.bootstrap.pcu.code === "PCU01", "pcuLogin includes bootstrap");
+  const T1 = l1.data.token;
+  expectErr(await api("pcuLogin", { pcu: "PCU01", pin: "12a45" }), "BAD_REQUEST", "pcuLogin malformed PIN");
+  expectErr(await api("pcuLogin", { pcu: "PCU99", pin: "12345" }), "NOT_FOUND", "pcuLogin unknown PCU");
+  const w1 = await api("pcuLogin", { pcu: "PCU02", pin: "00000" });
+  expectErr(w1, "BAD_PIN", "wrong PIN"); eq(w1.error.remaining, 4, "BAD_PIN remaining = 4");
+  let last;
+  for (let i = 0; i < 4; i++) last = await api("pcuLogin", { pcu: "PCU02", pin: "00000" });
+  ok(!last.ok && last.error.code === "PIN_LOCKED" && last.error.until, "5th wrong PIN → PIN_LOCKED with until");
+  expectErr(await api("pcuLogin", { pcu: "PCU02", pin: "12345" }), "PIN_LOCKED", "correct PIN still locked during lock");
+  eq((await mustOk("adminBootstrap", {}, ADM)).pcus.find((p) => p.code === "PCU02").pin_locked_until !== null, true, "adminBootstrap shows pin_locked_until");
+  ok((await api("adminUnlockPin", { pcu: "PCU02" }, ADM)).ok, "adminUnlockPin");
+  ok((await api("pcuLogin", { pcu: "PCU02", pin: "12345" })).ok, "login works again after adminUnlockPin");
+  const l7 = await mustOk("pcuLogin", { pcu: "PCU07", pin: "12345" });
+  expectErr(await api("adminSetPin", { pcu: "PCU07", pin: "123" }, ADM), "BAD_REQUEST", "adminSetPin rejects 3 digits");
+  ok((await api("adminSetPin", { pcu: "PCU07", pin: "54321" }, ADM)).ok, "adminSetPin PCU07");
+  expectErr(await api("pcuBootstrap", {}, l7.token), "AUTH_EXPIRED", "old token invalid after PIN change");
+  expectErr(await api("pcuLogin", { pcu: "PCU07", pin: "12345" }), "BAD_PIN", "old PIN rejected");
+  ok((await api("pcuLogin", { pcu: "PCU07", pin: "54321" })).ok, "new PIN accepted");
+  eq((await mustOk("adminBootstrap", {}, ADM)).pcus.find((p) => p.code === "PCU07").pin_custom, true, "adminBootstrap: pin_custom true after adminSetPin");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("token scoping");
+  expectErr(await api("saveLines", { month: CUR, lines: {} }), "AUTH_REQUIRED", "PCU action without token");
+  expectErr(await api("pcuBootstrap", {}, "garbage"), "AUTH_EXPIRED", "garbage token");
+  expectErr(await api("pcuBootstrap", {}, T1.slice(0, -3) + "AAA"), "AUTH_EXPIRED", "tampered signature");
+  if (TOKEN_SECRET) {
+    expectErr(await api("pcuBootstrap", {}, forgeToken({ t: "pcu", pcu: "PCU01", v: 1, exp: Date.now() - 1000 })), "AUTH_EXPIRED", "expired token (correctly signed)");
+    ok((await api("pcuBootstrap", {}, forgeToken({ t: "pcu", pcu: "PCU01", v: 1, exp: Date.now() + 60000 }))).ok, "forged-with-secret token verifies (sanity: HMAC format is the documented one)");
+  } else { ok(true, "(skipped expired-token test: no TOKEN_SECRET readable)"); ok(true, "(skipped)"); }
+  expectErr(await api("adminBootstrap", {}, T1), "FORBIDDEN", "PCU token on admin action");
+  expectErr(await api("adminNote", { pcu: "PCU01", month: CUR, note: "x" }, T1), "FORBIDDEN", "PCU token on adminNote");
+  expectErr(await api("pcuBootstrap", {}, ADM), "FORBIDDEN", "admin token on PCU action");
+  const leak = await mustOk("saveLines", { month: CUR, pcu: "PCU02", lines: { [A.code]: { op: 1, pp: 0, stock: null, updated_at: "2026-11-01T00:00:00.000Z" } } }, T1);
+  eq(leak.request.pcu, "PCU01", "saveLines ignores a pcu param — token decides the PCU");
+  eq((await mustOk("adminGetRequest", { pcu: "PCU02", month: CUR }, ADM)).request, null, "PCU02 has no request after PCU01's call");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("PCU bootstrap shape");
+  const pb = await mustOk("pcuBootstrap", {}, T1);
+  for (const k of ["server_time", "current_month", "pcu", "config", "form_version_id", "form", "rounds", "older_months", "hidden", "never_prev", "limits", "plans", "unlocks", "byMonth", "issue_notices"]) ok(k in pb, `bootstrap has "${k}"`);
+  eq(pb.current_month, CUR, "bootstrap.current_month honours X-Dev-Month");
+  eq(pb.config, { limit_mode: "warn", stock_required: 0, deadline_day: null, fy_current: 2570 }, "bootstrap.config");
+  eq(pb.rounds.map((r) => r.month), [CUR, PREV], "bootstrap.rounds = [current, previous]");
+  eq(pb.rounds[0].deadline_date, "2026-11-30", "deadline = last day of month by default");
+  eq(pb.rounds[0].deadline_source, "month_end", "deadline_source month_end");
+  eq(pb.form_version_id, pb.form.id, "form_version_id = form.id");
+  eq(pb.form.steps.length, seed.form.steps.length, "form steps");
+  ok(pb.form.steps.every((s) => s.dispense_unit) && pb.form.steps[0].rows.some((r) => r.type === "item" && r.active === true), "form carries dispense_unit + item.active");
+  ok(Object.keys(pb.plans).length > 0 && Object.values(pb.plans)[0].length === 2, "bootstrap.plans {code:[op,pp]}");
+  ok(Object.values(pb.limits).every((v) => Array.isArray(v) && v.length === 2), "bootstrap.limits {code:[month,year]}");
+  ok(Array.isArray(pb.never_prev) && Array.isArray(pb.hidden), "never_prev / hidden arrays");
+  eq(pb.older_months, [], "older_months empty");
+  const nev = pb.never_prev;
+  const hadAny = new Set(Object.keys(seed.actual_prev["2569"].data["PCU01"] || {}).filter((c) => (seed.actual_prev["2569"].data["PCU01"][c].op.some((x) => x > 0) || seed.actual_prev["2569"].data["PCU01"][c].pp.some((x) => x > 0))));
+  ok(nev.length > 0 && nev.every((c) => !hadAny.has(c)) && !nev.includes([...hadAny][0]), "never_prev = items with no FY2569 withdrawal in actual_prev");
+  eq(pb.byMonth[CUR].used_fy, {}, "byMonth.used_fy empty");
+  eq(pb.byMonth[CUR].prev_lines, {}, "byMonth.prev_lines empty");
+  eq(Object.keys(pb.byMonth), [CUR, PREV], "byMonth keys");
+  eq(pb.issue_notices, [], "issue_notices empty in 2a");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("saveLines: autosave, last-write-wins, validation");
+  const t = (s) => `2026-11-10T10:00:0${s}.000Z`;
+  expectErr(await api("saveLines", { month: NEXT, lines: {} }, T1), "BAD_REQUEST", "future month rejected");
+  expectErr(await api("saveLines", { month: "2026-08", lines: {} }, T1), "BAD_REQUEST", "old month without a request rejected");
+  expectErr(await api("saveLines", { month: "2026-13", lines: {} }, T1), "BAD_REQUEST", "invalid month");
+  expectErr(await api("saveLines", { month: CUR, lines: { "ZZ-99": { op: 1, updated_at: t(1) } } }, T1), "BAD_REQUEST", "unknown item code");
+  expectErr(await api("saveLines", { month: CUR, lines: { [A.code]: { op: -1 } } }, T1), "BAD_REQUEST", "negative qty rejected");
+  expectErr(await api("saveLines", { month: CUR, lines: { [A.code]: { op: 1.5 } } }, T1), "BAD_REQUEST", "fractional qty rejected");
+  let r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 2, op: 5, pp: 1, updated_at: t(1) }, [B.code]: { op: 3, pp: null, updated_at: t(1) } }, last_step: "P2", submitter_name: "สมชาย" }, T1);
+  eq(r.status, "draft", "first autosave creates a draft");
+  eq(r.submitted, false, "autosave is not a submit");
+  eq(r.request.lines[A.code], { stock: 2, op: 5, pp: 1, updated_at: t(1) }, "line stored (PCU view has no price/issued fields)");
+  eq([r.request.last_step, r.request.submitter_name], ["P2", "สมชาย"], "last_step + submitter_name stored");
+  eq(r.request.form_version_id, null, "draft has no form_version_id yet");
+  r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 9, updated_at: t(0) } } }, T1);
+  eq(r.request.lines[A.code].op, 5, "older updated_at ignored (last-write-wins per line)");
+  r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 2, op: 7, pp: 1, updated_at: t(2) } } }, T1);
+  eq(r.request.lines[A.code].op, 7, "newer updated_at wins");
+  eq(r.request.lines[B.code].op, 3, "other lines untouched");
+  const tAfter = (await mustOk("adminGetRequest", { pcu: "PCU01", month: CUR }, ADM)).request.updated_at;
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 99, updated_at: t(0) } } }, T1);
+  eq((await mustOk("adminGetRequest", { pcu: "PCU01", month: CUR }, ADM)).request.updated_at, tAfter, "stale-only autosave does not bump request.updated_at");
+  ok((await mustOk("saveLines", { month: PREV, lines: {} }, T1)).status === "draft", "previous month accepted (empty autosave creates draft)");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("submit = saveLines{send:true}");
+  const s1 = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T1);
+  eq(s1.status, "submitted", "send → submitted");
+  eq(s1.submitted, true, "response.submitted");
+  ok(s1.request.submitted_at && s1.request.first_submitted_at === s1.request.submitted_at, "submitted_at + first_submitted_at set");
+  eq(s1.request.submit_count, 1, "submit_count = 1");
+  eq(s1.request.form_version_id, pb.form_version_id, "form_version_id = latest version");
+  eq(s1.request.edited_after_submit, false, "not edited right after submit");
+  const adm1 = await mustOk("adminGetRequest", { pcu: "PCU01", month: CUR }, ADM);
+  eq(adm1.request.lines[A.code].price_snapshot, A.price, "price_snapshot per line = form price");
+  eq(adm1.request.lines[B.code].price_snapshot, B.price, "price_snapshot on every line");
+  eq(adm1.form_version_id, pb.form_version_id, "adminGetRequest.form_version_id");
+  ok(adm1.form && adm1.form.steps.length === seed.form.steps.length && adm1.hidden && adm1.pcu.code === "PCU01", "adminGetRequest: form + hidden + pcu");
+  r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 2, op: 8, pp: 1, updated_at: t(5) } } }, T1);
+  eq(r.status, "submitted", "autosave after submit keeps status submitted");
+  eq(r.request.edited_after_submit, true, "edit after submit → edited_after_submit");
+  eq(r.request.submitted_at, s1.request.submitted_at, "submitted_at unchanged by autosave");
+  const s2 = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T1);
+  eq(s2.request.submit_count, 2, "resubmit: submit_count 2");
+  eq(s2.request.edited_after_submit, false, "resubmit clears edited_after_submit");
+  ok(s2.request.submitted_at > s1.request.submitted_at, "resubmit: new submitted_at");
+  eq(s2.request.first_submitted_at, s1.request.first_submitted_at, "resubmit: first_submitted_at unchanged");
+  eq((await mustOk("adminGetRequest", { pcu: "PCU01", month: CUR }, ADM)).request.lines[A.code].op, 8, "resubmit overwrote with the edited value");
+  ok((await mustOk("pcuAck", { month: CUR }, T1)).issued_seen_at, "pcuAck sets issued_seen_at");
+  expectErr(await api("pcuAck", { month: "2026-05" }, T1), "NOT_FOUND", "pcuAck without request");
+  const pbAfter = await mustOk("pcuBootstrap", {}, T1);
+  eq(pbAfter.byMonth[CUR].request.status, "submitted", "bootstrap returns the request (submitted)");
+  eq(pbAfter.byMonth[PREV].request.status, "draft", "bootstrap returns previous-month request");
+  const gm = await mustOk("pcuGetMonth", { month: CUR }, T1);
+  ok(gm.request && "used_fy" in gm && "prev_lines" in gm && gm.round.month === CUR, "pcuGetMonth returns the month view");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("hidden items + stock_required");
+  const T4 = (await mustOk("pcuLogin", { pcu: "PCU04", pin: "12345" })).token;
+  expectErr(await api("setHidden", { codes: ["ZZ-99"] }, T4), "BAD_REQUEST", "setHidden rejects unknown code");
+  eq((await mustOk("setHidden", { codes: [B.code, B.code, CSI.code] }, T4)).hidden, [B.code, CSI.code], "setHidden: dedup + full replacement");
+  eq((await mustOk("pcuBootstrap", {}, T4)).hidden.sort(), [B.code, CSI.code].sort(), "bootstrap.hidden");
+  eq((await mustOk("adminSetHidden", { pcu: "PCU04", codes: [B.code] }, ADM)).hidden, [B.code], "adminSetHidden");
+  await mustOk("setHidden", { codes: [B.code, CSI.code] }, T4);
+  expectErr(await api("adminSetConfig", { key: "stock_required", value: 2 }, ADM), "BAD_REQUEST", "stock_required must be 0/1");
+  expectErr(await api("adminSetConfig", { key: "backup_pw_hash", value: "x" }, ADM), "BAD_REQUEST", "secret config keys are not settable");
+  eq((await mustOk("adminSetConfig", { key: "stock_required", value: 1 }, ADM)).config.stock_required, 1, "adminSetConfig stock_required=1");
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 1, op: 2, pp: 0, updated_at: t(1) } } }, T4);
+  const inc = await api("saveLines", { month: CUR, lines: {}, send: true }, T4);
+  expectErr(inc, "INCOMPLETE", "send with missing stock");
+  ok(Array.isArray(inc.error.missing) && inc.error.missing.length === seedItems.length - 3, "INCOMPLETE.missing = all non-hidden items without stock (minus A, minus 2 hidden)");
+  ok(!inc.error.missing.includes(B.code) && !inc.error.missing.includes(CSI.code) && !inc.error.missing.includes(A.code), "hidden items and filled items not in missing");
+  eq((await mustOk("adminGetRequest", { pcu: "PCU04", month: CUR }, ADM)).request.status, "draft", "failed send leaves status draft");
+  const allStock = Object.fromEntries(seedItems.filter((i) => i.code !== A.code).map((i) => [i.code, { stock: 1, op: null, pp: null, updated_at: t(3) }]));
+  const full = await mustOk("saveLines", { month: CUR, lines: allStock, send: true }, T4);
+  eq(full.status, "submitted", "send succeeds once every non-hidden item has stock");
+  await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM);
+  const T5 = (await mustOk("pcuLogin", { pcu: "PCU05", pin: "12345" })).token;
+  eq((await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T5)).status, "submitted", "stock_required=0 → submit without stock");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("limits: off / warn / enforce, used_fy, unlock");
+  const T3 = (await mustOk("pcuLogin", { pcu: "PCU03", pin: "12345" })).token;
+  const adminSetLimit = await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 100, limit_year: 20 }, ADM);
+  eq([adminSetLimit.limit.source, adminSetLimit.limit.limit_year], ["admin", 20], "adminSetLimit (source admin)");
+  expectErr(await api("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: -1 }, ADM), "BAD_REQUEST", "adminSetLimit rejects negative");
+  expectErr(await api("adminSetLimit", { pcu: "PCU03", code: "ZZ-1", limit_month: 1 }, ADM), "BAD_REQUEST", "adminSetLimit unknown item");
+  expectErr(await api("adminSetLimitMode", { mode: "strict" }, ADM), "BAD_REQUEST", "invalid limit mode");
+  await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
+  const prevSubmit = await mustOk("saveLines", { month: PREV, lines: { [A.code]: { op: 10, pp: 5, updated_at: t(1) } }, send: true }, T3);
+  eq(prevSubmit.over_limit, [], "mode off: over_limit empty and submit ok (previous month, 15 units)");
+  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].used_fy[A.code], 15, "used_fy[current] = Σ other months of the fiscal year (15)");
+  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].prev_lines[A.code], { op: 10, pp: 5 }, "prev_lines from previous month's submitted request");
+  await mustOk("adminSetLimitMode", { mode: "enforce" }, ADM);
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 4, pp: 2, updated_at: t(1) } } }, T3);
+  const ol = await api("saveLines", { month: CUR, lines: {}, send: true }, T3);
+  expectErr(ol, "OVER_LIMIT", "enforce: 15 used + 6 > limit_year 20");
+  eq(ol.error.items, [{ code: A.code, total: 6, limit_month: 100, limit_year: 20, used_fy: 15 }], "OVER_LIMIT.items detail");
+  eq((await mustOk("adminGetRequest", { pcu: "PCU03", month: CUR }, ADM)).request.status, "draft", "OVER_LIMIT leaves request a draft");
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 3, pp: 2, updated_at: t(2) } } }, T3);
+  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "enforce: 15 + 5 = limit (boundary) is allowed");
+  await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 4, limit_year: null }, ADM);
+  expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "enforce: monthly limit 4 < total 5");
+  expectErr(await api("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: CUR, reason: "  " }, ADM), "BAD_REQUEST", "unlock needs a reason");
+  const ul = await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: CUR, reason: "โรคระบาด" }, ADM);
+  eq(ul.unlock.reason, "โรคระบาด", "adminUnlockLimit");
+  eq((await mustOk("pcuBootstrap", {}, T3)).unlocks[CUR], { [A.code]: "โรคระบาด" }, "bootstrap.unlocks shows the reason");
+  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "limit_unlocks row bypasses enforce for that month");
+  ok((await mustOk("adminBootstrap", {}, ADM)).unlocks.some((u) => u.pcu === "PCU03" && u.item_code === A.code && u.month === CUR), "adminBootstrap lists unlocks");
+  ok((await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM)).ok, "adminRemoveUnlock");
+  expectErr(await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM), "NOT_FOUND", "adminRemoveUnlock twice");
+  expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "removing the unlock re-enables enforcement");
+  await mustOk("adminSetLimitMode", { mode: "warn" }, ADM);
+  const wr = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3);
+  ok(wr.status === "submitted" && wr.over_limit.length === 1 && wr.over_limit[0].code === A.code, "warn: submit succeeds and over_limit lists the item");
+  await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
+  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).over_limit, [], "off: over_limit empty");
+  await mustOk("adminSetLimitMode", { mode: "warn" }, ADM);
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("rounds: deadline, lock");
+  const T6 = (await mustOk("pcuLogin", { pcu: "PCU06", pin: "12345" })).token;
+  expectErr(await api("adminSetRound", { month: CUR, deadline_date: "30/11/2026" }, ADM), "BAD_REQUEST", "adminSetRound bad date");
+  expectErr(await api("adminLockRound", { month: CUR, locked: 5 }, ADM), "BAD_REQUEST", "adminLockRound bad value");
+  expectErr(await api("adminSetRound", { month: "2026-1", deadline_date: null }, ADM), "BAD_REQUEST", "adminSetRound bad month");
+  let rd = await mustOk("adminSetRound", { month: CUR, deadline_date: "2026-11-20", note: "ส่งก่อนวันที่ 20" }, ADM);
+  eq([rd.round.deadline_date, rd.round.deadline_source, rd.round.note], ["2026-11-20", "round", "ส่งก่อนวันที่ 20"], "adminSetRound: deadline + note");
+  eq((await mustOk("pcuBootstrap", {}, T6)).rounds[0].deadline_date, "2026-11-20", "PCU bootstrap shows the round deadline");
+  rd = await mustOk("adminSetRound", { month: CUR, deadline_date: null }, ADM);
+  eq([rd.round.deadline_date, rd.round.deadline_source], ["2026-11-30", "month_end"], "deadline override cleared → month end");
+  eq(rd.round.note, "ส่งก่อนวันที่ 20", "note untouched when the key is absent");
+  expectErr(await api("adminSetConfig", { key: "deadline_day", value: 40 }, ADM), "BAD_REQUEST", "deadline_day out of range");
+  await mustOk("adminSetConfig", { key: "deadline_day", value: 25 }, ADM);
+  let pr = (await mustOk("pcuBootstrap", {}, T6)).rounds;
+  eq([pr[0].deadline_date, pr[0].deadline_source], ["2026-11-25", "config"], "config.deadline_day=25 → 25th");
+  await mustOk("adminSetConfig", { key: "deadline_day", value: 31 }, ADM);
+  eq((await mustOk("pcuBootstrap", {}, T6)).rounds[0].deadline_date, "2026-11-30", "deadline_day 31 clamps to the month length (Nov has 30)");
+  await mustOk("adminSetConfig", { key: "deadline_day", value: null }, ADM);
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 1, updated_at: t(1) } } }, T6);
+  eq((await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM)).round.locked, true, "adminLockRound locks");
+  expectErr(await api("saveLines", { month: CUR, lines: { [A.code]: { op: 2, updated_at: t(2) } } }, T6), "CONFLICT", "locked round: autosave → CONFLICT");
+  expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T6), "CONFLICT", "locked round: send → CONFLICT");
+  eq((await mustOk("pcuBootstrap", {}, T6)).rounds[0].locked, true, "bootstrap.rounds[].locked");
+  ok((await mustOk("saveLines", { month: PREV, lines: {} }, T6)).status === "draft", "other months are unaffected by the lock");
+  await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM);
+  ok((await api("saveLines", { month: CUR, lines: { [A.code]: { op: 2, updated_at: t(2) } } }, T6)).ok, "unlocked round accepts edits again");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("admin note");
+  const T8 = (await mustOk("pcuLogin", { pcu: "PCU08", pin: "12345" })).token;
+  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T8);
+  const n1 = await mustOk("adminNote", { pcu: "PCU08", month: CUR, note: "  กรุณาตรวจจำนวน  " }, ADM);
+  eq([n1.request.admin_note, n1.request.status, n1.request.edited_after_submit], ["กรุณาตรวจจำนวน", "submitted", false], "adminNote: trimmed, status unchanged, not 'edited'");
+  ok(n1.request.admin_note_at, "admin_note_at set");
+  eq((await mustOk("pcuBootstrap", {}, T8)).byMonth[CUR].request.admin_note, "กรุณาตรวจจำนวน", "PCU bootstrap shows admin_note");
+  eq((await mustOk("adminNote", { pcu: "PCU08", month: CUR, note: "" }, ADM)).request.admin_note, null, "empty note clears");
+  const n3 = await mustOk("adminNote", { pcu: "PCU09", month: CUR, note: "ยังไม่ส่ง" }, ADM);
+  eq([n3.request.status, n3.request.admin_note], ["draft", "ยังไม่ส่ง"], "note on a not-started PCU creates a draft row");
+  expectErr(await api("adminNote", { pcu: "PCU99", month: CUR, note: "x" }, ADM), "NOT_FOUND", "adminNote unknown PCU");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("admin request views");
+  const ar = await mustOk("adminRequests", {}, ADM);
+  ok(ar.requests.length >= 5 && ar.requests.every((x) => !("lines" in x)), "adminRequests: list without lines");
+  const p01 = ar.requests.find((x) => x.pcu === "PCU01" && x.month === CUR);
+  ok(p01 && p01.pcu_name && p01.progress.items_requested === 2 && p01.progress.stock_filled === 1, "adminRequests: progress (2 items requested, 1 stock filled)");
+  ok(near(p01.progress.baht, (8 + 1) * A.price + 3 * B.price), "adminRequests: progress.baht uses price_snapshot");
+  eq(ar.rounds.map((x) => x.month), [CUR, PREV], "adminRequests: rounds default current + previous");
+  eq((await mustOk("adminRequests", { month: PREV }, ADM)).requests.every((x) => x.month === PREV), true, "adminRequests{month} filter");
+  expectErr(await api("adminRequests", { month: "bad" }, ADM), "BAD_REQUEST", "adminRequests bad month");
+  eq((await mustOk("adminGetRequest", { pcu: "PCU12", month: CUR }, ADM)).request, null, "adminGetRequest without a request → null");
+  expectErr(await api("adminGetRequest", { pcu: "PCU99", month: CUR }, ADM), "NOT_FOUND", "adminGetRequest unknown PCU");
+  boot = await mustOk("adminBootstrap", {}, ADM);
+  ok(boot.months.includes(CUR) && boot.months.includes(PREV), "adminBootstrap.months lists months with requests");
+  const rr = boot.rounds.find((x) => x.month === CUR);
+  ok(rr && rr.note === "ส่งก่อนวันที่ 20" && rr.locked === false, "adminBootstrap.rounds has lazily created round rows");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("limits: reset + upload");
+  let tgt = null, none = null;
+  for (const p of pcuCodes) for (const it of seedItems) {
+    const plan = (seed.plans["2570"][p] || {})[it.code], st = (seed.stats["2569"][p] || {})[it.code];
+    if (!tgt && plan && st && st[1] > 0) tgt = { pcu: p, code: it.code, plan, st };
+    if (!none && !plan && !st) none = { pcu: p, code: it.code };
+  }
+  ok(tgt && none, "fixture has an item with plan+stat and one with neither");
+  await mustOk("adminSetLimit", { pcu: tgt.pcu, code: tgt.code, limit_month: 1, limit_year: 1 }, ADM);
+  const exp = defaultLimitRule(tgt.plan, tgt.st, 2570);
+  const rs = await mustOk("adminResetLimit", { pcu: tgt.pcu, code: tgt.code }, ADM);
+  eq([rs.limit.limit_month, rs.limit.limit_year, rs.limit.source], [exp.lm, exp.ly, exp.source], "adminResetLimit recomputes from plans/stats (FORMAT.md rule)");
+  await mustOk("adminSetLimit", { pcu: none.pcu, code: none.code, limit_month: 3, limit_year: 9 }, ADM);
+  eq((await mustOk("adminResetLimit", { pcu: none.pcu, code: none.code }, ADM)).limit, null, "adminResetLimit with no plan/stat removes the row");
+  eq(((await mustOk("adminBootstrap", {}, ADM)).limits[none.pcu] || {})[none.code], undefined, "…and adminBootstrap no longer lists it");
+
+  const L = [
+    { pcu_code: "PCU01", item_code: A.code, limit_month: 7, limit_year: 30, note: "ok" },
+    { pcu_code: "PCU02", item_code: A.code, limit_month: "", limit_year: 12 },
+    { pcu_code: "PCU99", item_code: A.code, limit_month: 1, limit_year: 1 },
+    { pcu_code: "PCU01", item_code: "ZZ-99", limit_month: 1, limit_year: 1 },
+    { pcu_code: "PCU03", item_code: B.code, limit_month: -2, limit_year: 5 },
+    { pcu_code: "PCU03", item_code: B.code, limit_month: 1.5, limit_year: 5 },
+    { pcu_code: "PCU04", item_code: A.code, limit_month: 5, limit_year: 2 },
+    { pcu_code: "PCU05", item_code: A.code, limit_month: 5, limit_year: 50, item_name: "ชื่อไม่ตรง" },
+    { pcu_code: "PCU05", item_code: B.code, limit_month: 5, limit_year: 50 },
+    { pcu_code: "PCU05", item_code: B.code, limit_month: 6, limit_year: 50 },
+    { pcu_code: "", item_code: "", limit_month: "", limit_year: "" },
+    { pcu_code: "PCU06", item_code: B.code, limit_month: "abc", limit_year: 5 },
+  ];
+  const dry = await mustOk("adminLimitsUpload", { rows: L, dry_run: true }, ADM);
+  eq(dry.applied, false, "limits upload dry_run applies nothing");
+  const errRows = dry.errors.map((e) => e.row);
+  eq(errRows, [4, 5, 6, 7, 10, 11, 13], "errors: unknown pcu(4), unknown item(5), negative(6), decimal(7), duplicate pair ×2 (10,11), text(13)");
+  ok(dry.warnings.some((w) => w.row === 8) && dry.warnings.some((w) => w.row === 9 && /item_name/.test(w.warning)), "warnings: year<month and item_name mismatch");
+  ok(!dry.errors.some((e) => e.row === 12) && !dry.warnings.some((w) => w.row === 12), "empty row (12) skipped silently");
+  ok(((await mustOk("adminBootstrap", {}, ADM)).limits.PCU01 || {})[A.code]?.limit_month !== 7, "dry run left the database untouched");
+  const ap = await mustOk("adminLimitsUpload", { rows: L }, ADM);
+  ok(ap.applied && ap.added + ap.updated >= 3, "limits upload (merge) applies the valid rows");
+  let lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  eq([lm.PCU01[A.code].limit_month, lm.PCU01[A.code].limit_year, lm.PCU01[A.code].source, lm.PCU01[A.code].note], [7, 30, "admin", "ok"], "merge: row written with source admin + note");
+  const keepM = ((seed.limits["2570"].PCU02 || {})[A.code] || [null])[0];
+  eq(lm.PCU02[A.code].limit_year, 12, "merge: blank limit_month leaves old month untouched, year updated");
+  if (keepM !== null) eq(lm.PCU02[A.code].limit_month, keepM, "merge: blank month keeps the old value");
+  else ok(true, "(PCU02 had no old month limit in fixture)");
+  const clr = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: A.code, limit_month: "CLEAR", limit_year: "" }] }, ADM);
+  lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  eq([clr.updated, lm.PCU01[A.code].limit_month, lm.PCU01[A.code].limit_year], [1, null, 30], "merge: CLEAR nulls just that column");
+  const rep = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: B.code, limit_month: 2, limit_year: 4 }], mode: "replace" }, ADM);
+  lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  eq(Object.keys(lm), ["PCU01"], "replace mode wipes every other pair of the fiscal year");
+  eq(Object.keys(lm.PCU01), [B.code], "replace mode keeps only the uploaded rows");
+  ok(rep.deleted > 0 && rep.added + rep.updated === 1, "replace: counts (deleted>0, exactly one row written)");
+  expectErr(await api("adminLimitsUpload", { rows: "x" }, ADM), "BAD_REQUEST", "limits upload needs rows[]");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("users, roles, dispenser permissions");
+  expectErr(await api("adminUsersAdd", { email: "nope", role: "admin" }, ADM), "BAD_REQUEST", "adminUsersAdd bad email");
+  expectErr(await api("adminUsersAdd", { email: "d@example.com", role: "dispenser", units: [] }, ADM), "BAD_REQUEST", "dispenser needs ≥ 1 unit");
+  expectErr(await api("adminUsersAdd", { email: "d@example.com", role: "dispenser", units: ["โกดัง"] }, ADM), "BAD_REQUEST", "unknown unit rejected");
+  const ul0 = await mustOk("adminUsersList", {}, ADM);
+  eq([ul0.source, ul0.users.map((u) => u.email)], ["env", [ADMIN_EMAIL]], "users list falls back to ADMIN_EMAILS while the table is empty");
+  const ua = await mustOk("adminUsersAdd", { email: "Dispenser.Lab@Example.com", role: "dispenser", units: ["LAB"] }, ADM);
+  eq(ua.users.map((u) => u.email).sort(), [ADMIN_EMAIL, "dispenser.lab@example.com"].sort(), "adding a user materialises env admins (admin not locked out)");
+  eq((await mustOk("adminUsersList", {}, ADM)).source, "table", "users list now from the table");
+  const dl = await mustOk("adminLoginGoogle", { id_token: "dev:dispenser.lab@example.com" });
+  eq([dl.role, dl.units], ["dispenser", ["LAB"]], "dispenser Google login");
+  const DSP = dl.token;
+  ok((await api("adminLoginGoogle", { id_token: "dev:" + ADMIN_EMAIL })).ok, "admin still logs in after materialisation");
+  const FORBID = [
+    ["adminNote", { pcu: "PCU01", month: CUR, note: "x" }], ["adminSetRound", { month: CUR, deadline_date: null }], ["adminLockRound", { month: CUR, locked: 1 }],
+    ["adminSetLimitMode", { mode: "off" }], ["adminSetConfig", { key: "stock_required", value: 1 }], ["adminSetLimit", { pcu: "PCU01", code: A.code, limit_month: 1 }],
+    ["adminResetLimit", { pcu: "PCU01", code: A.code }], ["adminLimitsUpload", { rows: [] }], ["adminUnlockLimit", { pcu: "PCU01", item_code: A.code, month: CUR, reason: "x" }],
+    ["adminRemoveUnlock", { pcu: "PCU01", item_code: A.code, month: CUR }], ["adminSetPin", { pcu: "PCU01", pin: "11111" }], ["adminUnlockPin", { pcu: "PCU01" }],
+    ["adminSetHidden", { pcu: "PCU01", codes: [] }], ["adminSetBackupPassword", { password: "longenough1" }], ["adminUsersList", {}],
+    ["adminUsersAdd", { email: "x@y.zz", role: "admin" }], ["adminUsersRemove", { email: "x@y.zz" }], ["adminImportSeed", { seed }], ["adminClearTrial", { confirm: "ล้างข้อมูล" }],
+    ["adminBackupNow", {}], ["adminAuditLog", {}],
+  ];
+  let allForbidden = true;
+  for (const [a, p] of FORBID) { const x = await api(a, p, DSP); if (!(x.ok === false && x.error.code === "FORBIDDEN")) { allForbidden = false; console.log(`  (not forbidden: ${a} → ${JSON.stringify(x).slice(0, 120)})`); } }
+  ok(allForbidden, `dispenser FORBIDDEN on all ${FORBID.length} admin-only actions`);
+  const db1 = await mustOk("adminBootstrap", {}, DSP);
+  ok(db1.me.role === "dispenser" && db1.form && db1.pcus.length === 15 && !("plans" in db1) && !("users" in db1) && !("limits" in db1) && !("prev" in db1), "dispenser adminBootstrap is reduced (no plans/limits/prev/users)");
+  ok(!("pin_fail" in db1.pcus[0]), "dispenser adminBootstrap hides pin state");
+  ok((await api("adminRequests", {}, DSP)).ok, "dispenser may call adminRequests");
+  const dg = await mustOk("adminGetRequest", { pcu: "PCU04", month: CUR }, DSP);
+  ok(dg.request && Object.keys(dg.request.lines).every((c) => seedItems.find((i) => i.code === c).unit_of === "LAB"), "dispenser adminGetRequest only shows lines of its own dispense units");
+  const dx = await get(`/api/export.xlsx?month=${CUR}`, { authorization: "Bearer " + DSP });
+  eq(dx.status, 200, "dispenser may download the Excel export");
+  expectErr(await api("adminBootstrap", {}, T1), "FORBIDDEN", "PCU token on adminBootstrap");
+  ok((await api("adminUsersAdd", { email: "dispenser.lab@example.com", role: "dispenser", units: ["LAB", "พัสดุ"] }, ADM)).ok, "adminUsersAdd upserts (units changed)");
+  eq((await mustOk("adminLoginGoogle", { id_token: "dev:dispenser.lab@example.com" })).units, ["LAB", "พัสดุ"], "dispenser units updated");
+  ok((await api("adminUsersRemove", { email: "dispenser.lab@example.com" }, ADM)).ok, "adminUsersRemove dispenser");
+  expectErr(await api("adminBootstrap", {}, DSP), "FORBIDDEN", "removed user's token is rejected (role re-read per call)");
+  expectErr(await api("adminUsersRemove", { email: ADMIN_EMAIL }, ADM), "CONFLICT", "cannot remove the last admin");
+  expectErr(await api("adminUsersRemove", { email: "ghost@example.com" }, ADM), "NOT_FOUND", "remove unknown user");
+  expectErr(await api("adminUsersAdd", { email: ADMIN_EMAIL, role: "dispenser", units: ["LAB"] }, ADM), "CONFLICT", "cannot demote the last admin");
+  ok((await mustOk("adminUsersAdd", { email: "second.admin@example.com", role: "admin" }, ADM)).users.length === 2, "add a second admin");
+  const adm2 = (await mustOk("adminLoginGoogle", { id_token: "dev:second.admin@example.com" })).token;
+  ok((await api("adminUsersRemove", { email: ADMIN_EMAIL }, adm2)).ok, "with two admins, one can be removed");
+  expectErr(await api("adminBootstrap", {}, ADM), "FORBIDDEN", "removed admin's token is rejected");
+  expectErr(await api("adminLoginGoogle", { id_token: "dev:" + ADMIN_EMAIL }), "FORBIDDEN", "removed admin can no longer log in (users table non-empty ⇒ ADMIN_EMAILS ignored)");
+  ok((await api("adminUsersAdd", { email: ADMIN_EMAIL, role: "admin" }, adm2)).ok, "re-add the original admin");
+  const ADM2 = (await mustOk("adminLoginGoogle", { id_token: "dev:" + ADMIN_EMAIL })).token;
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("import idempotency");
+  const counts = async () => {
+    const b = await mustOk("adminBootstrap", {}, ADM2);
+    const n = (o) => Object.values(o).reduce((a, v) => a + Object.keys(v).length, 0);
+    const prevN = Object.values(b.prev["2569"].actual).reduce((a, o) => a + Object.values(o).reduce((s, e) => s + e.op.filter((x, i) => x > 0 || e.pp[i] > 0).length, 0), 0);
+    return { pcus: b.pcus.length, plans: n(b.plans), limits: n(b.limits), stats: n(b.stats.data), versions: b.form_versions.length, actual: prevN, prices: Object.keys(b.prev["2569"].prices).length };
+  };
+  await mustOk("adminImportSeed", { seed }, ADM2); // restores the seed limits wiped by the replace-mode upload above (admin rows stay)
+  const before = await counts();
+  const keptLimit = (await mustOk("adminBootstrap", {}, ADM2)).limits.PCU01[B.code];
+  const seedPcu = Object.keys(seed.limits["2570"]).find((p) => Object.keys(seed.limits["2570"][p]).length);
+  const seedCode = Object.keys(seed.limits["2570"][seedPcu])[0];
+  await mustOk("adminSetLimit", { pcu: seedPcu, code: seedCode, limit_month: 777, limit_year: 888 }, ADM2);
+  const l3 = (await mustOk("pcuLogin", { pcu: "PCU07", pin: "54321" })).token;
+  const reqsBefore = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests.length;
+  const imp2 = await mustOk("adminImportSeed", { seed }, ADM2);
+  eq(imp2.imported.form, "same", "re-import: identical form → same (no new version)");
+  eq(imp2.imported.plans, imp.imported.plans, "re-import: same plans count");
+  eq(imp2.imported.actual_rows, imp.imported.actual_rows, "re-import: same actual_prev rows");
+  eq(await counts(), before, "re-import: every table has the same number of rows");
+  eq((await mustOk("adminBootstrap", {}, ADM2)).limits.PCU01[B.code], keptLimit, "re-import keeps the admin-edited limit");
+  ok(imp2.imported.limits_kept_admin >= 1, "re-import reports limits_kept_admin");
+  const kept2 = (await mustOk("adminBootstrap", {}, ADM2)).limits[seedPcu][seedCode];
+  eq([kept2.limit_month, kept2.limit_year, kept2.source], [777, 888, "admin"], "re-import does not overwrite an admin-edited limit that is also in the seed");
+  ok((await api("pcuBootstrap", {}, l3)).ok, "re-import keeps PIN (old token still valid)");
+  ok((await api("pcuLogin", { pcu: "PCU07", pin: "54321" })).ok, "re-import keeps the admin-set PIN");
+  eq((await mustOk("adminRequests", { month: CUR }, ADM2)).requests.length, reqsBefore, "re-import leaves requests alone");
+  ok((await mustOk("adminBootstrap", {}, ADM2)).users.length === 2, "re-import leaves users alone");
+  const changed = JSON.parse(JSON.stringify(seed));
+  changed.form.steps[0].rows.find((x) => x.type === "item").price += 1;
+  const imp3 = await mustOk("adminImportSeed", { seed: changed }, ADM2);
+  ok(imp3.imported.form === "skipped_differs" && imp3.warnings.some((w) => /form/.test(w)), "differing form is NOT overwritten (skipped_differs + warning)");
+  eq((await counts()).versions, 1, "no extra form version created");
+  const sf = await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2571, config: { fy_current: 2571 } }, set_current_fy: true }, ADM2);
+  ok(sf.imported.config_set.includes("fy_current"), "set_current_fy sets fy_current");
+  eq((await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, 2571, "fy_current = 2571 after set_current_fy");
+  await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570 }, set_current_fy: true }, ADM2);
+  eq((await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, 2570, "fy_current restored");
+  const impC = await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570, config: { limit_mode: "enforce", budget_op: 1 } } }, ADM2);
+  eq(impC.imported.config_set, [], "config import never overwrites existing values");
+  eq((await mustOk("adminBootstrap", {}, ADM2)).config.limit_mode, "warn", "limit_mode untouched");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("fiscal-year edge: previous month in FY2569 (form fallback)");
+  {
+    const T9 = (await mustOk("pcuLogin", { pcu: "PCU09", pin: "12345" }, undefined)).token;
+    const o = { month: "2026-10" };
+    const eb = await api("pcuBootstrap", {}, T9, o);
+    ok(eb.ok && eb.data.rounds[0].month === "2026-10" && eb.data.rounds[1].month === "2026-09", "dev month 2026-10: rounds = [2026-10, 2026-09]");
+    const e1 = await api("saveLines", { month: "2026-09", lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T9, o);
+    ok(e1.ok && e1.data.status === "submitted" && e1.data.request.form_version_id === eb.data.form_version_id, "FY2569 month falls back to the newest form version (no 2569 form exists)");
+    const e2 = await api("pcuBootstrap", {}, T9, o);
+    eq(e2.data.byMonth["2026-10"].used_fy, {}, "FY2570 used_fy ignores the FY2569 month (Sep 2026)");
+    eq(e2.data.byMonth["2026-10"].prev_lines[A.code], { op: 1, pp: 0 }, "…but prev_lines still reads the previous calendar month");
+    ok((await api("saveLines", { month: "2026-10", lines: {} }, T9, o)).ok, "saving in the first month of the FY works");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("Excel export");
+  {
+    const reqs = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests;
+    const lineRows = reqs.reduce((a, x) => a + x.progress.items_requested, 0);
+    const submittedBaht = reqs.filter((x) => x.status === "submitted" || x.status === "issued").reduce((a, x) => a + x.progress.baht, 0);
+    const x0 = await get(`/api/export.xlsx?month=${CUR}&token=${encodeURIComponent(ADM2)}`);
+    eq(x0.status, 200, "GET /api/export.xlsx?month= → 200");
+    ok(/spreadsheetml/.test(x0.headers.get("content-type") || ""), "content-type = xlsx");
+    const cd = x0.headers.get("content-disposition") || "";
+    ok(/attachment/.test(cd) && /filename\*=UTF-8''/.test(cd), "Content-Disposition: attachment + filename*=UTF-8''");
+    eq(decodeURIComponent(cd.split("filename*=UTF-8''")[1]), `เบิกวัสดุ_${CUR}.xlsx`, "Thai filename เบิกวัสดุ_YYYY-MM.xlsx");
+    const buf = Buffer.from(await x0.arrayBuffer());
+    eq(buf.subarray(0, 2).toString("latin1"), "PK", "file is a zip (starts with PK)");
+    const wb = XLSX.read(buf, { type: "buffer" });
+    eq(wb.SheetNames, ["รายบรรทัด", "รพ.สต. × รายการ", "สรุปเงินต่อ รพ.สต."], "3 sheets with Thai names");
+    const s1 = XLSX.utils.sheet_to_json(wb.Sheets["รายบรรทัด"], { header: 1 });
+    eq(s1[0].slice(0, 12), ["เดือน", "รหัส รพ.สต.", "รพ.สต.", "หน้า", "รหัสรายการ", "รายการ", "หน่วย", "ราคา/หน่วย", "OP", "PP", "รวม", "เป็นเงิน"], "sheet 1 Thai header");
+    eq(s1.length - 1, lineRows, `sheet 1: one row per requested line (${lineRows})`);
+    const rowA = s1.find((r) => r[1] === "PCU01" && r[4] === A.code);
+    ok(rowA && rowA[8] === 8 && rowA[9] === 1 && rowA[10] === 9 && near(rowA[11], 9 * A.price), "sheet 1: PCU01 line values (OP 8, PP 1, total 9, baht)");
+    const s2 = XLSX.utils.sheet_to_json(wb.Sheets["รพ.สต. × รายการ"], { header: 1 });
+    eq(s2[1].length, 3 + 15 + 1, "sheet 2: 15 PCU columns + total");
+    const aRow = s2.find((r) => r[0] === A.code);
+    ok(aRow && aRow[aRow.length - 1] >= 9, "sheet 2: requested qty total for item A");
+    ok(s2.some((r) => r[0] && String(r[0]).startsWith("จำนวนที่จ่ายจริง")), "sheet 2: second block for issued qty");
+    const s3 = XLSX.utils.sheet_to_json(wb.Sheets["สรุปเงินต่อ รพ.สต."], { header: 1 });
+    ok(s3[1][2] === "แผน OP (บาท)" && s3[1][5] === "ขอ OP (บาท)" && s3[1][8] === "จ่ายจริง OP", "sheet 3 Thai headers (plan / requested / issued)");
+    const tot = s3[s3.length - 1];
+    ok(tot[1] === "รวม" && near(tot[7], submittedBaht, 0.05), `sheet 3: requested total = Σ submitted baht (${submittedBaht})`);
+    ok(near(tot[4], boot.plan_totals.total, 0.05), "sheet 3: plan total = bootstrap plan total");
+    eq(tot[10], 0, "sheet 3: issued total is 0 in 2a");
+    const xf = await get(`/api/export.xlsx?fy=2570`, { authorization: "Bearer " + ADM2 });
+    eq(xf.status, 200, "export by fiscal year → 200");
+    ok(/ปีงบ2570/.test(decodeURIComponent((xf.headers.get("content-disposition") || "").split("''")[1] || "")), "fy filename เบิกวัสดุ_ปีงบ2570.xlsx");
+    eq((await get(`/api/export.xlsx?month=${CUR}`)).status, 401, "export without a token → 401");
+    eq((await get(`/api/export.xlsx?month=${CUR}&token=${encodeURIComponent(T1)}`)).status, 403, "export with a PCU token → 403");
+    eq((await get(`/api/export.xlsx`, { authorization: "Bearer " + ADM2 })).status, 400, "export without month/fy → 400");
+    eq((await get(`/api/export.xlsx?month=2026-99`, { authorization: "Bearer " + ADM2 })).status, 400, "export with a bad month → 400");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("backup password (admin fallback login)");
+  expectErr(await api("adminLoginBackup", { password: "whatever12" }), "NOT_FOUND", "no backup password set yet");
+  expectErr(await api("adminSetBackupPassword", { password: "short" }, ADM2), "BAD_REQUEST", "backup password ≥ 8 chars");
+  ok((await api("adminSetBackupPassword", { password: "correct-horse-1" }, ADM2)).ok, "adminSetBackupPassword (Google admin)");
+  const bl = await api("adminLoginBackup", { password: "correct-horse-1" });
+  ok(bl.ok && bl.data.role === "admin", "adminLoginBackup ok → admin token");
+  const BK = bl.data.token;
+  ok((await api("adminBootstrap", {}, BK)).ok, "backup-password admin can use admin actions");
+  expectErr(await api("adminSetBackupPassword", { password: "another-pass-2" }, BK), "FORBIDDEN", "backup-password session cannot change the backup password");
+  ok((await api("adminUsersAdd", { email: "x.dispenser@example.com", role: "dispenser", units: ["พัสดุ"] }, BK)).ok, "backup admin may manage users");
+  await api("adminUsersRemove", { email: "x.dispenser@example.com" }, BK);
+  ok((await api("adminSetBackupPassword", { password: "correct-horse-2" }, ADM2)).ok, "backup password changed");
+  expectErr(await api("adminBootstrap", {}, BK), "AUTH_EXPIRED", "changing the backup password invalidates backup sessions");
+  const bw = await api("adminLoginBackup", { password: "wrong-password" });
+  expectErr(bw, "BAD_PASSWORD", "wrong backup password"); eq(bw.error.remaining, 4, "BAD_PASSWORD remaining 4");
+  let lk;
+  for (let i = 0; i < 4; i++) lk = await api("adminLoginBackup", { password: "wrong-password" });
+  ok(!lk.ok && lk.error.code === "LOCKED" && lk.error.until, "5th wrong backup password → LOCKED (15 min)");
+  expectErr(await api("adminLoginBackup", { password: "correct-horse-2" }), "LOCKED", "correct password still locked");
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("backup to R2 (cron endpoint + adminBackupNow)");
+  {
+    const post = (headers) => fetch(BASE + "/api/cron/backup", { method: "POST", headers });
+    eq((await post({})).status, 403, "cron/backup without key → 403");
+    eq((await post({ "x-backup-key": "wrong" })).status, 403, "cron/backup wrong key → 403");
+    eq((await fetch(BASE + "/api/cron/backup", { headers: { "x-backup-key": BACKUP_KEY } })).status, 405, "cron/backup GET → 405");
+    await mustOk("devPutBackup", { key: "backup/2020-01-01.json" });
+    await mustOk("devPutBackup", { key: "backup/2099-01-01.json" });
+    const res = await post({ "x-backup-key": BACKUP_KEY });
+    const j = await res.json();
+    ok(res.status === 200 && j.ok && /^backup\/\d{4}-\d{2}-\d{2}\.json$/.test(j.data.key) && j.data.size > 5000, "cron/backup with key → writes backup/YYYY-MM-DD.json");
+    ok(j.data.deleted.includes("backup/2020-01-01.json") && !j.data.deleted.includes("backup/2099-01-01.json"), "backups older than 90 days are deleted, newer kept");
+    const ls = await mustOk("devListBackups");
+    ok(ls.keys.includes(j.data.key) && ls.keys.includes("backup/2099-01-01.json") && !ls.keys.includes("backup/2020-01-01.json"), "R2 listing: new backup present, old one gone");
+    const nb = await mustOk("adminBackupNow", {}, ADM2);
+    ok(nb.key === j.data.key && nb.size > 5000, "adminBackupNow returns key + size");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("audit log");
+  {
+    const a1 = await mustOk("adminAuditLog", { limit: 500 }, ADM2);
+    ok(a1.entries.length > 20, "audit log has entries");
+    ok(a1.entries[0].id > a1.entries[a1.entries.length - 1].id, "newest first");
+    const acts = new Set(a1.entries.map((e) => e.action));
+    for (const a of ["submit", "adminSetPin", "adminLockRound", "adminNote", "adminSetConfig", "import_seed", "adminUsersAdd", "adminLimitsUpload", "adminSetLimit"]) ok(acts.has(a), `audit has "${a}"`);
+    ok(a1.entries.every((e) => e.ts && "actor" in e && "role" in e), "entries carry ts/actor/role");
+    const page = await mustOk("adminAuditLog", { limit: 5 }, ADM2);
+    eq(page.entries.length, 5, "limit respected");
+    const older = await mustOk("adminAuditLog", { limit: 5, before: page.next_before }, ADM2);
+    ok(older.entries.length === 5 && older.entries.every((e) => e.id < page.next_before), "before pagination returns older rows");
+    const n0 = (await mustOk("adminAuditLog", { limit: 1 }, ADM2)).entries[0].id;
+    await mustOk("adminNote", { pcu: "PCU10", month: CUR, note: "audit probe" }, ADM2);
+    const n1b = (await mustOk("adminAuditLog", { limit: 1 }, ADM2)).entries[0];
+    ok(n1b.id > n0 && n1b.action === "adminNote" && n1b.pcu === "PCU10", "audit log grows after a mutating action");
+    const lg = (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.filter((e) => e.action === "adminLoginBackup");
+    ok(lg.length >= 5, "failed logins are audited too");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("clear trial data");
+  {
+    expectErr(await api("adminClearTrial", { confirm: "yes" }, ADM2), "BAD_REQUEST", "clear trial needs the confirmation word");
+    const hiddenBefore = (await mustOk("adminBootstrap", {}, ADM2)).hidden;
+    const limitsBefore = Object.keys((await mustOk("adminBootstrap", {}, ADM2)).limits).length;
+    const c = await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2);
+    ok(c.deleted_requests >= 7 && c.deleted_lines >= 7, `adminClearTrial deletes requests + lines (${c.deleted_requests}/${c.deleted_lines})`);
+    ok("deleted_issue_status" in c && "deleted_pdf_files" in c, "adminClearTrial reports issue_status / pdf_files");
+    eq((await mustOk("adminRequests", { month: CUR }, ADM2)).requests, [], "no requests left");
+    const ab = await mustOk("adminBootstrap", {}, ADM2);
+    eq(ab.months, [], "adminBootstrap.months empty");
+    eq(ab.hidden, hiddenBefore, "hidden items survive");
+    eq(Object.keys(ab.limits).length, limitsBefore, "limits survive");
+    ok(ab.users.length === 2 && ab.form_versions.length === 1 && Object.keys(ab.plans).length > 0, "users, form versions and plans survive");
+    ok(ab.rounds.some((x) => x.month === CUR && x.note), "rounds survive");
+    const again = await mustOk("pcuBootstrap", {}, T1);
+    eq(again.byMonth[CUR].request, null, "PCU sees an empty month after the trial wipe");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  console.log(`\n${pass} passed, ${fail} failed`);
 }
 
-// =================================================================================================
-console.log("\n=== submit: INCOMPLETE, hidden, ok ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU04", pin: "12345" }).data.token;
-  const submitEmpty = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(!submitEmpty.ok && submitEmpty.error.code === "INCOMPLETE" && Array.isArray(submitEmpty.error.missing) && submitEmpty.error.missing.length === 125,
-    "submit with nothing filled -> INCOMPLETE listing all 125 codes");
-
-  const allCodes = rt.sandbox.ITEM_CODES;
-  const hideCodes = allCodes.slice(0, 10);
-  const setH = post({ action: "setHidden", token: tok, codes: hideCodes });
-  ok(setH.ok && setH.data.hidden.length === 10, "setHidden hides 10 items");
-
-  const submitStillMissing = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(!submitStillMissing.ok && submitStillMissing.error.code === "INCOMPLETE" && submitStillMissing.error.missing.length === 115,
-    "submit missing count excludes hidden items (125-10=115)");
-
-  const remaining = allCodes.filter((c) => !hideCodes.includes(c));
-  const lines = {};
-  const now = new Date().toISOString();
-  remaining.forEach((c) => { lines[c] = { stock: 0, op: 0, pp: 0, updated_at: now }; });
-  const fill = post({ action: "saveLines", token: tok, month: "2025-09", lines });
-  ok(fill.ok, "saveLines fills remaining 115 items with stock=0");
-
-  const submitOk = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(submitOk.ok && submitOk.data.request.status === "submitted", "submit ok after filling all non-hidden items");
-}
-
-// =================================================================================================
-console.log("\n=== withdraw / admin receive / conflicts ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU04", pin: "12345" }).data.token;
-  const withdrawn = post({ action: "withdraw", token: tok, month: "2025-09" });
-  ok(withdrawn.ok && withdrawn.data.request.status === "draft", "withdraw returns to draft");
-
-  const resubmit = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(resubmit.ok && resubmit.data.request.status === "submitted", "resubmit ok");
-
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const received = post({ action: "adminReceive", token: adminTok, pcu: "PCU04", month: "2025-09" });
-  ok(received.ok && received.data.request.status === "received", "adminReceive -> received");
-
-  const withdrawAfterReceive = post({ action: "withdraw", token: tok, month: "2025-09" });
-  ok(!withdrawAfterReceive.ok && withdrawAfterReceive.error.code === "CONFLICT", "withdraw after received -> CONFLICT");
-
-  const saveAfterReceive = post({ action: "saveLines", token: tok, month: "2025-09", lines: { "P1-01": { stock: 1, op: 0, pp: 0, updated_at: new Date().toISOString() } } });
-  ok(!saveAfterReceive.ok && saveAfterReceive.error.code === "CONFLICT", "saveLines after received -> CONFLICT");
-}
-
-// =================================================================================================
-console.log("\n=== admin return + reason + resubmit clears it ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU05", pin: "12345" }).data.token;
-  const now = new Date().toISOString();
-  const lines = {};
-  rt.sandbox.ITEM_CODES.forEach((c) => { lines[c] = { stock: 0, op: 0, pp: 0, updated_at: now }; });
-  post({ action: "saveLines", token: tok, month: "2025-09", lines });
-  post({ action: "submit", token: tok, month: "2025-09" });
-
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const ret = post({ action: "adminReturn", token: adminTok, pcu: "PCU05", month: "2025-09", reason: "กรอกไม่ครบ" });
-  ok(ret.ok && ret.data.request.status === "draft" && ret.data.request.return_reason === "กรอกไม่ครบ", "adminReturn -> draft + reason");
-
-  const boot = post({ action: "pcuBootstrap", token: tok });
-  ok(boot.data.byRound["2025-09"].request.return_reason === "กรอกไม่ครบ", "return_reason visible in pcuBootstrap");
-
-  const resubmit = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(resubmit.ok && resubmit.data.request.return_reason === "", "resubmit clears return_reason");
-}
-
-// =================================================================================================
-console.log("\n=== limit mode: enforce -> OVER_LIMIT, warn -> ok ===");
-{
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const tok = post({ action: "pcuLogin", pcu: "PCU06", pin: "12345" }).data.token;
-
-  const setLim = post({ action: "adminSetLimit", token: adminTok, pcu: "PCU06", code: "P1-01", limit_month: 3, limit_year: 1000 });
-  ok(setLim.ok && setLim.data.limit.limit_month === 3, "adminSetLimit sets limit_month=3");
-
-  const modeEnforce = post({ action: "adminSetMode", token: adminTok, mode: "enforce" });
-  ok(modeEnforce.ok && modeEnforce.data.config.limit_mode === "enforce", "adminSetMode enforce");
-
-  const now = new Date().toISOString();
-  const lines = {}; rt.sandbox.ITEM_CODES.forEach((c) => { lines[c] = { stock: 0, op: 0, pp: 0, updated_at: now }; });
-  lines["P1-01"] = { stock: 0, op: 10, pp: 0, updated_at: now }; // 10 > limit_month 3
-  post({ action: "saveLines", token: tok, month: "2025-09", lines });
-  const overSubmit = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(!overSubmit.ok && overSubmit.error.code === "OVER_LIMIT" && overSubmit.error.items.some((i) => i.code === "P1-01"),
-    "enforce mode: submit OVER_LIMIT when exceeding limit_month");
-
-  const modeWarn = post({ action: "adminSetMode", token: adminTok, mode: "warn" });
-  ok(modeWarn.ok && modeWarn.data.config.limit_mode === "warn", "adminSetMode back to warn");
-  const warnSubmit = post({ action: "submit", token: tok, month: "2025-09" });
-  ok(warnSubmit.ok, "warn mode: same over-limit request submits fine");
-}
-
-// =================================================================================================
-console.log("\n=== adminSetLimit / adminResetLimit / pcuBootstrap reflects it ===");
-{
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const tok = post({ action: "pcuLogin", pcu: "PCU07", pin: "12345" }).data.token;
-
-  post({ action: "adminSetLimit", token: adminTok, pcu: "PCU07", code: "P1-02", limit_month: 42, limit_year: 500 });
-  const boot1 = post({ action: "pcuBootstrap", token: tok });
-  okEq(boot1.data.limits["P1-02"], [42, 500], "pcuBootstrap.limits reflects adminSetLimit after reload");
-
-  const statsRow = (seed.stats["PCU07"] || {})["P1-02"];
-  const resetRes = post({ action: "adminResetLimit", token: adminTok, pcu: "PCU07", code: "P1-02" });
-  ok(resetRes.ok, "adminResetLimit ok");
-  const boot2 = post({ action: "pcuBootstrap", token: tok });
-  const expLm = statsRow ? (Math.ceil(statsRow[1] - 1e-9) || null) : null;
-  const expLy = statsRow ? (Math.ceil(statsRow[2] - 1e-9) || null) : null;
-  okEq(boot2.data.limits["P1-02"] || [null, null], [expLm, expLy], "adminResetLimit restores ceil(P90)/ceil(annual) from seed stats");
-}
-
-// =================================================================================================
-console.log("\n=== adminSetPin invalidates old token ===");
-{
-  const oldTok = post({ action: "pcuLogin", pcu: "PCU08", pin: "12345" }).data.token;
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const setPin = post({ action: "adminSetPin", token: adminTok, pcu: "PCU08", pin: "54321" });
-  ok(setPin.ok, "adminSetPin ok");
-
-  const useOld = post({ action: "pcuBootstrap", token: oldTok });
-  ok(!useOld.ok && (useOld.error.code === "AUTH_EXPIRED" || useOld.error.code === "FORBIDDEN"), "old token rejected after PIN change (AUTH_EXPIRED/FORBIDDEN)");
-
-  const oldPinLogin = post({ action: "pcuLogin", pcu: "PCU08", pin: "12345" });
-  ok(!oldPinLogin.ok, "old PIN no longer works");
-  const newPinLogin = post({ action: "pcuLogin", pcu: "PCU08", pin: "54321" });
-  ok(newPinLogin.ok, "new PIN works");
-}
-
-// =================================================================================================
-console.log("\n=== setHidden / adminSetHidden round-trip ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU09", pin: "12345" }).data.token;
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  post({ action: "setHidden", token: tok, codes: ["P1-01", "P1-02"] });
-  const viaAdmin = post({ action: "adminBootstrap", token: adminTok });
-  okEq((viaAdmin.data.hidden["PCU09"] || []).sort(), ["P1-01", "P1-02"], "PCU-set hidden visible to admin");
-
-  post({ action: "adminSetHidden", token: adminTok, pcu: "PCU09", codes: ["P1-03"] });
-  const boot = post({ action: "pcuBootstrap", token: tok });
-  okEq(boot.data.hidden, ["P1-03"], "adminSetHidden replaces PCU's hidden list (round-trip visible to PCU)");
-}
-
-// =================================================================================================
-console.log("\n=== round 2025-10 prev switches to trial after Sep submitted ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU10", pin: "12345" }).data.token;
-  const bootBefore = post({ action: "pcuBootstrap", token: tok });
-  const beforeSrc = (bootBefore.data.byRound["2025-10"].prev.items["P1-01"] || {}).stock_src;
-  ok(beforeSrc === "sim" || beforeSrc === undefined, "2025-10 prev is sim-sourced before Sep is submitted");
-
-  const now = new Date().toISOString();
-  const lines = {}; rt.sandbox.ITEM_CODES.forEach((c) => { lines[c] = { stock: 3, op: 7, pp: 1, updated_at: now }; });
-  post({ action: "saveLines", token: tok, month: "2025-09", lines });
-  post({ action: "submit", token: tok, month: "2025-09" });
-
-  const bootAfter = post({ action: "pcuBootstrap", token: tok });
-  const afterItem = bootAfter.data.byRound["2025-10"].prev.items["P1-01"];
-  ok(afterItem && afterItem.stock_src === "trial" && afterItem.stock === 3 && afterItem.op === 7 && afterItem.pp === 1,
-    "2025-10 prev switches to trial (Sep's submitted lines) once Sep is submitted");
-}
-
-// =================================================================================================
-console.log("\n=== admin Google login allow/deny ===");
-{
-  const okLogin = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" });
-  ok(okLogin.ok, "adminLoginGoogle parinya.paw@gmail.com ok");
-  const denied = post({ action: "adminLoginGoogle", id_token: "dev:save.independent@gmail.com" });
-  ok(!denied.ok && denied.error.code === "FORBIDDEN", "adminLoginGoogle non-admin email -> FORBIDDEN");
-}
-
-// =================================================================================================
-console.log("\n=== backup password ===");
-{
-  const googleTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const noBackupYet = post({ action: "adminLoginBackup", password: "whatever1" });
-  ok(!noBackupYet.ok && noBackupYet.error.code === "NOT_FOUND", "adminLoginBackup before it's set -> NOT_FOUND");
-
-  const setBackup = post({ action: "adminSetBackupPassword", token: googleTok, password: "sup3rSecret!" });
-  ok(setBackup.ok, "adminSetBackupPassword (google admin) ok");
-
-  const backupTok = post({ action: "adminLoginBackup", password: "sup3rSecret!" }).data.token;
-  ok(!!backupTok, "adminLoginBackup with correct password works");
-
-  const backupCannotSetBackup = post({ action: "adminSetBackupPassword", token: backupTok, password: "anotherPassw0rd" });
-  ok(!backupCannotSetBackup.ok && backupCannotSetBackup.error.code === "FORBIDDEN", "adminSetBackupPassword via backup token -> FORBIDDEN (google admin only)");
-
-  let lastFail;
-  for (let i = 0; i < 5; i++) lastFail = post({ action: "adminLoginBackup", password: "wrong-password" });
-  ok(!lastFail.ok && lastFail.error.code === "LOCKED" && !!lastFail.error.until, "5x wrong backup password -> LOCKED");
-}
-
-// =================================================================================================
-console.log("\n=== adminBootstrap network totals ===");
-{
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const t0 = Date.now();
-  const ab = post({ action: "adminBootstrap", token: adminTok });
-  const elapsedMs = Date.now() - t0;
-  ok(ab.ok, "adminBootstrap ok");
-
-  let opTotal = 0, ppTotal = 0;
-  Object.keys(ab.data.actual).forEach((pcu) => {
-    Object.keys(ab.data.actual[pcu]).forEach((code) => {
-      const price = ab.data.price_2568[code] !== undefined ? ab.data.price_2568[code] : ((ab.data.items_extra[code] || {}).price_2568 || 0);
-      const a = ab.data.actual[pcu][code];
-      for (let i = 0; i < 12; i++) { opTotal += a.op[i] * price; ppTotal += a.pp[i] * price; }
-    });
-  });
-  opTotal = Math.round(opTotal * 100) / 100;
-  ppTotal = Math.round(ppTotal * 100) / 100;
-  ok(Math.abs(opTotal - 413041.11) < 0.01, `adminBootstrap OP total = ${opTotal} (expect 413041.11)`);
-  ok(Math.abs(ppTotal - 137014.98) < 0.01, `adminBootstrap PP total = ${ppTotal} (expect 137014.98)`);
-
-  const bytes = Buffer.byteLength(JSON.stringify(ab), "utf8");
-  console.log(`INFO adminBootstrap payload size: ${bytes.toLocaleString()} bytes (built in ${elapsedMs}ms)`);
-}
-
-// =================================================================================================
-console.log("\n=== adminClearTrial keeps limits/hidden/pins, deletes requests ===");
-{
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const beforeReq = post({ action: "adminRequests", token: adminTok });
-  ok(beforeReq.data.requests.length > 0, "there are requests before clearing (sanity)");
-
-  const bad = post({ action: "adminClearTrial", token: adminTok, confirm: "wrong" });
-  ok(!bad.ok && bad.error.code === "BAD_REQUEST", "adminClearTrial without exact confirm text -> BAD_REQUEST");
-
-  const limitBefore = post({ action: "pcuBootstrap", token: post({ action: "pcuLogin", pcu: "PCU07", pin: "12345" }).data.token }).data.limits["P1-02"];
-  const clear = post({ action: "adminClearTrial", token: adminTok, confirm: "ล้างข้อมูล" });
-  ok(clear.ok && clear.data.deleted_requests > 0, "adminClearTrial deletes requests");
-
-  const afterReq = post({ action: "adminRequests", token: adminTok });
-  ok(afterReq.data.requests.length === 0, "no requests remain after adminClearTrial");
-
-  const pcu07Tok = post({ action: "pcuLogin", pcu: "PCU07", pin: "12345" }); // PIN still works
-  ok(pcu07Tok.ok, "PINs survive adminClearTrial");
-  const limitAfter = post({ action: "pcuBootstrap", token: pcu07Tok.data.token }).data.limits["P1-02"];
-  okEq(limitAfter, limitBefore, "limits survive adminClearTrial");
-
-  const pcu08NewPin = post({ action: "pcuLogin", pcu: "PCU08", pin: "54321" });
-  ok(pcu08NewPin.ok, "PCU08's admin-changed PIN also survives adminClearTrial");
-}
-
-// =================================================================================================
-console.log("\n=== setup() re-run is idempotent (edited limit & changed PIN survive) ===");
-{
-  rt.call("setup");
-  const pcu08Login = post({ action: "pcuLogin", pcu: "PCU08", pin: "54321" });
-  ok(pcu08Login.ok, "PCU08 changed PIN survives setup() re-run");
-
-  const pcu07Tok = post({ action: "pcuLogin", pcu: "PCU07", pin: "12345" }).data.token;
-  const limitAfterSetup = post({ action: "pcuBootstrap", token: pcu07Tok }).data.limits["P1-02"];
-  ok(limitAfterSetup !== undefined, "limit for PCU07/P1-02 still present after setup() re-run");
-}
-
-// =================================================================================================
-console.log("\n=== audit_log has rows ===");
-{
-  const auditSheet = state.sheets["audit_log"];
-  ok(auditSheet && auditSheet.data.length > 10, "audit_log has many rows (header + actions)");
-  const actions = auditSheet.data.slice(1).map((r) => r[2]);
-  ["pcuLogin", "saveLines", "submit", "adminSetLimit", "adminSetPin", "adminReceive", "adminReturn", "adminClearTrial"].forEach((a) => {
-    ok(actions.includes(a), `audit_log contains at least one "${a}" row`);
-  });
-}
-
-// =================================================================================================
-console.log("\n=== adminGetRequest (admin reprint) ===");
-{
-  const adminTok = post({ action: "adminLoginGoogle", id_token: "dev:parinya.paw@gmail.com" }).data.token;
-  const tok = post({ action: "pcuLogin", pcu: "PCU12", pin: "12345" }).data.token;
-
-  const beforeAny = post({ action: "adminGetRequest", token: adminTok, pcu: "PCU12", month: "2025-09" });
-  ok(beforeAny.ok && beforeAny.data.request === null && beforeAny.data.pcu.code === "PCU12", "adminGetRequest returns request:null before any saveLines");
-
-  const now = new Date().toISOString();
-  const lines = { "P1-01": { stock: 4, op: 2, pp: 0, updated_at: now } };
-  post({ action: "saveLines", token: tok, month: "2025-09", last_step: "P1", lines });
-  post({ action: "setHidden", token: tok, codes: ["LAB-01"] });
-
-  const after = post({ action: "adminGetRequest", token: adminTok, pcu: "PCU12", month: "2025-09" });
-  ok(after.ok && after.data.request && after.data.request.lines["P1-01"].stock === 4, "adminGetRequest returns the PCU's request+lines");
-  okEq(after.data.hidden, ["LAB-01"], "adminGetRequest returns the PCU's hidden list");
-
-  const wrongPcu = post({ action: "adminGetRequest", token: adminTok, pcu: "NOPE", month: "2025-09" });
-  ok(!wrongPcu.ok && wrongPcu.error.code === "NOT_FOUND", "adminGetRequest with unknown pcu -> NOT_FOUND");
-
-  const pcuTokenDenied = post({ action: "adminGetRequest", token: tok, pcu: "PCU12", month: "2025-09" });
-  ok(!pcuTokenDenied.ok && pcuTokenDenied.error.code === "FORBIDDEN", "adminGetRequest with a PCU token (not admin) -> FORBIDDEN");
-}
-
-// =================================================================================================
-console.log("\n=== token tampering / expiry ===");
-{
-  const tok = post({ action: "pcuLogin", pcu: "PCU11", pin: "12345" }).data.token;
-  const parts = tok.split(".");
-  const tamperedPartA = parts[0].slice(0, -1) + (parts[0].slice(-1) === "A" ? "B" : "A");
-  const tampered = tamperedPartA + "." + parts[1];
-  const tamperedRes = post({ action: "pcuBootstrap", token: tampered });
-  ok(!tamperedRes.ok && tamperedRes.error.code.indexOf("AUTH_") === 0, "tampered token -> AUTH_* error");
-
-  // Craft a token with a valid signature but an already-past exp, using the backend's own signer.
-  const expiredToken = rt.sandbox.signToken_({ t: "pcu", pcu: "PCU11", v: 1, exp: Date.now() - 1000 });
-  const expiredRes = post({ action: "pcuBootstrap", token: expiredToken });
-  ok(!expiredRes.ok && expiredRes.error.code === "AUTH_EXPIRED", "expired (but validly-signed) token -> AUTH_EXPIRED");
-
-  const noToken = post({ action: "pcuBootstrap" });
-  ok(!noToken.ok && noToken.error.code === "AUTH_REQUIRED", "missing token -> AUTH_REQUIRED");
-}
-
-// =================================================================================================
-console.log("\n=== sheet growth + text formats (real-Sheets behaviour) ===");
-{
-  // audit_log past the initial 1000-row grid must keep working (getRange beyond maxRows throws in Sheets)
-  for (let i = 0; i < 1100; i++) rt.sandbox.auditLog_("test", "bulk", "PCU01", "2025-09", "i=" + i);
-  rt.sandbox.resetDbCache_();
-  const n = rt.sandbox.readTable_("audit_log").length;
-  ok(n > 1100, `audit_log grows past 1000 rows (${n})`);
-  // month keys / timestamps survive a round-trip as strings (not Dates)
-  const act = rt.sandbox.readTable_("actual_2568");
-  ok(act.length > 1000 && act.every((r) => typeof r.month === "string" && /^\d{4}-\d{2}$/.test(r.month)), "actual_2568 months read back as 'YYYY-MM' strings");
-  const reqs = rt.sandbox.readTable_("requests");
-  ok(reqs.every((r) => typeof r.updated_at === "string"), "request timestamps read back as strings");
-}
-
-// =================================================================================================
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail > 0 ? 1 : 0);
+let exitCode = 0;
+try { await main(); exitCode = fail ? 1 : 0; }
+catch (e) { console.log("FATAL " + (e && e.stack || e)); exitCode = 1; }
+finally { stopServer(); }
+process.exit(exitCode);

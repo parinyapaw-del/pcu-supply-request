@@ -2,3 +2,9 @@
 _seed.html
 __pycache__/
 tools/.devstate*.json
+node_modules/
+.wrangler/
+.dev.vars
+
+# Seed / import data (hospital plan + actual figures) never enters git — keep it in ../phase2_seed and Drive
+seed/*.json

@@ -1,0 +1,16 @@
+# Nightly D1 → R2 backup. Cloudflare Pages has no Cron Triggers, so GitHub Actions calls the endpoint.
+# Repo settings needed:  Secret BACKUP_KEY (same value as the Pages secret)  ·  Variable SITE_URL (e.g. https://pcu-supply-request.pages.dev)
+name: nightly-backup
+on:
+  schedule:
+    - cron: "0 19 * * *"   # 19:00 UTC = 02:00 Asia/Bangkok
+  workflow_dispatch: {}
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/backup
+        run: |
+          curl --fail --silent --show-error --max-time 120 -X POST \
+            -H "X-Backup-Key: ${{ secrets.BACKUP_KEY }}" \
+            "${{ vars.SITE_URL }}/api/cron/backup"

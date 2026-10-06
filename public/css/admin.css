@@ -1,20 +1,8 @@
-/* Admin back-office styles (phase 1.5, checkpoint C4). Loaded after css/main.css — reuses its
+/* Admin back-office styles (phase 2a, checkpoint C4). Loaded after css/main.css — reuses its
    CSS variables (--bg, --surface, --text, --muted, --line, --accent, --danger, --warn, --success,
    --muted-bg, --sim-tag, --focus) instead of redefining them. */
 
 .admin-shell { max-width: 1280px; margin: 0 auto; padding: 0 16px 40px; }
-
-/* ---- top banner ---- */
-.admin-top-banner {
-  background: var(--muted-bg);
-  color: var(--text);
-  padding: 10px 16px;
-  text-align: center;
-  font-size: 0.9rem;
-  border-bottom: 1px solid var(--line);
-}
-.admin-top-banner b { color: var(--accent); }
-.admin-top-banner .tag-sim { color: var(--sim-tag); font-weight: 700; }
 
 /* ---- login screen ---- */
 .admin-login-wrap {
@@ -164,6 +152,100 @@
   .admin-card { padding: 12px; }
 }
 
+
+
+/* ---- phase 2a additions ---- */
+.small { font-size: 0.8rem; }
+.btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.admin-me .badge { white-space: nowrap; }
+.admin-tabbar { flex-wrap: nowrap; }
+.admin-panel { display: none; min-width: 0; }
+.admin-panel.active { display: block; }
+
+.round-row { display: flex; gap: 24px; flex-wrap: wrap; align-items: stretch; }
+.round-box { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.round-label { color: var(--muted); font-size: 0.85rem; }
+.admin-table .status-cell { white-space: normal; min-width: 240px; }
+.admin-table .actions-cell { white-space: normal; }
+.note-line { margin-top: 4px; padding: 4px 8px; border-left: 3px solid var(--warn); background: var(--warn-bg); color: var(--warn); font-size: 0.82rem; white-space: normal; border-radius: 4px; }
+.pcu-group-tag { font-size: 0.75rem; color: var(--muted); }
+.admin-table .name-cell { white-space: normal; min-width: 220px; }
+.admin-table .badge { white-space: nowrap; }
+.admin-table td.code-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.admin-table th.sortable { cursor: pointer; }
+.admin-table td.zero { color: var(--muted); opacity: .6; }
+
+/* totals tab */
+.exp-btn { border: none; background: none; color: var(--accent); cursor: pointer; font-size: 0.95rem; width: 22px; padding: 0; }
+.exp-btn:disabled { visibility: hidden; }
+.breakdown-row > td { background: var(--muted-bg); padding: 6px 8px; }
+.mini-table { font-size: 0.8rem; width: auto; }
+.mini-table th, .mini-table td { padding: 2px 6px; text-align: right; }
+.mini-table th.left { text-align: left; }
+.mini-table .pcu-mini { font-weight: 400; font-size: 0.7rem; color: var(--muted); max-width: 70px; overflow: hidden; text-overflow: ellipsis; }
+.mini-table tr.tot th, .mini-table tr.tot td { font-weight: 700; border-top: 2px solid var(--line); }
+.print-title { display: none; }
+
+/* forms */
+.admin-form-field { display: block; margin: 10px 0; }
+.admin-form-field > span { display: block; font-weight: 600; font-size: 0.88rem; margin-bottom: 4px; }
+.admin-form-field input[type="text"], .admin-form-field input[type="email"], .admin-form-field input[type="number"], .admin-form-field input[type="date"],
+.admin-form-field input[type="password"], .admin-form-field textarea, .admin-form-field select {
+  width: 100%; max-width: 420px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-family: inherit;
+}
+.admin-modal .admin-form-field input, .admin-modal .admin-form-field textarea { max-width: none; }
+.admin-modal.wide { max-width: 640px; }
+.budget-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.pw-grid { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.pw-grid input, .admin-toolbar input[type="month"], .admin-toolbar input[type="file"], .unlock-form input, .admin-toolbar input[type="search"] {
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); font-family: inherit; min-width: 0;
+}
+.admin-toolbar input[type="file"] { max-width: 100%; }
+.search-input { min-width: 200px; }
+.unit-checks { display: flex; gap: 14px; flex-wrap: wrap; }
+.unlock-form { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin: 10px 0; }
+.unlock-form label { display: flex; flex-direction: column; gap: 3px; font-size: 0.85rem; font-weight: 600; }
+.unlock-form select { max-width: 260px; }
+.preview-box { border: 1px dashed var(--accent); border-radius: 10px; padding: 12px; margin-top: 12px; }
+.preview-box h3 { margin: 12px 0 6px; }
+.table-scroll.short { max-height: 280px; overflow-y: auto; }
+.table-scroll.tall { max-height: 520px; overflow-y: auto; }
+.warn-card { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.admin-card hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+
+/* toast */
+.admin-toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none;
+  padding: 10px 18px; border-radius: 10px; font-size: 0.9rem; z-index: 80; max-width: calc(100vw - 32px); transition: opacity .2s, transform .2s; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.admin-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.admin-toast.ok { background: var(--success); color: #fff; }
+.admin-toast.err { background: var(--danger); color: #fff; }
+
+/* mobile */
+@media (max-width: 600px) {
+  .admin-shell { padding: 0 12px 32px; }
+  .admin-tabbar { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+  .round-row { gap: 12px; }
+  .admin-toolbar { gap: 8px; }
+  .admin-toolbar .select-input { max-width: 100%; }
+  .search-input { min-width: 0; width: 100%; }
+  .admin-toolbar label { flex-wrap: wrap; max-width: 100%; min-width: 0; }
+  .admin-toolbar input[type="file"] { width: 100%; }
+  .admin-modal { padding: 14px; }
+  .admin-form-field input, .admin-form-field select, .admin-form-field textarea { max-width: none !important; }
+}
+
+/* print (ใบจัดของ) */
 @media print {
-  .admin-top-banner, .admin-tabbar, .admin-header, .app-footer { display: none !important; }
+  .admin-tabbar, .admin-header, .app-footer, .admin-toolbar, .no-print, .admin-toast, .exp-btn { display: none !important; }
+  .admin-panel:not(.active) { display: none !important; }
+  .print-title { display: block; margin: 0 0 8px; font-size: 1.1rem; }
+  .admin-card { border: none; padding: 0; }
+  body { background: #fff !important; color: #000 !important; font-size: 12px; }
+  .admin-shell { max-width: none; padding: 0; }
+  .table-scroll { overflow: visible !important; max-height: none !important; }
+  .admin-table { font-size: 11px; }
+  .admin-table th, .admin-table td { padding: 2px 5px; }
+  .admin-table thead th { position: static; }
+  .admin-table tr { page-break-inside: avoid; }
+  .admin-table .name-cell { min-width: 0; }
 }

@@ -1,0 +1,21 @@
+# Cloudflare Pages project config (phase 2a). Static site = public/, Functions = functions/.
+# Local dev:  npm run dev   (wrangler pages dev --local — D1/R2 are simulated under .wrangler/, no login needed)
+name = "pcu-supply-request"
+pages_build_output_dir = "public"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pcu-supply"
+# PLACEHOLDER — checkpoint C5 (deploy) replaces this with the real D1 id from `wrangler d1 create pcu-supply`.
+# `--local` ignores it, so local dev/tests work as-is.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "pcu-supply-files"
+
+# Secrets / vars (set in the Pages dashboard, or .dev.vars locally — see .dev.vars.example):
+#   TOKEN_SECRET  GOOGLE_CLIENT_ID  ADMIN_EMAILS  BACKUP_KEY  CF_ACCOUNT_ID  CF_BR_TOKEN
+# Local-only switch (NEVER set in production):  DEV_FAKE_GOOGLE=1

@@ -1,300 +1,158 @@
-// js/admin/compute.js — pure aggregation functions over the adminBootstrap payload.
-// No DOM, no API calls. Every tab module calls into here so the numbers agree across tabs
-// and so we compute once per (month, tab) rather than on every keystroke (perf note in brief).
-import { getItemRows } from "../data.js";
+// js/admin/compute.js — pure aggregation over the adminBootstrap / adminGetRequest payloads.
+// No DOM, no API calls. The form arrives in adminBootstrap.form (functions/API.md §5.1).
 
-export const STEP_CODES = ["P1", "P2", "P3", "P4", "P5", "CS", "LAB"];
-export const STEP_ORDER_WITH_SUMMARY = ["P1", "P2", "P3", "P4", "P5", "CS", "LAB", "summary"];
-export const DISPENSE_UNIT_BY_STEP = {
-  P1: "งานพัสดุ", P2: "งานพัสดุ", P3: "งานพัสดุ", P4: "งานพัสดุ", P5: "งานพัสดุ",
-  CS: "หน่วยจ่ายกลาง", LAB: "กลุ่มงานพยาธิวิทยา"
-};
-export const DISPENSE_UNITS = ["งานพัสดุ", "หน่วยจ่ายกลาง", "กลุ่มงานพยาธิวิทยา"];
-export const EXTRA_ITEM_CODE = "X-113";
+export const DISPENSE_UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
+export const DISPENSE_FALLBACK = { P: "พัสดุ", CS: "จ่ายกลาง", LAB: "LAB" };
 
-// ---- item catalogue (125 rows, running seq 1-125), built once after form2569.json loads --------
-export function buildItems(form, bootstrap) {
-  const items = [];
-  let seq = 0;
-  STEP_CODES.forEach((stepCode) => {
-    const step = form.steps.find((s) => s.code === stepCode);
-    if (!step) return;
-    getItemRows(step).forEach((row) => {
-      seq += 1;
-      items.push({
-        code: row.code,
-        seq,
-        step: stepCode,
-        dispenseUnit: DISPENSE_UNIT_BY_STEP[stepCode] || stepCode,
-        name: row.name,
-        unit: row.unit || "",
-        price2569: Number(row.price) || 0,
-        price2568: price2568For(bootstrap, row.code)
-      });
+function unitFromStepCode(code) {
+  if (/^P\d/.test(code)) return "พัสดุ";
+  if (code === "CS") return "จ่ายกลาง";
+  if (code === "LAB") return "LAB";
+  return "พัสดุ";
+}
+
+// Catalogue of the form: ordered steps + flat items + lookup by code.
+// Item = { code, name, unit, price, active, stepCode, stepOrder, pageNo, sheet, title, section, dispenseUnit }
+export function buildCatalog(form) {
+  const cat = { steps: [], items: [], byCode: {}, stepByCode: {} };
+  if (form) addForm(cat, form);
+  return cat;
+}
+
+// Merge another form version (e.g. the one a request is bound to) — only adds unknown codes/steps.
+export function addForm(cat, form) {
+  const steps = (form.steps || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  steps.forEach((s) => {
+    let stepInfo = cat.stepByCode[s.code];
+    if (!stepInfo) {
+      stepInfo = {
+        code: s.code, order: s.order || cat.steps.length + 1, sheet: s.sheet || s.code, pageNo: s.page_no || s.order,
+        title: s.title || "", dispenseUnit: s.dispense_unit || unitFromStepCode(s.code)
+      };
+      cat.steps.push(stepInfo);
+      cat.stepByCode[s.code] = stepInfo;
+    }
+    let section = "";
+    (s.rows || []).forEach((r) => {
+      if (r.type === "section") { section = r.title || ""; return; }
+      if (r.type !== "item" || cat.byCode[r.code]) return;
+      const item = {
+        code: r.code, name: r.name || r.code, unit: r.unit || "", price: Number(r.price) || 0, active: r.active !== false,
+        stepCode: s.code, stepOrder: stepInfo.order, pageNo: stepInfo.pageNo, sheet: stepInfo.sheet,
+        title: stepInfo.title, section, dispenseUnit: stepInfo.dispenseUnit
+      };
+      cat.items.push(item);
+      cat.byCode[r.code] = item;
     });
   });
-  return items;
+  cat.steps.sort((a, b) => a.order - b.order);
+  cat.items.sort((a, b) => a.stepOrder - b.stepOrder || a.code.localeCompare(b.code, "en", { numeric: true }));
+  return cat;
 }
 
-export function price2568For(bootstrap, code) {
-  if (bootstrap.items_extra && bootstrap.items_extra[code] !== undefined) {
-    return Number(bootstrap.items_extra[code].price_2568) || 0;
-  }
-  if (bootstrap.price_2568 && bootstrap.price_2568[code] !== undefined) {
-    return Number(bootstrap.price_2568[code]) || 0;
-  }
-  return 0;
+export function itemOrPlaceholder(cat, code) {
+  return cat.byCode[code] || {
+    code, name: code + " (ไม่อยู่ในฟอร์มปัจจุบัน)", unit: "", price: 0, active: false, stepCode: "?", stepOrder: 99,
+    pageNo: 99, sheet: "อื่น ๆ", title: "", section: "", dispenseUnit: ""
+  };
 }
 
-export function extraItemDescriptor(bootstrap) {
-  const e = bootstrap.items_extra && bootstrap.items_extra[EXTRA_ITEM_CODE];
-  if (!e) return null;
-  return { code: EXTRA_ITEM_CODE, name: e.name, unit: e.unit || "", price2568: Number(e.price_2568) || 0 };
+export function isUsableStatus(status) { return status === "submitted" || status === "issued"; }
+
+// ---- per-request / per-month aggregation -----------------------------------------------------------
+// price used for a line: snapshot taken at submit, else the form price.
+export function linePrice(line, item) {
+  const p = line && line.price_snapshot;
+  return p !== null && p !== undefined ? Number(p) : (item ? item.price : 0);
 }
 
-// ---- month/round selector helpers ---------------------------------------------------------------
-// A "month selection" is { type: "real", key: "2024-10" } or { type: "trial", key: "2025-09" }.
-export function monthSelectOptions(bootstrap) {
-  const real = bootstrap.months.map((m, idx) => ({ type: "real", key: m, idx }));
-  const trial = bootstrap.rounds.map((r) => ({ type: "trial", key: r.month, round: r }));
-  return { real, trial };
+// requests: [{pcu, request:{status, lines}}] (only usable statuses are counted)
+// -> { byItem: { code: { op, pp, total, baht, issued: number|null, pcuCount, byPcu: {pcu:{op,pp}} } }, baht, op, pp, bahtOp, bahtPp }
+export function aggregateRequests(cat, entries) {
+  const byItem = {};
+  let op = 0, pp = 0, bahtOp = 0, bahtPp = 0;
+  entries.forEach(({ pcu, request }) => {
+    if (!request || !isUsableStatus(request.status)) return;
+    Object.entries(request.lines || {}).forEach(([code, line]) => {
+      const lop = Number(line.op) || 0, lpp = Number(line.pp) || 0;
+      const issued = line.issued_total;
+      if (lop === 0 && lpp === 0 && (issued === null || issued === undefined)) return;
+      const item = itemOrPlaceholder(cat, code);
+      const price = linePrice(line, item);
+      const r = byItem[code] || (byItem[code] = { op: 0, pp: 0, total: 0, baht: 0, issued: null, pcuCount: 0, byPcu: {} });
+      r.op += lop; r.pp += lpp; r.total += lop + lpp; r.baht += (lop + lpp) * price;
+      if (lop + lpp > 0) r.pcuCount += 1;
+      if (issued !== null && issued !== undefined) r.issued = (r.issued || 0) + Number(issued);
+      r.byPcu[pcu] = { op: lop, pp: lpp };
+      op += lop; pp += lpp; bahtOp += lop * price; bahtPp += lpp * price;
+    });
+  });
+  return { byItem, op, pp, bahtOp, bahtPp, baht: bahtOp + bahtPp };
 }
 
-export function monthValue(sel) { return sel.type + ":" + sel.key; }
-export function parseMonthValue(v) {
-  const i = v.indexOf(":");
-  return { type: v.slice(0, i), key: v.slice(i + 1) };
-}
-
-// ---- real-month aggregation (tabs 2, 3, 4) --------------------------------------------------------
-// { code: { op, pp, pcuCount } } across all PCUs for one real month index (includes X-113).
-export function actualTotalsByItem(bootstrap, monthIdx) {
+// ---- plans (fy_current) --------------------------------------------------------------------------
+// plans: { pcu: { code: [op, pp] } } x form price -> { pcu: {op, pp, total} } baht
+export function planBahtByPcu(plans, cat) {
   const out = {};
-  bootstrap.pcus.forEach((pcu) => {
-    const pcuActual = bootstrap.actual[pcu.code] || {};
-    Object.keys(pcuActual).forEach((code) => {
-      const a = pcuActual[code];
-      const op = a.op[monthIdx] || 0;
-      const pp = a.pp[monthIdx] || 0;
-      if (op === 0 && pp === 0) return;
-      out[code] = out[code] || { op: 0, pp: 0, pcuCount: 0 };
-      out[code].op += op;
-      out[code].pp += pp;
-      out[code].pcuCount += 1;
-    });
-  });
-  return out;
-}
-
-// Requests for a trial round with a usable (submitted/received) status.
-export function usableTrialRequests(bootstrap, roundMonth) {
-  return bootstrap.requests.filter((r) => r.month === roundMonth && (r.status === "submitted" || r.status === "received"));
-}
-
-// { code: { op, pp, pcuCount } } from submitted/received trial requests for one round.
-export function trialTotalsByItem(bootstrap, roundMonth) {
-  const out = {};
-  usableTrialRequests(bootstrap, roundMonth).forEach((req) => {
-    Object.keys(req.lines || {}).forEach((code) => {
-      const l = req.lines[code];
-      const op = l.op || 0, pp = l.pp || 0;
-      if (op === 0 && pp === 0) return;
-      out[code] = out[code] || { op: 0, pp: 0, pcuCount: 0 };
-      out[code].op += op;
-      out[code].pp += pp;
-      out[code].pcuCount += 1;
-    });
-  });
-  return out;
-}
-
-// One PCU's total baht for a real month, across every code it has actual data for (incl. X-113).
-export function pcuMonthBaht(bootstrap, pcuCode, monthIdx) {
-  const pcuActual = bootstrap.actual[pcuCode] || {};
-  let total = 0;
-  Object.keys(pcuActual).forEach((code) => {
-    const a = pcuActual[code];
-    const qty = (a.op[monthIdx] || 0) + (a.pp[monthIdx] || 0);
-    if (!qty) return;
-    total += qty * price2568For(bootstrap, code);
-  });
-  return total;
-}
-
-export function pcuYearBaht(bootstrap, pcuCode) {
-  let total = 0;
-  for (let m = 0; m < bootstrap.months.length; m++) total += pcuMonthBaht(bootstrap, pcuCode, m);
-  return total;
-}
-
-// ---- tab 3: network budget vs actual --------------------------------------------------------------
-export function networkMonthlyBudget(bootstrap) {
-  const months = bootstrap.months;
-  const rows = months.map((m, idx) => {
-    const totals = actualTotalsByItem(bootstrap, idx);
+  Object.entries(plans || {}).forEach(([pcu, items]) => {
     let op = 0, pp = 0;
-    Object.keys(totals).forEach((code) => {
-      const price = price2568For(bootstrap, code);
-      op += totals[code].op * price;
-      pp += totals[code].pp * price;
+    Object.entries(items).forEach(([code, v]) => {
+      const price = (cat.byCode[code] || { price: 0 }).price;
+      op += (v[0] || 0) * price;
+      pp += (v[1] || 0) * price;
     });
-    return { month: m, op, pp, total: op + pp };
+    out[pcu] = { op, pp, total: op + pp };
   });
-  let cumOp = 0, cumPp = 0, cumTotal = 0;
-  rows.forEach((r) => {
-    cumOp += r.op; cumPp += r.pp; cumTotal += r.total;
-    r.cumOp = cumOp; r.cumPp = cumPp; r.cumTotal = cumTotal;
+  return out;
+}
+
+// ---- previous fiscal year (read-only tab) -----------------------------------------------------------
+// prevEntry = { months, actual:{pcu:{code:{op:[],pp:[]}}}, plans:{pcu:{code:[op,pp]}}, prices:{code:price} }
+export function prevHeatmap(prevEntry, pcus) {
+  const nMonths = prevEntry.months.length;
+  const matrix = {};
+  let max = 0;
+  pcus.forEach((p) => {
+    const row = new Array(nMonths).fill(0);
+    Object.entries((prevEntry.actual || {})[p.code] || {}).forEach(([code, a]) => {
+      const price = Number((prevEntry.prices || {})[code]) || 0;
+      for (let m = 0; m < nMonths; m++) row[m] += ((a.op[m] || 0) + (a.pp[m] || 0)) * price;
+    });
+    row.forEach((v) => { if (v > max) max = v; });
+    matrix[p.code] = row;
   });
+  return { matrix, max };
+}
+
+// rows per item for one PCU (or all PCUs when pcuCode === "*"): plan op/pp, actual op/pp (annual), baht.
+export function prevPlanVsActual(prevEntry, cat, pcuCode, pcus) {
+  const codes = pcuCode === "*" ? pcus.map((p) => p.code) : [pcuCode];
+  const acc = {};
+  const row = (code) => acc[code] || (acc[code] = { code, planOp: 0, planPp: 0, actOp: 0, actPp: 0 });
+  codes.forEach((pc) => {
+    Object.entries(((prevEntry.plans || {})[pc]) || {}).forEach(([code, v]) => {
+      const r = row(code); r.planOp += v[0] || 0; r.planPp += v[1] || 0;
+    });
+    Object.entries(((prevEntry.actual || {})[pc]) || {}).forEach(([code, a]) => {
+      const r = row(code);
+      for (let m = 0; m < prevEntry.months.length; m++) { r.actOp += a.op[m] || 0; r.actPp += a.pp[m] || 0; }
+    });
+  });
+  const rows = Object.values(acc).map((r) => {
+    const item = itemOrPlaceholder(cat, r.code);
+    const price = Number((prevEntry.prices || {})[r.code]) || 0;
+    const plan = r.planOp + r.planPp, act = r.actOp + r.actPp;
+    return {
+      ...r, item, price, plan, act, planBaht: plan * price, actBaht: act * price,
+      pct: plan > 0 ? (act / plan) * 100 : (act > 0 ? Infinity : null)
+    };
+  }).filter((r) => r.plan > 0 || r.act > 0);
+  rows.sort((a, b) => a.item.stepOrder - b.item.stepOrder || a.code.localeCompare(b.code, "en", { numeric: true }));
   return rows;
 }
 
-// ---- tab 5: plan (FY68) vs actual withdrawn, per PCU -----------------------------------------------
-export function planVsActual(bootstrap, items, pcuCode) {
-  const plan = bootstrap.plan[pcuCode] || {};
-  const pcuActual = bootstrap.actual[pcuCode] || {};
-  return items.map((item) => {
-    const p = plan[item.code] || [0, 0];
-    const planOp = p[0] || 0, planPp = p[1] || 0, planTotal = planOp + planPp;
-    const a = pcuActual[item.code];
-    let actualAnnual = 0;
-    if (a) { for (let m = 0; m < 12; m++) actualAnnual += (a.op[m] || 0) + (a.pp[m] || 0); }
-    const pct = planTotal > 0 ? (actualAnnual / planTotal) * 100 : (actualAnnual > 0 ? Infinity : null);
-    return {
-      item, planOp, planPp, planTotal, actualAnnual,
-      pct, diff: actualAnnual - planTotal,
-      overPlan: planTotal > 0 && actualAnnual > planTotal,
-      planNoUse: planTotal > 0 && actualAnnual === 0
-    };
-  });
-}
-
-// ---- tab 6: simulated stock + cover-months + flags -------------------------------------------------
-// avg3 for a REAL month index m: mean withdrawal of up to 3 months strictly before m (within the
-// same 12-slot array), fallback to the annual mean (Σ12/12) if that is 0/unavailable (spec §2.3).
-export function avg3ForRealMonth(pcuActualItem, monthIdx) {
-  if (!pcuActualItem) return 0;
-  const from = Math.max(0, monthIdx - 3);
-  let sum = 0, n = 0;
-  for (let i = from; i < monthIdx; i++) {
-    sum += (pcuActualItem.op[i] || 0) + (pcuActualItem.pp[i] || 0);
-    n++;
-  }
-  const mean = n > 0 ? sum / n : 0;
-  if (mean > 0) return mean;
-  let annualSum = 0;
-  for (let i = 0; i < 12; i++) annualSum += (pcuActualItem.op[i] || 0) + (pcuActualItem.pp[i] || 0);
-  return annualSum / 12;
-}
-
-// Mirrors backend Requests.js `buildByRoundForPcu_` avg3 logic for the two trial rounds, so the
-// admin's tab 6 agrees with what the PCU itself would see via pcuBootstrap.
-export function avg3ForTrialRound(bootstrap, pcuCode, code, roundMonth) {
-  const pcuActual = (bootstrap.actual[pcuCode] || {})[code];
-  const a = pcuActual || { op: new Array(12).fill(0), pp: new Array(12).fill(0) };
-  const round = bootstrap.rounds.find((r) => r.month === roundMonth);
-  let mean3;
-  if (round && round.fy === 2568) {
-    let sum3 = 0;
-    for (let i = 8; i <= 10; i++) sum3 += (a.op[i] || 0) + (a.pp[i] || 0);
-    mean3 = sum3 / 3;
-  } else {
-    const sepReq = bootstrap.requests.find((r) => r.pcu === pcuCode && r.month === "2025-09" && (r.status === "submitted" || r.status === "received"));
-    const v9 = (a.op[9] || 0) + (a.pp[9] || 0);
-    const v10 = (a.op[10] || 0) + (a.pp[10] || 0);
-    let v11;
-    if (sepReq && sepReq.lines[code]) v11 = (sepReq.lines[code].op || 0) + (sepReq.lines[code].pp || 0);
-    else v11 = (a.op[11] || 0) + (a.pp[11] || 0);
-    mean3 = (v9 + v10 + v11) / 3;
-  }
-  if (mean3 > 0) return mean3;
-  const stats = (bootstrap.stats[pcuCode] || {})[code];
-  const annualMean = stats ? stats[2] / 12 : 0;
-  return annualMean; // may be 0 -> caller treats as "unavailable"
-}
-
-// Flags only apply to items withdrawn regularly in FY68 (≥ REGULAR_MIN_MONTHS of 12 months) —
-// "months of cover" is meaningless for lumpy/sporadic items (phase 1.5.md §2.3).
-export const REGULAR_MIN_MONTHS = 6;
-export function isRegularItem(bootstrap, pcuCode, code) {
-  const a = (bootstrap.actual[pcuCode] || {})[code];
-  if (!a) return false;
-  let n = 0;
-  for (let i = 0; i < 12; i++) if ((a.op[i] || 0) + (a.pp[i] || 0) > 0) n++;
-  return n >= REGULAR_MIN_MONTHS;
-}
-
-// Returns { stock, withdrawal, avg3, cover, flag, regular } for one PCU x item x month-selection.
-// `flag` is null | "over" | "short" (always null for non-regular items).
-export function stockRowFor(bootstrap, pcuCode, code, sel) {
-  const cfg = bootstrap.config;
-  let stock = null, withdrawal = 0, avg3 = 0, hasData = true;
-
-  if (sel.type === "real") {
-    const idx = bootstrap.months.indexOf(sel.key);
-    const stockArr = (bootstrap.stock_sim[pcuCode] || {})[code];
-    stock = stockArr ? (stockArr[idx] || 0) : 0;
-    const a = (bootstrap.actual[pcuCode] || {})[code];
-    withdrawal = a ? (a.op[idx] || 0) + (a.pp[idx] || 0) : 0;
-    avg3 = avg3ForRealMonth(a, idx);
-  } else {
-    const req = bootstrap.requests.find((r) => r.pcu === pcuCode && r.month === sel.key && (r.status === "submitted" || r.status === "received"));
-    if (!req || !req.lines[code]) {
-      hasData = false;
-    } else {
-      const l = req.lines[code];
-      stock = l.stock === null || l.stock === undefined ? null : l.stock;
-      withdrawal = (l.op || 0) + (l.pp || 0);
-      avg3 = avg3ForTrialRound(bootstrap, pcuCode, code, sel.key);
-    }
-  }
-
-  const regular = isRegularItem(bootstrap, pcuCode, code);
-  if (!hasData || stock === null) {
-    return { stock: null, withdrawal, avg3, cover: null, flag: null, hasData, regular };
-  }
-  const cover = avg3 > 0 ? stock / avg3 : null;
-  let flag = null;
-  if (cover !== null && regular) {
-    if (cover > cfg.cover_over && withdrawal > 0) flag = "over";
-    else if (cover < cfg.cover_short) flag = "short";
-  }
-  return { stock, withdrawal, avg3, cover, flag, hasData, regular };
-}
-
-export function stockTableForPcu(bootstrap, items, pcuCode, sel) {
-  return items.map((item) => ({ item, ...stockRowFor(bootstrap, pcuCode, item.code, sel) }));
-}
-
-export function stockSummaryPerPcu(bootstrap, items, sel) {
-  return bootstrap.pcus.map((pcu) => {
-    let over = 0, short = 0;
-    items.forEach((item) => {
-      const r = stockRowFor(bootstrap, pcu.code, item.code, sel);
-      if (r.flag === "over") over++;
-      else if (r.flag === "short") short++;
-    });
-    return { pcu, over, short };
-  });
-}
-
-// ---- tab 7: limits table -----------------------------------------------------------------------
-export function limitsRowsForPcu(bootstrap, items, pcuCode) {
-  const limits = bootstrap.limits[pcuCode] || {};
-  const stats = bootstrap.stats[pcuCode] || {};
-  return items.map((item) => {
-    const stat = stats[item.code] || [0, 0, 0];
-    const lim = limits[item.code] || { limit_month: null, limit_year: null, source: "stat68", updated_by: "", updated_at: "" };
-    return {
-      item,
-      median_m: stat[0] || 0, p90_m: stat[1] || 0, annual_qty: stat[2] || 0,
-      limit_month: lim.limit_month, limit_year: lim.limit_year,
-      source: lim.source || "stat68", updated_by: lim.updated_by || "", updated_at: lim.updated_at || ""
-    };
-  });
-}
-
-// ---- tab 1 helpers -------------------------------------------------------------------------------
-export function lastStepIndex(lastStep) {
-  const i = STEP_ORDER_WITH_SUMMARY.indexOf(lastStep);
-  return i < 0 ? 0 : i + 1;
+// ---- limits (fy_current) ----------------------------------------------------------------------------
+export function planFor(plans, pcu, code) {
+  const v = ((plans || {})[pcu] || {})[code];
+  return v ? [v[0] || 0, v[1] || 0] : [0, 0];
 }

@@ -1,10 +1,10 @@
-// js/api.js — browser client for the Apps Script backend (API.md "Transport").
+// js/api.js — browser client for the Pages Functions backend (functions/API.md §1 "Transport").
 // Shared by both frontends (index.html PCU pages + admin.html). Do not add PCU/admin-specific
 // logic here — this file only knows how to call the API and store tokens.
 import { API_URL } from "./config.js";
 
 const TIMEOUT_MS = 30000;
-const STORAGE_PREFIX = "pcuSupply15:";
+const STORAGE_PREFIX = "pcuSupply2:";
 const PCU_TOKEN_KEY = STORAGE_PREFIX + "pcuToken";
 const PCU_TOKEN_EXP_KEY = STORAGE_PREFIX + "pcuTokenExp";
 const ADMIN_TOKEN_KEY = STORAGE_PREFIX + "adminToken";

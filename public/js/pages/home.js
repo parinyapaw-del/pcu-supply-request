@@ -1,85 +1,108 @@
-// Home page (#/home): PCU name + the 2 trial rounds, status/progress, jump into the wizard/print.
-import { WIZARD_STEPS } from "../constants.js";
-import { loadFormData, getItemRows } from "../data.js";
+// Home page (#/home): one card per round (current + previous month), status badge, deadline, admin note,
+// issue-notice bar (2c data — the list is empty in 2a) and the "older months" expander (phase 2 spec §4.1).
+import { getOrderedSteps } from "../data.js";
+import { formatMonthKeyThai } from "../format.js";
+import {
+  esc, pcuCode, requestOf, requestStatus, formatThaiYmd, monthLabel,
+  loadOlderMonth, alertDialog,
+} from "./common.js";
 import * as sync from "../sync.js";
 
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function currentRequest(app, month) {
-  const session = sync.getSession(app.boot.pcu.code, month);
-  if (session) return session.request;
-  const byRound = app.boot.byRound[month];
-  return (byRound && byRound.request) || null;
-}
-
-function statusBadge(request) {
-  if (!request || request.status === "not_started") return { label: "ยังไม่เริ่ม", cls: "badge-muted" };
-  if (request.status === "draft" && request.return_reason) return { label: "ส่งกลับแก้ไข", cls: "badge-danger" };
-  if (request.status === "draft") return { label: "แบบร่าง", cls: "badge-warn" };
-  if (request.status === "submitted") return { label: "ส่งแล้ว", cls: "badge-success" };
-  if (request.status === "received") return { label: "รับเรื่องแล้ว", cls: "badge-success" };
-  return { label: request.status, cls: "badge-muted" };
-}
-
-function progressOf(app, month, request) {
-  const required = 125 - (app.boot.hidden || []).length;
-  let filled = 0;
+function itemsRequested(request) {
+  let n = 0;
   if (request && request.lines) {
-    const hiddenSet = new Set(app.boot.hidden || []);
-    app.form.steps.forEach((step) => {
-      getItemRows(step).forEach((item) => {
-        if (hiddenSet.has(item.code)) return;
-        const line = request.lines[item.code];
-        if (line && line.stock != null) filled++;
-      });
+    Object.keys(request.lines).forEach((c) => {
+      const l = request.lines[c];
+      if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) n++;
     });
   }
-  const stepIdx = request && request.last_step ? WIZARD_STEPS.indexOf(request.last_step) : -1;
-  const stepNum = stepIdx >= 0 ? stepIdx + 1 : request && request.status !== "not_started" ? 1 : 0;
-  return { filled, required, stepNum, total: WIZARD_STEPS.length };
+  return n;
+}
+
+function stepProgress(app, request) {
+  const steps = getOrderedSteps(app.boot.form);
+  const idx = request && request.last_step ? steps.findIndex((s) => s.code === request.last_step) : -1;
+  const label = idx >= 0 ? (steps[idx].sheet || steps[idx].code) : request && request.status !== "not_started" ? (steps[0].sheet || steps[0].code) : "";
+  return { label, n: idx >= 0 ? idx + 1 : request && request.status !== "not_started" ? 1 : 0, total: steps.length };
+}
+
+function badgesHtml(st) {
+  return `<span class="badge ${st.cls}">${esc(st.label)}</span>` +
+    st.extra.map((e) => ` <span class="badge ${e.cls}">${esc(e.label)}</span>`).join("");
+}
+
+function cardHtml(app, round) {
+  const request = requestOf(app, round.month);
+  const session = sync.getSession(pcuCode(app), round.month);
+  const st = requestStatus(request, round, session && session.conflict);
+  const locked = round.locked || !!(session && session.conflict);
+  const started = !!request && request.status !== "not_started";
+  const prog = stepProgress(app, request);
+  const startStep = request && request.last_step ? request.last_step : getOrderedSteps(app.boot.form)[0].code;
+  const note = request && request.admin_note ? request.admin_note : "";
+  const n = itemsRequested(request);
+
+  return `
+  <div class="round-card${locked ? " round-card-locked" : ""}" data-month="${esc(round.month)}">
+    <div class="round-card-head">
+      <h3>${esc(monthLabel(round.month))} <span class="muted fy-tag">ปีงบ ${esc(round.fy)}</span></h3>
+      <span class="round-status">${badgesHtml(st)}</span>
+    </div>
+    ${note ? `<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(note)}</div>` : ""}
+    <p class="muted deadline-line">${locked ? "รอบนี้ปิดรับแล้ว" : `กรุณาส่งภายใน ${esc(formatThaiYmd(round.deadline_date))}`}</p>
+    ${started ? `<p>ขอเบิกแล้ว ${n} รายการ · ขั้นตอน ${prog.n}/${prog.total}${prog.label ? ` (${esc(prog.label)})` : ""}</p>` : ""}
+    <div class="round-card-actions">
+      ${locked
+        ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
+        : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${started ? "ทำต่อ" : "กรอก"}</button>`}
+      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+    </div>
+  </div>`;
+}
+
+function collapsedHtml(app, round) {
+  return `
+  <details class="round-card round-card-collapsed" data-month="${esc(round.month)}">
+    <summary><strong>${esc(monthLabel(round.month))}</strong> <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <div class="round-card-actions">
+      <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
+      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+    </div>
+  </details>`;
+}
+
+function noticesHtml(app) {
+  const list = app.boot.issue_notices || [];
+  return list
+    .map((n) => `<div class="notice-bar" role="status">พัสดุจ่ายของเดือน ${esc(formatMonthKeyThai(n.month))} แล้ว — ครบ ${esc(n.complete)} รายการ · ไม่ครบ ${esc(n.incomplete)} รายการ
+      <a href="#/issue?month=${esc(n.month)}" class="btn btn-sm btn-secondary">ดูรายละเอียด</a></div>`)
+    .join("");
 }
 
 export async function renderHome(container, app) {
-  app.form = app.form || (await loadFormData());
   const box = document.createElement("div");
   box.className = "home-page";
 
-  const cardsHtml = app.boot.rounds
-    .map((round) => {
-      const request = currentRequest(app, round.month);
-      const status = statusBadge(request);
-      const progress = progressOf(app, round.month, request);
-      const started = !!request && request.status !== "not_started";
-      const fillLabel = started ? "ทำต่อ" : "กรอก";
-      const startStep = request && request.last_step ? request.last_step : "P1";
-
-      return `
-      <div class="round-card">
-        <div class="round-card-head">
-          <h3>${esc(round.label)}${round.next ? ' <span class="badge badge-muted">รอบถัดไป (ทดลอง)</span>' : ""}</h3>
-          <span class="badge ${status.cls}">${status.label}</span>
-        </div>
-        ${request && request.status === "draft" && request.return_reason ? `<div class="notice notice-error">เหตุผลที่ส่งกลับ: ${esc(request.return_reason)}</div>` : ""}
-        <p class="muted">กำหนดส่ง: ${esc(round.deadlineLabel)} (ข้อความเท่านั้น ไม่บังคับ)</p>
-        <p>ความคืบหน้า: step ${progress.stepNum}/${progress.total} · คงเหลือกรอกแล้ว ${progress.filled}/${progress.required} รายการ</p>
-        <div class="round-card-actions">
-          <button type="button" class="btn btn-primary" data-fill="${round.month}" data-step="${esc(startStep)}">${fillLabel}</button>
-          <button type="button" class="btn btn-secondary" data-print="${round.month}">ดู/พิมพ์</button>
-        </div>
-      </div>`;
-    })
+  const rounds = app.boot.rounds;
+  const cards = rounds
+    .map((r, i) => (i > 0 && r.locked ? collapsedHtml(app, r) : cardHtml(app, r)))
     .join("");
+  const older = app.boot.older_months || [];
 
   box.innerHTML = `
+    ${noticesHtml(app)}
     <h2>สวัสดี ${esc(app.boot.pcu.name)}</h2>
-    <p class="muted">เลือกรอบที่จะกรอกหรือพิมพ์</p>
-    <div class="round-cards">${cardsHtml}</div>
+    <p class="muted">เลือกรอบที่จะกรอกหรือพิมพ์ · ปีงบประมาณ ${esc(app.boot.config.fy_current)}</p>
+    <div class="round-cards">${cards}</div>
+    ${older.length ? `
+    <details class="older-months">
+      <summary>ดูเดือนเก่า (${older.length})</summary>
+      <div class="older-list">
+        ${older.map((m) => `<div class="older-row"><span>${esc(monthLabel(m))}</span>
+          <span><button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="summary">ดูใบเบิก</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="print">ดู/พิมพ์</button></span></div>`).join("")}
+      </div>
+    </details>` : ""}
     <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a></p>
   `;
 
@@ -94,6 +117,21 @@ export async function renderHome(container, app) {
   box.querySelectorAll("[data-print]").forEach((btn) => {
     btn.addEventListener("click", () => {
       location.hash = `#/print?month=${btn.dataset.print}`;
+    });
+  });
+  box.querySelectorAll("[data-older]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await loadOlderMonth(app, btn.dataset.older);
+        location.hash = btn.dataset.go === "print"
+          ? `#/print?month=${btn.dataset.older}`
+          : `#/fill/summary?month=${btn.dataset.older}`;
+      } catch (err) {
+        btn.disabled = false;
+        if (err && String(err.code || "").startsWith("AUTH_")) throw err;
+        await alertDialog("เปิดเดือนนี้ไม่สำเร็จ", `<p>${esc(err.message || "")}</p>`);
+      }
     });
   });
 }

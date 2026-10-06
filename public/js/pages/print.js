@@ -1,12 +1,13 @@
-// A4 print sheet — reproduces the original xlsx layout (spec §4, phase 1.5 §3.5).
-// One <table> (13 cols, A..M) per step, fixed scale s=0.73 applied via the --print-scale CSS
-// custom property so every page uses the same font size. All 7 steps ticked by default; every
-// page prints every row (blank cells when nothing requested, incl. hidden items) — spec F1/Q61.
-import { FORM_STEPS } from "../constants.js";
-import { getStep, getItemRows, loadFormData } from "../data.js";
+// A4 print sheet — reproduces the original xlsx layout (spec §4, phase 2 spec §4.4).
+// One <table> (13 cols, A..M) per form step, each step = one A4 page (scale s=0.73 fixed via --print-scale, so every
+// page uses the same font size; the worst case 24 items + 2 section rows fits). ALL steps of the form are rendered, numbered
+// "< n >" by step order; the toolbar's checkboxes choose which pages PRINT (unchecked = display:none under @media print).
+// No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
+import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken } from "../api.js";
-import * as sync from "../sync.js";
-import { formatMoney, formatInt, formatThaiDateParts, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
+import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
+import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog } from "./common.js";
+import { trySend } from "./send.js";
 
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
 
@@ -14,28 +15,23 @@ const SIG_DOTS_LONG = "………………………………………..………�
 const SIG_NAME_LINE = "( .......................................................... )";
 const SIG_DATE_LINE = "วันที่ .......... / .......... / ..........";
 
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 function fillOrDots(dots, value, fill) {
   if (!fill || value == null || value === "") return esc(dots);
   return `<span class="fill-slot" style="min-width:${(dots.length * 0.15).toFixed(1)}em">${esc(String(value))}</span>`;
 }
 
+function blankRequestFor(pcu, month) {
+  return { pcu, month, status: "not_started", submitter_name: "", lines: {}, submitted_at: null, edited_after_submit: false };
+}
+
 export async function renderPrint(container, app, params) {
   const asAdmin = params && params.get("as") === "admin";
-  const form = app.form || (app.form = await loadFormData());
-
-  let month, pcu, request, hidden;
+  let month, pcu, form, hidden, request;
 
   if (asAdmin) {
+    // Admin reprint (linked from the admin page): adminGetRequest also returns the form version bound to the request.
     const adminToken = getAdminToken();
-    const pcuCode = params.get("pcu");
+    const pcuParam = params.get("pcu");
     month = params.get("month");
     if (!adminToken) {
       container.innerHTML = '<div class="notice notice-error">ต้องเข้าสู่ระบบผู้ดูแล</div>';
@@ -43,40 +39,43 @@ export async function renderPrint(container, app, params) {
     }
     let data;
     try {
-      data = await call("adminGetRequest", { pcu: pcuCode, month }, { token: adminToken });
+      data = await call("adminGetRequest", { pcu: pcuParam, month }, { token: adminToken });
     } catch (err) {
       container.innerHTML = `<div class="notice notice-error">โหลดใบเบิกไม่สำเร็จ: ${esc(err.message)}</div>`;
       return;
     }
     pcu = data.pcu;
-    request = data.request || blankRequestFor(pcuCode, month);
+    form = data.form;
+    request = data.request || blankRequestFor(pcuParam, month);
     hidden = data.hidden || [];
   } else {
     month = (params && params.get("month")) || app.monthKey;
     pcu = app.boot.pcu;
-    const session = sync.getSession(pcu.code, month);
-    request = session ? session.request : blankRequestFor(pcu.code, month);
+    // TODO(2d): render with the form version bound to the request (request.form_version_id) when it differs from
+    // the bootstrap's latest version. 2a has a single version, so the bootstrap form is always the right one.
+    form = app.boot.form;
+    request = requestOf(app, month) || blankRequestFor(pcu.code, month);
     hidden = app.boot.hidden || [];
   }
 
-  const isDraft = request.status !== "submitted" && request.status !== "received";
-
+  const steps = getOrderedSteps(form);
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
 
   const controls = document.createElement("div");
   controls.className = "print-controls no-print";
   controls.innerHTML = `
-    <h2>ตัวอย่างใบพิมพ์</h2>
-    <p class="muted">${isDraft ? "ยังไม่ส่งใบเบิก — ตัวอย่างนี้มีลายน้ำ “แบบร่าง – ยังไม่สมบูรณ์”" : "ใบเบิกฉบับสมบูรณ์ พร้อมพิมพ์"}</p>
+    <h2>ใบเบิก ${esc(monthLabel(month))}${asAdmin ? ` — ${esc(pcu.print_name || pcu.name || "")}` : ""}</h2>
+    <p class="muted" id="print-status"></p>
+    <p class="muted">เลือกหน้าที่จะพิมพ์ (ค่าเริ่มต้น = ครบทุกหน้า)</p>
     <div class="print-step-checks">
-      ${FORM_STEPS.map((code) => {
-        const step = getStep(form, code);
-        return `<label><input type="checkbox" class="print-step-chk" value="${code}" checked> ${esc(step.title)} (${esc(code)})</label>`;
-      }).join("")}
+      ${steps.map((step, i) => `<label><input type="checkbox" class="print-step-chk" value="${esc(step.code)}" checked> หน้า ${i + 1} · ${esc(step.sheet || step.title)}</label>`).join("")}
     </div>
-    <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
-  `;
+    <div class="print-actions">
+      <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
+      <button type="button" class="btn btn-secondary" id="btn-print-back">กลับ</button>
+      <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf{pcu,month}; always all pages, spec §4.4). Not in 2a. -->
+    </div>`;
   wrap.appendChild(controls);
 
   const pagesHost = document.createElement("div");
@@ -86,36 +85,72 @@ export async function renderPrint(container, app, params) {
   container.innerHTML = "";
   container.appendChild(wrap);
 
+  const editable = !asAdmin && isEditable(app, month);
+
+  function needsSend() {
+    return editable && (!(request.status === "submitted" || request.status === "issued") || !!request.edited_after_submit);
+  }
+
+  function renderStatus() {
+    const el = document.getElementById("print-status");
+    if (asAdmin) el.textContent = request.status === "not_started" ? "ยังไม่มีใบเบิก (ดูในฐานะผู้ดูแล)" : `สถานะ: ${statusText(request)} (ดูในฐานะผู้ดูแล)`;
+    else if (request.status === "not_started" || request.status === "draft") el.textContent = editable ? "ยังไม่ได้ส่งใบเบิก — กดปุ่ม พิมพ์ จะส่งใบเบิกแล้วพิมพ์" : "ไม่ได้ส่งใบเบิกในรอบนี้";
+    else el.textContent = `สถานะ: ${statusText(request)}${needsSend() ? " — กดปุ่ม พิมพ์ จะส่งใหม่ก่อนพิมพ์" : ""}`;
+  }
+
   function renderPages() {
-    const checkedCodes = FORM_STEPS.filter((code) =>
-      Array.from(document.querySelectorAll(".print-step-chk:checked")).some((c) => c.value === code)
-    );
+    const unchecked = new Set(Array.from(document.querySelectorAll(".print-step-chk:not(:checked)")).map((c) => c.value));
     pagesHost.innerHTML = "";
-    checkedCodes.forEach((code, i) => {
-      const step = getStep(form, code);
-      pagesHost.appendChild(buildPrintPage(step, request, pcu, hidden, isDraft, month, i + 1));
+    steps.forEach((step, i) => {
+      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+      page.dataset.step = step.code;
+      if (unchecked.has(step.code)) page.classList.add("print-skip");
+      pagesHost.appendChild(page);
     });
+    renderStatus();
   }
   renderPages();
 
-  document.querySelectorAll(".print-step-chk").forEach((chk) => chk.addEventListener("change", renderPages));
-  document.getElementById("btn-do-print").addEventListener("click", () => window.print());
+  controls.querySelectorAll(".print-step-chk").forEach((chk) =>
+    chk.addEventListener("change", () => {
+      const page = pagesHost.querySelector(`.print-page[data-step="${chk.value}"]`);
+      if (page) page.classList.toggle("print-skip", !chk.checked);
+    })
+  );
+
+  const printBtn = document.getElementById("btn-do-print");
+  printBtn.addEventListener("click", async () => {
+    if (!controls.querySelector(".print-step-chk:checked")) {
+      await alertDialog("เลือกหน้าที่จะพิมพ์", "<p>เลือกอย่างน้อย 1 หน้า</p>");
+      return;
+    }
+    if (needsSend()) {
+      printBtn.disabled = true;
+      let ok = false;
+      try {
+        ok = await trySend(app, month);
+      } finally {
+        printBtn.disabled = false;
+      }
+      if (!ok) return;
+      request = requestOf(app, month) || request;
+      renderPages();
+    }
+    window.print();
+  });
+
+  document.getElementById("btn-print-back").addEventListener("click", () => {
+    if (asAdmin) {
+      if (history.length > 1) history.back(); else window.close();
+    } else {
+      location.hash = editable ? `#/fill/summary?month=${month}` : "#/home";
+    }
+  });
 }
 
-function blankRequestFor(pcuCode, month) {
-  return { pcu: pcuCode, month, status: "not_started", return_reason: "", submitter_name: "", lines: {}, submitted_at: "" };
-}
-
-function buildPrintPage(step, request, pcu, hidden, isDraft, monthKey, pageNumber) {
+function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber) {
   const page = document.createElement("div");
   page.className = "print-page";
-
-  if (isDraft) {
-    const wm = document.createElement("div");
-    wm.className = "draft-watermark";
-    wm.textContent = "แบบร่าง – ยังไม่สมบูรณ์";
-    page.appendChild(wm);
-  }
 
   const table = document.createElement("table");
   table.className = "print-table";
@@ -131,7 +166,7 @@ function buildPrintPage(step, request, pcu, hidden, isDraft, monthKey, pageNumbe
   const tbody = document.createElement("tbody");
   tbody.appendChild(rowTitle(step));
   tbody.appendChild(rowReceiptNo());
-  tbody.appendChild(rowDate(request, isDraft));
+  tbody.appendChild(rowDate(request));
   tbody.appendChild(rowLabelValue("เรื่อง", step.subject));
   tbody.appendChild(rowLabelValue("เรียน", step.to));
   tbody.appendChild(rowBlank());
@@ -177,13 +212,14 @@ function rowReceiptNo() {
   ], 20);
 }
 
-function rowDate(request, isDraft) {
+// "วันที่" = the day the request was last sent (Asia/Bangkok); dotted until it has been sent.
+function rowDate(request) {
   let dayVal = null, monthVal = null, yearVal = null;
-  if (!isDraft && request.submitted_at) {
-    const parts = formatThaiDateParts(new Date(request.submitted_at));
+  if (request.submitted_at) {
+    const parts = bangkokDateParts(request.submitted_at);
     dayVal = parts.day; monthVal = parts.monthName; yearVal = parts.beYear;
   }
-  const text = `วันที่ ${fillOrDots("...........", dayVal, !isDraft)} /${fillOrDots(".................", monthVal, !isDraft)}/${fillOrDots("............", yearVal, !isDraft)}`;
+  const text = `วันที่ ${fillOrDots("...........", dayVal, true)} /${fillOrDots(".................", monthVal, true)}/${fillOrDots("............", yearVal, true)}`;
   return tr("row-h20", [
     td("", { colspan: 7, cls: "cell-noborder" }),
     td(text, { colspan: 3, cls: "cell-noborder cell-left" }),
@@ -267,6 +303,7 @@ function appendBodyRows(tbody, step, request, hidden) {
     const line = isHidden ? { op: 0, pp: 0 } : (request.lines && request.lines[row.code]) || { op: 0, pp: 0 };
     const op = Number(line.op) || 0;
     const pp = Number(line.pp) || 0;
+    if (row.active === false && op + pp === 0) return; // inactive items are not on the sheet (unless they still carry a quantity)
     const qty = op + pp;
     const money = qty * row.price;
     tbody.appendChild(tr("row-h21", [

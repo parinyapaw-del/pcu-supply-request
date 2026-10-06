@@ -1,0 +1,10 @@
+# Copy to .dev.vars (gitignored) for local `wrangler pages dev`. Dev-only values — never reuse in production.
+TOKEN_SECRET=dev-only-token-secret-change-me-0123456789abcdef
+GOOGLE_CLIENT_ID=572074800379-jtl1af4cat6v8vk8u4r3o868r7lskfab.apps.googleusercontent.com
+ADMIN_EMAILS=parinya.paw@gmail.com
+BACKUP_KEY=dev-backup-key
+# Accept id_token "dev:<email>" instead of calling Google, and enable the devReset action. LOCAL ONLY.
+DEV_FAKE_GOOGLE=1
+# Browser Rendering (phase 2b) — unused in 2a
+CF_ACCOUNT_ID=
+CF_BR_TOKEN=

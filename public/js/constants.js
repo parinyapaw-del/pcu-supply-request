@@ -1,18 +1,13 @@
-// Global constants for phase 1.5 (online, real backend). Mirrors backend Config.js ROUNDS —
-// keep in sync with apps-script/Config.js if either changes (see API.md "Constants").
-export const ROUNDS = [
-  { month: "2025-09", label: "ก.ย. 2568", fy: 2568, deadlineLabel: "25 ก.ย. 2568", prevMonth: "2025-08", default: true },
-  { month: "2025-10", label: "ต.ค. 2568", fy: 2569, deadlineLabel: "25 ต.ค. 2568", prevMonth: "2025-09", next: true },
-];
+// Global constants (phase 2). FROZEN during checkpoint C3/C4 — shared by both frontends.
+// Rounds are no longer constants: the backend decides the current/previous month (functions/API.md §1, §4.1).
 
-// The 7 real form steps, in wizard order, plus the summary page (8 "steps" total for progress bars).
+// Wizard order of the 7 form steps (the form itself now arrives in the login bootstrap, not from a JSON file).
+// Future form versions may add steps S08…S10 — frontends should order by `step.order` from the form, using this
+// only as a fallback.
 export const FORM_STEPS = ["P1", "P2", "P3", "P4", "P5", "CS", "LAB"];
-export const WIZARD_STEPS = [...FORM_STEPS, "summary"];
+export const SUMMARY_STEP = "summary";
 
-// Items new for the 2569 form with no FY2568 history at all (spec §2.2).
-export const NEW_2569_ITEMS = new Set(["P5-09", "CS-01"]);
-
-export const STORAGE_PREFIX = "pcuSupply15:";
+export const STORAGE_PREFIX = "pcuSupply2:";
 export const LAST_PCU_KEY = STORAGE_PREFIX + "lastPcu";
 
 // Google Identity Services (Sign in with Google) OAuth Web Client ID — public identifier, safe to

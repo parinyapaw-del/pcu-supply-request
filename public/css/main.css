@@ -140,6 +140,7 @@ button, input, select {
 .btn-primary { background: var(--accent); color: var(--accent-contrast); }
 .btn-secondary { background: var(--surface); color: var(--text); border-color: var(--line); }
 .btn-link { background: none; border: none; color: var(--accent); text-decoration: underline; min-height: auto; padding: 4px 6px; }
+.btn-hide { white-space: nowrap; }
 .btn-sm { min-height: 32px; padding: 4px 10px; font-size: 0.85rem; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -208,6 +209,18 @@ button, input, select {
 .round-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .round-card-head h3 { margin: 0; }
 .round-card-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.round-status { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.fy-tag { font-size: 0.8rem; font-weight: 400; }
+.round-card-locked { background: var(--muted-bg); }
+.round-card-collapsed summary { cursor: pointer; }
+.deadline-line { margin: 6px 0; }
+.admin-note-box { background: #fff3b0; color: #4a3b00; border: 1px solid #e6c84c; border-radius: 8px; padding: 10px 12px; margin: 10px 0; overflow-wrap: anywhere; }
+@media (prefers-color-scheme: dark) { .admin-note-box { background: #4a3f12; color: #ffe9a0; border-color: #8a7220; } }
+.notice-bar { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); border-radius: 8px; padding: 10px 14px; margin: 14px 0 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-weight: 600; }
+.notice-bar .btn { text-decoration: none; }
+.older-months { margin: 8px 0 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+.older-months summary { cursor: pointer; font-weight: 600; min-height: 36px; display: flex; align-items: center; }
+.older-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--line); }
 .home-links { margin-top: 20px; }
 
 /* ---- hidden-items settings page ---- */
@@ -252,6 +265,9 @@ button, input, select {
 }
 .progress-pill.active { background: var(--accent); color: var(--accent-contrast); }
 .progress-pill.done { background: var(--success-bg); color: var(--success); }
+.progress-pill.pill-summary { width: auto; padding: 0 12px; border-radius: 14px; }
+.fill-status { margin: 4px 0 10px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.stock-hint { margin: 6px 0; font-size: 0.9rem; }
 .progress-current { margin-top: 6px; font-size: 0.9rem; font-weight: 600; color: var(--muted); }
 
 .wizard-nav { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; gap: 10px; flex-wrap: wrap; }
@@ -287,9 +303,8 @@ button, input, select {
 .limit-line { font-size: 0.82rem; }
 .limit-danger { color: var(--danger); font-weight: 700; }
 .limit-info { color: var(--muted); }
-.cover-msg { margin-top: 2px; }
-.cover-hint { color: var(--muted); font-size: 0.78rem; opacity: 0.75; }
-.cover-hint-warn { color: var(--warn); opacity: 1; font-weight: 600; }
+.limit-unlocked { color: var(--success); font-weight: 700; }
+.small { font-size: 0.82rem; }
 
 .num-input { width: 72px; min-height: 40px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }
 .num-input.input-error { border-color: var(--danger); background: var(--danger-bg); }
@@ -328,7 +343,20 @@ button, input, select {
 
 /* ---- print controls (screen only) ---- */
 .print-controls { padding: 16px 0; }
-.print-step-checks { display: flex; gap: 16px; flex-wrap: wrap; margin: 10px 0 16px; }
+.print-controls h2 { margin: 0 0 4px; }
+.print-step-checks { display: flex; gap: 8px 16px; flex-wrap: wrap; margin: 10px 0 16px; }
+.print-step-checks label { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; cursor: pointer; }
+.print-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ---- dialog + toast (in-page, replace native alert/confirm) ---- */
+.dialog-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 100; }
+.dialog-box { background: var(--surface); color: var(--text); border-radius: 12px; padding: 18px 20px; max-width: 520px; width: 100%; max-height: 85vh; overflow: auto; box-shadow: 0 8px 30px rgba(0,0,0,0.3); }
+.dialog-box h3 { margin: 0 0 8px; }
+.dialog-body ul { padding-left: 20px; margin: 8px 0; }
+.dialog-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; margin-top: 14px; }
+.toast-host { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); display: grid; gap: 8px; z-index: 110; width: max-content; max-width: calc(100vw - 32px); }
+.toast { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); border-radius: 8px; padding: 10px 16px; font-weight: 600; box-shadow: 0 4px 14px rgba(0,0,0,0.2); }
+.toast-error { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
 
 /* ---- footer ---- */
 .app-footer {

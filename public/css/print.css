@@ -1,4 +1,4 @@
-/* A4 print sheet — reproduces the original xlsx form (spec §4).
+/* A4 print sheet — reproduces the original xlsx form (spec §4, phase 2 §4.4: all form steps, 1 page each, no watermark).
    Loaded with media="print,screen" so the on-screen preview matches the printed page. */
 
 @font-face {
@@ -26,6 +26,8 @@
 }
 
 .print-wrap { padding-bottom: 24px; }
+/* narrow screens: the A4 preview scrolls inside its own box instead of widening the whole page */
+#print-pages { overflow-x: auto; max-width: 100%; }
 
 .print-page {
   position: relative;
@@ -79,24 +81,10 @@
   border-bottom: 1px dotted #000;
 }
 
-.draft-watermark {
-  position: absolute;
-  top: 45%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(-30deg);
-  font-size: 64pt;
-  font-weight: 700;
-  color: rgba(200, 30, 30, 0.35);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 5;
-  -webkit-print-color-adjust: exact;
-  print-color-adjust: exact;
-}
-
 @media print {
   html, body { background: #fff; }
   main.container > h1, .print-controls { display: none !important; }
+  #print-pages { overflow: visible; }
   main.container { padding: 0 !important; margin: 0 !important; max-width: none !important; }
   .print-page {
     width: auto;
@@ -104,7 +92,14 @@
     margin: 0;
     padding: 0;
     box-shadow: none;
-    break-after: page;
   }
-  .print-page:last-child { break-after: auto; }
+  /* break BEFORE every page but the first, so pages the user unticked (display:none) never leave a blank sheet */
+  .print-page + .print-page { break-before: page; }
+  /* unticked pages in the toolbar: not printed */
+  .print-page.print-skip { display: none !important; }
+}
+
+/* on screen: unticked pages are dimmed so it is obvious they will not print */
+@media screen {
+  .print-page.print-skip { opacity: 0.4; }
 }
