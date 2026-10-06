@@ -11,6 +11,8 @@ import {
   getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
 } from "./views.js";
 
+const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
+
 // ---- public ------------------------------------------------------------------------------------------------------
 export async function pcuList(ctx) {
   const { results } = await ctx.DB.prepare(`SELECT code, name, print_name, "group" AS grp FROM pcus ORDER BY code`).all();
@@ -109,12 +111,23 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     if (s) notices.push({ month: rr.month, complete: s.complete, incomplete: s.incomplete });
   }
 
+  // forms bound to the shown requests when they differ from the latest (submitted before a form edit) — PCU-stripped
+  const forms = {};
+  for (const v of [curView.view, prevView.view]) {
+    const fid = v.request && v.request.form_version_id;
+    if (fid && form && fid !== form.id && !forms[fid]) {
+      const f = await loadForm(DB, fid);
+      if (f) forms[fid] = formPublic(f, PCU_FORM);
+    }
+  }
+
   return {
     server_time: nowIso(), current_month: cur,
     pcu: pcuPublic(pcuRow),
     config: cfg,
     form_version_id: form ? form.id : null,
-    form: formPublic(form),
+    form: formPublic(form, PCU_FORM),
+    forms,
     rounds: [cur, prev].map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day)),
     older_months: olderRes.results.map((r) => r.month),
     hidden: hiddenRes.results.map((r) => r.item_code),
@@ -137,7 +150,17 @@ export async function pcuGetMonth(ctx, p) {
   const cfg = publicConfig(await getConfigAll(DB), monthFy(currentMonth()));
   const { view, unlocks } = await pcuMonthView(DB, pcu.code, p.month, cfg.fy_current);
   const rounds = await getRoundRows(DB, [p.month]);
-  return { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day) };
+  const out = { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day) };
+  // the bound form version, only when it differs from the latest (2d)
+  const fid = view.request && view.request.form_version_id;
+  if (fid) {
+    const latest = await latestForm(DB, cfg.fy_current);
+    if (latest && latest.id !== fid) {
+      const f = await loadForm(DB, fid);
+      if (f) out.form = formPublic(f, PCU_FORM);
+    }
+  }
+  return out;
 }
 
 // ---- saveLines (autosave + submit) ------------------------------------------------------------------------------------------

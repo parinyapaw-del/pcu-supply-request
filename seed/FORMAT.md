@@ -14,6 +14,7 @@
     "steps": [ { "code":"P1", "order":1, "sheet":"แบบ พัสดุ 1", "page_no":1,
                  "title":"ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์", "subject":"...", "to":"ผู้อำนวยการโรงพยาบาลอ่างทอง",
                  "dispense_unit": "พัสดุ",       // "พัสดุ" | "จ่ายกลาง" | "LAB"   (P1–P5 = พัสดุ, CS = จ่ายกลาง, LAB = LAB)
+                 "active": true,                 // (2d, optional, default true) false = หน้าที่ปิดแล้ว (soft delete — ไม่ลบหน้า) · PCU ไม่เห็น · ปิดได้เมื่อไม่มีรายการ active เหลือในหน้า
                  "rows": [ { "type":"section", "title":"วัสดุสำนักงาน" },
                            { "type":"item", "code":"P1-01", "seq":1, "name":"...", "unit":"ห่อ", "price":34.0, "active":true } ] } ]
   },
@@ -43,7 +44,14 @@
 | `pcus` | upsert code/name/print_name/group · **ไม่แตะ** pin_hash/pin_salt/pin_version/pin_fail/pin_locked_until ที่มีอยู่ · แห่งใหม่ได้ PIN ตั้งต้น `12345` |
 | `form` | ถ้ายังไม่มี `form_versions` ของ fy นี้ → insert version แรก · ถ้ามีแล้วและ data เท่ากัน (hash) → ข้าม · ถ้ามีแล้วและต่าง → **ไม่ทับ** รายงานว่าข้าม (admin ใช้ form editor แทน) |
 | `plans`, `actual_prev`, `prices_prev`, `stats` | replace ทั้ง fy ที่อยู่ในไฟล์ (ลบของ fy นั้นแล้วใส่ใหม่) |
-| `limits` | insert เฉพาะคู่ที่ยังไม่มีแถว หรือแถวเดิม `source != 'admin'` · แถวที่ admin แก้แล้วคงไว้ |
+| `limits` | insert เฉพาะคู่ที่ยังไม่มีแถว หรือแถวเดิม `source != 'admin'` · แถวที่ admin แก้แล้วคงไว้ · แถวที่เหมือนของเดิมทุกค่า (เดือน/ปี/source) ไม่เขียนซ้ำและไม่นับใน `limits_inserted` |
 | `config` | ตั้งเฉพาะ key ที่ยังไม่มีค่า (ไม่ทับที่ admin แก้) · ยกเว้นเมื่อเรียกด้วย `set_current_fy:true` (2e เปิดปีงบใหม่) → ตั้ง `fy_current` = fy ของไฟล์ |
 | ใบเบิก / users / audit / hidden_items / limit_unlocks | ไม่แตะเลย |
 ผลลัพธ์: `{ imported: {pcus, form:"inserted"|"same"|"skipped_differs", plans, actual_rows, stats, limits_inserted, limits_kept_admin, config_set}, warnings:[...] }` + audit `import_seed`
+
+## ส่งออก (backend action `adminExportSeed`, 2d)
+`adminExportSeed{fy?}` สร้างไฟล์รูปแบบเดียวกันนี้จากสถานะ D1 ปัจจุบัน (`generated_by:"adminExportSeed"`, `sources:["D1 export"]`, ไม่มี `verify`) — `form` = version ล่าสุดของ fy
+(รวมหน้าที่ปิดแล้ว `active:false`) · `plans`/`prices_prev`/`actual_prev`/`stats` ทุก fy ที่มีในระบบ · `limits` เฉพาะ fy นั้น (รวมแถว `admin`) · `config` ปัจจุบัน
+→ นำเข้ากลับด้วย `adminImportSeed` ได้แบบ no-op (`form:"same"`, `limits_inserted:0`) ใช้แทนไฟล์ตั้งต้นที่ล้าสมัยหลัง admin แก้ฟอร์มใน form editor
+`item.seq` = เลขลำดับต่อเนื่องทั้งฟอร์ม (P2 ต่อจาก P1) และ `step.order`/`page_no` ถูก server คำนวณใหม่ทุกครั้งที่บันทึกจาก editor (page_no เฉพาะหน้า active)
+

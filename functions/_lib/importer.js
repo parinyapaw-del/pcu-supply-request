@@ -159,13 +159,16 @@ export async function adminImportSeed(ctx, p) {
     for (const [fyKey, byPcu] of Object.entries(seed.limits)) {
       const fy = Number(fyKey);
       if (!Number.isInteger(fy) || !isObj(byPcu)) throw err("BAD_REQUEST", "limits: รูปแบบไม่ถูกต้อง");
-      const { results: adm } = await DB.prepare(`SELECT pcu, item_code FROM limits WHERE fy = ? AND source = 'admin'`).bind(fy).all();
-      const admin = new Set(adm.map((r) => r.pcu + "|" + r.item_code));
+      const { results: have } = await DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, source FROM limits WHERE fy = ?`).bind(fy).all();
+      const admin = new Set(have.filter((r) => r.source === "admin").map((r) => r.pcu + "|" + r.item_code));
+      const same = new Map(have.map((r) => [r.pcu + "|" + r.item_code, `${r.limit_month ?? ""}|${r.limit_year ?? ""}|${r.source ?? ""}`]));
       const rows = [];
       for (const [pcu, items] of Object.entries(byPcu)) {
         if (!knownPcu(pcu, `limits.${fy}`)) continue;
         for (const [code, v] of Object.entries(items || {})) {
           if (admin.has(pcu + "|" + code)) { imported.limits_kept_admin++; continue; }
+          // an identical row is not rewritten (so a re-import of an adminExportSeed file reports limits_inserted: 0)
+          if (same.get(pcu + "|" + code) === `${nn(v && v[0]) ?? ""}|${nn(v && v[1]) ?? ""}|${(v && v[2]) || "import"}`) continue;
           rows.push([fy, pcu, code, nn(v && v[0]), nn(v && v[1]), (v && v[2]) || "import", "import", ts]);
         }
       }

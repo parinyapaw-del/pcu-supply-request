@@ -213,10 +213,12 @@ export async function latestForm(DB, fy) {
   return row ? loadForm(DB, row.id) : null;
 }
 
-// API-facing form object (no server-side index)
-export function formPublic(form) {
+// API-facing form object (no server-side index).
+// opts.pcu: PCU-facing copy — soft-deleted pages (step.active === false, 2d) are stripped. Admin-facing callers keep them.
+export function formPublic(form, opts) {
   if (!form) return null;
-  return { id: form.id, fy: form.fy, created_at: form.created_at, note: form.note, steps: form.steps };
+  const steps = opts && opts.pcu ? form.steps.filter((s) => s.active !== false) : form.steps;
+  return { id: form.id, fy: form.fy, created_at: form.created_at, note: form.note, steps };
 }
 
 // item price map {code: price} of a form

@@ -5,6 +5,7 @@ import { requirePcu, requireStaff } from "../_lib/auth.js";
 import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
+import { adminExportSeed, adminFormGet, adminFormSave } from "../_lib/form_editor.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 
 const PUBLIC = {
@@ -46,6 +47,9 @@ const ADMIN = {
   adminUsersAdd: admin.adminUsersAdd,
   adminUsersRemove: admin.adminUsersRemove,
   adminImportSeed,
+  adminExportSeed,
+  adminFormGet,
+  adminFormSave,
   adminClearTrial: admin.adminClearTrial,
   adminBackupNow: admin.adminBackupNow,
   adminAuditLog: admin.adminAuditLog,
@@ -58,7 +62,7 @@ const REMOVED = {
   adminSetMode: "ใช้ adminSetLimitMode (off/warn/enforce) แทน adminSetMode",
 };
 const RESERVED = new Set(["requestPdf", "issueLines", "issueAll", "issueDone"]);
-const isReserved = (a) => RESERVED.has(a) || /^adminForm/.test(a) || (/^adminImport/.test(a) && a !== "adminImportSeed");
+const isReserved = (a) => RESERVED.has(a) || (/^adminImport/.test(a) && a !== "adminImportSeed");
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 
 // dev-only helpers (DEV_FAKE_GOOGLE=1)

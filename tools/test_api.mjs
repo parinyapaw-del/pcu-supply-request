@@ -193,7 +193,8 @@ async function main() {
     ok(/saveLines/.test(sub.error.message), "submit message points to saveLines (Thai hint)");
     expectErr(await api("withdraw", { month: CUR }), "BAD_REQUEST", "removed action withdraw");
     expectErr(await api("requestPdf", {}), "NOT_IMPLEMENTED", "requestPdf reserved (2b)");
-    expectErr(await api("adminFormSave", {}), "NOT_IMPLEMENTED", "adminForm* reserved (2d)");
+    expectErr(await api("adminFormSave", {}), "AUTH_REQUIRED", "adminFormSave needs a token (2d is live)");
+    expectErr(await api("adminFormDelete", {}), "BAD_REQUEST", "unknown adminForm* action is a plain unknown action");
     expectErr(await api("issueLines", {}), "NOT_IMPLEMENTED", "issueLines reserved (2c)");
     const bad = await (await fetch(BASE + "/api", { method: "POST", body: "{not json" })).json();
     expectErr(bad, "BAD_REQUEST", "malformed JSON body");
@@ -774,6 +775,220 @@ async function main() {
     ok(ab.rounds.some((x) => x.month === CUR && x.note), "rounds survive");
     const again = await mustOk("pcuBootstrap", {}, T1);
     eq(again.byMonth[CUR].request, null, "PCU sees an empty month after the trial wipe");
+  }
+
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("form editor (2d)");
+  {
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const stepOf = (steps, code) => steps.find((x) => x.code === code);
+    const itemRows = (steps) => steps.flatMap((x) => x.rows.filter((r) => r.type === "item"));
+    const findItem = (steps, code) => itemRows(steps).find((r) => r.code === code);
+    const activeN = (st) => st.rows.filter((r) => r.type === "item" && r.active !== false).length;
+    const nextCode = (st, prefix) => `${prefix}-${String(Math.max(0, ...st.rows.filter((r) => r.type === "item").map((r) => Number(r.code.split("-")[1]))) + 1).padStart(2, "0")}`;
+
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+
+    // ---- read: bootstrap form == adminFormGet ----
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    let F = b0.form;
+    const g0 = (await mustOk("adminFormGet", { id: F.id }, ADM2)).form;
+    eq([g0.id, g0.fy, g0.steps], [F.id, F.fy, F.steps], "adminFormGet(latest) = adminBootstrap.form");
+    ok("created_by" in g0 && g0.created_by, "adminFormGet carries created_by");
+    expectErr(await api("adminFormGet", { id: 999999 }, ADM2), "NOT_FOUND", "adminFormGet unknown id");
+    expectErr(await api("adminFormGet", { id: "x" }, ADM2), "BAD_REQUEST", "adminFormGet bad id");
+    const V0 = F.id, base0 = cl(F);
+
+    // ---- requests before the edit: one submitted (A + B), one draft ----
+    const TF1 = (await mustOk("pcuLogin", { pcu: "PCU13", pin: "12345" })).token;
+    const TF2 = (await mustOk("pcuLogin", { pcu: "PCU14", pin: "12345" })).token;
+    const subOld = await api("saveLines", { month: CUR, lines: { [A.code]: { op: 2, updated_at: t(1) }, [B.code]: { op: 3, updated_at: t(1) } }, send: true }, TF1);
+    ok(subOld.ok && subOld.data.request.form_version_id === V0, "pre-edit: PCU13 submitted on the old version");
+    ok((await api("saveLines", { month: CUR, lines: { [A.code]: { op: 1, updated_at: t(1) } } }, TF2)).ok, "pre-edit: PCU14 has a draft");
+    const oldA = findItem(base0.steps, A.code).price;
+
+    // ---- no change → same ----
+    const same = await mustOk("adminFormSave", { base_version_id: V0, note: "ไม่มีอะไรเปลี่ยน", form: { steps: cl(F.steps) } }, ADM2);
+    ok(same.saved === false && same.same === true && same.form.id === V0, "save with no change → same:true, no new version");
+    eq(same.versions.length, 1, "no new row after a same-save");
+    // a lighter payload (no order/seq/page_no/active) normalises to the same data
+    const lite = cl(F.steps).map((x) => { delete x.order; delete x.page_no; delete x.active; x.rows.forEach((r) => { delete r.seq; }); return x; });
+    ok((await mustOk("adminFormSave", { base_version_id: V0, form: { steps: lite } }, ADM2)).same === true, "payload without order/page_no/seq → still same (server renumbers)");
+
+    // ---- the big edit ----
+    const steps = cl(F.steps);
+    const P1 = stepOf(steps, "P1"), P2 = stepOf(steps, "P2"), P5 = stepOf(steps, "P5");
+    const p1items = P1.rows.filter((r) => r.type === "item");
+    const priceItem = p1items[0], renItem = p1items[1], unitItem = p1items[2], moveItem = p1items[p1items.length - 1];
+    ok(priceItem.code === A.code, "fixture: first P1 item is A");
+    const oldPrice = priceItem.price;
+    priceItem.price = Math.round((priceItem.price + 1.5) * 100) / 100;
+    const oldName = renItem.name; renItem.name = oldName + " (ปรับชื่อ)";
+    const oldUnit = unitItem.unit; unitItem.unit = "ชุดทดสอบ";
+    P1.rows = P1.rows.filter((r) => r !== moveItem);
+    P5.rows.push(moveItem);
+    const newP5 = nextCode(P5, "P5");
+    P5.rows.push({ type: "item", code: newP5, name: "รายการใหม่ทดสอบ", unit: "กล่อง", price: 12.3456, active: true });
+    const closeItem = P2.rows.find((r) => r.type === "item" && r.code === B.code);
+    closeItem.active = false;
+    steps.push({ code: "S08", sheet: "แบบ พัสดุ 8", title: "หน้าใหม่ทดสอบ", subject: "เรื่องทดสอบ", to: "ผู้อำนวยการ", dispense_unit: "พัสดุ",
+                 rows: [{ type: "item", code: "S08-01", name: "รายการหน้า 8", unit: "อัน", price: 99, active: true }] });
+    const sv = await mustOk("adminFormSave", { base_version_id: V0, note: "แก้ราคา เพิ่มหน้า 8", form: { steps } }, ADM2);
+    ok(sv.saved === true && sv.form.id > V0 && sv.form.fy === 2570, "save → saved:true, new version of the same fy");
+    eq(sv.versions.length, 2, "versions list has 2 entries");
+    eq(sv.versions[0], { id: sv.form.id, fy: 2570, created_at: sv.versions[0].created_at, created_by: ADMIN_EMAIL, note: "แก้ราคา เพิ่มหน้า 8" }, "versions[0] = the new version (created_by = actor, note)");
+    const d = sv.diff;
+    eq([d.steps_added, d.steps_closed, d.steps_reopened], [["S08"], [], []], "diff: steps_added S08");
+    eq(d.items_added.sort(), [newP5, "S08-01"].sort(), "diff: items_added (new P5 item + S08-01)");
+    eq(d.items_closed, [B.code], "diff: items_closed");
+    eq(d.price_changed, [{ code: priceItem.code, old: oldPrice, new: priceItem.price }], "diff: price_changed with old/new");
+    eq(d.renamed, [{ code: renItem.code, old: oldName, new: oldName + " (ปรับชื่อ)" }], "diff: renamed");
+    eq(d.unit_changed, [unitItem.code], "diff: unit_changed");
+    eq(d.moved, [{ code: moveItem.code, from: "P1", to: "P5" }], "diff: moved P1 → P5");
+    ok(findItem(sv.form.steps, newP5).price === 12.35, "price rounded to 2 decimals (12.3456 → 12.35)");
+    eq(sv.form.steps.map((x) => x.order), sv.form.steps.map((_, i) => i + 1), "steps renumbered: order = 1..n");
+    eq([stepOf(sv.form.steps, "S08").page_no, stepOf(sv.form.steps, "S08").active], [8, true], "new page: page_no 8, active true");
+    eq(itemRows(sv.form.steps).map((r) => r.seq), itemRows(sv.form.steps).map((_, i) => i + 1), "item.seq = running number over the whole form");
+    ok(findItem(sv.form.steps, B.code).active === false && stepOf(sv.form.steps, "P2").rows.some((r) => r.code === B.code), "closed item stays in the page with active:false");
+    const aud = (await mustOk("adminAuditLog", { limit: 20 }, ADM2)).entries.find((e) => e.action === "form_save");
+    ok(aud && aud.actor === ADMIN_EMAIL, "audit has form_save");
+    const ad = aud ? JSON.parse(aud.detail) : {};
+    ok(ad.id === sv.form.id && ad.note === "แก้ราคา เพิ่มหน้า 8" && ad.diff && ad.diff.steps_added[0] === "S08", "audit detail = JSON {id, note, diff}");
+    expectErr(await api("adminFormSave", { base_version_id: V0, form: { steps } }, ADM2), "CONFLICT", "stale base_version_id → CONFLICT");
+    const dget = (await mustOk("adminFormGet", { id: V0 }, ADM2)).form;
+    eq(dget.steps, base0.steps, "old version is immutable (adminFormGet of the old id)");
+    F = sv.form;
+    const V1 = F.id;
+
+    // ---- PCU side ----
+    const pb1 = await mustOk("pcuBootstrap", {}, TF1);
+    eq(pb1.form_version_id, V1, "pcuBootstrap.form_version_id = new version");
+    ok(stepOf(pb1.form.steps, "S08") && findItem(pb1.form.steps, "S08-01"), "pcuBootstrap.form has the new page + item");
+    ok(findItem(pb1.form.steps, newP5) && findItem(pb1.form.steps, B.code).active === false, "new item present; closed item is active:false");
+    ok(pb1.forms && pb1.forms[V0] && pb1.forms[V0].id === V0, "pcuBootstrap.forms has the old version bound to the submitted request");
+    eq(findItem(pb1.forms[V0].steps, A.code).price, oldA, "forms[old] keeps the old price");
+    const pb2 = await mustOk("pcuBootstrap", {}, TF2);
+    eq(pb2.forms, {}, "forms is {} when no shown request is bound to an older version (draft)");
+    const gm1 = await mustOk("pcuGetMonth", { month: CUR }, TF1);
+    ok(gm1.form && gm1.form.id === V0, "pcuGetMonth.form = bound old version");
+    ok(!("form" in (await mustOk("pcuGetMonth", { month: CUR }, TF2))), "pcuGetMonth omits form when it is the latest");
+    const gr = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
+    ok(gr.form.id === V0 && gr.form_version_id === V0 && findItem(gr.form.steps, A.code).price === oldA, "adminGetRequest: submitted request keeps its old version + old price");
+
+    // ---- saving after the edit ----
+    const s2 = await api("saveLines", { month: CUR, lines: { "S08-01": { op: 2, updated_at: t(2) }, [newP5]: { op: 1, updated_at: t(2) } }, send: true }, TF2);
+    ok(s2.ok && s2.data.status === "submitted" && s2.data.request.form_version_id === V1, "draft: new item codes save + submit → bound to the new version");
+    const gr2 = await mustOk("adminGetRequest", { pcu: "PCU14", month: CUR }, ADM2);
+    eq(gr2.request.lines["S08-01"].price_snapshot, 99, "price_snapshot of the new item");
+    eq(gr2.request.lines[A.code].price_snapshot, priceItem.price, "price_snapshot of the draft's item A = the NEW price");
+    ok(gr2.form.id === V1, "adminGetRequest after resubmit: new version");
+    const re = await api("saveLines", { month: CUR, lines: { [B.code]: { op: 4, updated_at: t(3) } }, send: true }, TF1);
+    ok(re.ok && re.data.request.form_version_id === V1, "old submitted request with a closed item (qty>0) resubmits fine → new version");
+    const gr3 = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
+    ok(gr3.request.lines[B.code].op === 4 && gr3.request.lines[B.code].price_snapshot === findItem(F.steps, B.code).price, "closed item keeps its qty and price_snapshot on resubmit");
+    const aNew = gr3.request.lines[A.code].price_snapshot;
+    eq(aNew, findItem(F.steps, A.code).price, "resubmit: price_snapshot = new form price");
+    ok(aNew !== oldA, "…and it differs from the old price");
+
+    // ---- validation (each against the latest version) ----
+    const bad = async (label, mut, needle, extra = {}) => {
+      const st = cl(F.steps); mut(st);
+      const r = await api("adminFormSave", { base_version_id: F.id, note: "t", form: { steps: st }, ...extra }, ADM2);
+      expectErr(r, "BAD_REQUEST", label);
+      if (needle) ok(r.error && r.error.message.includes(needle), `${label}: message names "${needle}"`);
+    };
+    const mkItem = (code, extra = {}) => ({ type: "item", code, name: "x", unit: "อัน", price: 1, active: true, ...extra });
+    await bad("25 active items on a page", (st) => { const x = stepOf(st, "P2"); for (let i = activeN(x); i < 25; i++) x.rows.push(mkItem(`P2-9${String(i).padStart(2, "0")}`)); }, "P2");
+    await bad("11 active steps", (st) => { for (const c of ["T09", "T10", "T11"]) st.push({ code: c, title: c, rows: [] }); }, "10");
+    await bad("3 sections on a page", (st) => { stepOf(st, "P1").rows.push({ type: "section", title: "หมวดเกิน" }); stepOf(st, "P1").rows.push({ type: "section", title: "หมวดเกิน 2" }); }, "P1");
+    await bad("empty section title", (st) => { stepOf(st, "P5").rows.push({ type: "section", title: " " }); }, "P5");
+    await bad("section title > 80", (st) => { stepOf(st, "P5").rows.push({ type: "section", title: "ก".repeat(81) }); }, "P5");
+    await bad("duplicate item code", (st) => { stepOf(st, "P3").rows.push(mkItem(A.code)); }, A.code);
+    await bad("bad item code format", (st) => { stepOf(st, "P3").rows.push(mkItem("xx-1")); }, "xx-1");
+    await bad("duplicate step code", (st) => { st.push({ code: "P1", title: "ซ้ำ", rows: [] }); }, "P1");
+    await bad("bad step code format", (st) => { st.push({ code: "toolong1", title: "x", rows: [] }); });
+    await bad("missing base item (deleted, not closed)", (st) => { const x = stepOf(st, "P2"); x.rows = x.rows.filter((r) => r.code !== A.code && r.code !== B.code); }, "ลบรายการไม่ได้");
+    await bad("missing base step (deleted, not closed)", (st) => { st.splice(st.findIndex((x) => x.code === "CS"), 1); }, "CS");
+    await bad("closing a step that still has active items", (st) => { stepOf(st, "CS").active = false; }, "CS");
+    await bad("negative price", (st) => { findItem(st, A.code).price = -1; }, A.code);
+    await bad("price not a number", (st) => { findItem(st, A.code).price = "12"; }, A.code);
+    await bad("empty item name", (st) => { findItem(st, A.code).name = "  "; }, A.code);
+    await bad("item name > 200", (st) => { findItem(st, A.code).name = "ก".repeat(201); }, A.code);
+    await bad("unit > 30", (st) => { findItem(st, A.code).unit = "ก".repeat(31); }, A.code);
+    await bad("empty step title", (st) => { stepOf(st, "P1").title = ""; }, "P1");
+    await bad("step title > 120", (st) => { stepOf(st, "P1").title = "ก".repeat(121); }, "P1");
+    await bad("bad dispense_unit", (st) => { stepOf(st, "P1").dispense_unit = "ร้านค้า"; }, "P1");
+    await bad("note > 200 chars", () => {}, null, { note: "ก".repeat(201) });
+    expectErr(await api("adminFormSave", { base_version_id: F.id, form: {} }, ADM2), "BAD_REQUEST", "form without steps");
+    expectErr(await api("adminFormSave", { form: { steps: cl(F.steps) } }, ADM2), "BAD_REQUEST", "missing base_version_id");
+    expectErr(await api("adminFormSave", { base_version_id: 987654, form: { steps: cl(F.steps) } }, ADM2), "NOT_FOUND", "unknown base_version_id");
+    eq((await mustOk("adminBootstrap", {}, ADM2)).form_versions.length, 2, "rejected saves created no version");
+
+    // ---- dispenser / no token ----
+    await mustOk("adminUsersAdd", { email: "disp.form@example.com", role: "dispenser", units: ["LAB"] }, ADM2);
+    const DSP = (await mustOk("adminLoginGoogle", { id_token: "dev:disp.form@example.com" })).token;
+    expectErr(await api("adminFormSave", { base_version_id: F.id, form: { steps: cl(F.steps) } }, DSP), "FORBIDDEN", "dispenser: adminFormSave");
+    expectErr(await api("adminFormGet", { id: F.id }, DSP), "FORBIDDEN", "dispenser: adminFormGet");
+    expectErr(await api("adminExportSeed", {}, DSP), "FORBIDDEN", "dispenser: adminExportSeed");
+    expectErr(await api("adminExportSeed", {}, TF1), "FORBIDDEN", "PCU token cannot export");
+    expectErr(await api("adminFormGet", { id: F.id }), "AUTH_REQUIRED", "adminFormGet without a token");
+
+    // ---- close + reopen a page ----
+    const st3 = cl(F.steps);
+    findItem(st3, "S08-01").active = false; stepOf(st3, "S08").active = false;
+    const v3 = await mustOk("adminFormSave", { base_version_id: V1, note: "ปิดหน้า 8", form: { steps: st3 } }, ADM2);
+    eq([v3.diff.steps_closed, v3.diff.items_closed], [["S08"], ["S08-01"]], "close a page (soft delete): diff steps_closed + items_closed");
+    eq([stepOf(v3.form.steps, "S08").active, stepOf(v3.form.steps, "S08").page_no], [false, null], "closed page: active:false, page_no null");
+    ok(stepOf(v3.form.steps, "P5").page_no === 5 && stepOf(v3.form.steps, "LAB").page_no === 7, "page_no stays a running number among active pages");
+    const pb3 = await mustOk("pcuBootstrap", {}, TF2);
+    ok(!stepOf(pb3.form.steps, "S08"), "pcuBootstrap.form strips closed pages");
+    ok(pb3.forms[V1] && stepOf(pb3.forms[V1].steps, "S08"), "…but forms[V1] (still has S08 active) is intact");
+    ok(!pb3.forms[V0], "forms lists only versions bound to the shown requests");
+    const ab3 = await mustOk("adminBootstrap", {}, ADM2);
+    ok(stepOf(ab3.form.steps, "S08") && stepOf(ab3.form.steps, "S08").active === false, "adminBootstrap.form keeps the closed page (active:false)");
+    ok((await api("saveLines", { month: CUR, lines: { "S08-01": { op: 5, updated_at: t(4) } }, send: true }, TF2)).ok, "closed page's item code still saves on a request (code exists)");
+    const st4 = cl(v3.form.steps);
+    findItem(st4, "S08-01").active = true; stepOf(st4, "S08").active = true;
+    const v4 = await mustOk("adminFormSave", { base_version_id: v3.form.id, note: "เปิดหน้า 8 กลับ", form: { steps: st4 } }, ADM2);
+    eq([v4.diff.steps_reopened, v4.diff.items_reopened], [["S08"], ["S08-01"]], "reopen: diff steps_reopened + items_reopened");
+    F = v4.form;
+    ok(stepOf((await mustOk("pcuBootstrap", {}, TF2)).form.steps, "S08"), "reopened page is visible to PCUs again");
+
+    // ---- adminExportSeed ----
+    const ex = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq([ex.format, ex.fy, ex.generated_by, ex.sources], ["pcu-supply-import/1", 2570, "adminExportSeed", ["D1 export"]], "export: format/fy/generated_by/sources");
+    ok(ex.generated_at && !("verify" in ex), "export: generated_at, no verify block");
+    eq(ex.pcus.length, 15, "export: 15 pcus");
+    ok(ex.pcus.every((x) => x.code && x.name && x.print_name && "group" in x), "export: pcus carry code/name/print_name/group");
+    eq(ex.form.steps.length, 8, "export: form has 8 steps (incl. S08)");
+    eq(ex.form.steps, F.steps, "export: form steps = latest version (all steps incl. inactive)");
+    ok(ex.form.note === "เปิดหน้า 8 กลับ" && ex.form.fy === 2570, "export: form note/fy of the latest version");
+    ok(ex.plans["2570"] && ex.plans["2569"], "export: plans for every fy present");
+    ok(Object.keys(ex.prices_prev["2569"]).length > 100, "export: prices_prev");
+    const am = ex.actual_prev["2569"];
+    ok(am && am.months.length === 12 && am.months[0] === "2025-10" && Object.values(Object.values(am.data)[0])[0].op.length === 12, "export: actual_prev months (12) + 12-element op/pp arrays");
+    ok(Object.keys(ex.stats["2569"]).length > 0, "export: stats");
+    const lv = Object.values(Object.values(ex.limits["2570"])[0])[0];
+    ok(Array.isArray(lv) && lv.length === 3 && typeof lv[2] === "string", "export: limits [month, year, source]");
+    const srcs = new Set(Object.values(ex.limits["2570"]).flatMap((o) => Object.values(o).map((v) => v[2])));
+    ok(srcs.has("admin"), "export: admin-edited limit rows included");
+    eq(ex.config, { fy_current: 2570, limit_mode: "off", stock_required: 0, budget_op: 520000, budget_pp: 390000, budget_total: 910000, deadline_day: null }, "export: config");
+    const before2 = await counts();
+    const rei = await mustOk("adminImportSeed", { seed: ex }, ADM2);
+    eq(rei.imported.form, "same", "re-import of the export: form → same");
+    eq(rei.imported.limits_inserted, 0, "re-import of the export: limits_inserted 0");
+    ok(rei.imported.limits_kept_admin >= 1, "re-import of the export: admin limits kept");
+    eq(rei.imported.config_set, [], "re-import of the export: config untouched");
+    eq(rei.warnings, [], "re-import of the export: no warnings");
+    eq(await counts(), before2, "re-import of the export: every table keeps its row count");
+    const ex2 = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq([ex2.plans, ex2.prices_prev, ex2.actual_prev, ex2.stats, ex2.limits, ex2.form, ex2.config], [ex.plans, ex.prices_prev, ex.actual_prev, ex.stats, ex.limits, ex.form, ex.config], "export → import → export is a fixed point");
+    const exOld = (await mustOk("adminExportSeed", { fy: 2569 }, ADM2)).seed;
+    ok(exOld.fy === 2569 && !("form" in exOld) && Object.keys(exOld.limits["2569"]).length === 0, "export with fy=2569: no form for that fy, empty limits");
+    expectErr(await api("adminExportSeed", { fy: "abc" }, ADM2), "BAD_REQUEST", "export: bad fy");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
