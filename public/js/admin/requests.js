@@ -6,7 +6,13 @@ import { isUsableStatus } from "./compute.js";
 
 const cache = new Map(); // "pcu|month" -> { stamp, request, form }
 
-function stampOf(r) { return `${r.status}|${r.updated_at}|${r.submitted_at}`; }
+// 2c: issue amounts change without touching updated_at, so the stamp also covers the IssueInfo summary
+// that adminRequests returns (done units + issued line counts).
+function issueStamp(issue) {
+  if (!issue || !issue.units) return "";
+  return Object.entries(issue.units).map(([u, x]) => `${u}:${x.done ? 1 : 0}/${x.issued_lines || 0}/${x.done_at || ""}`).join(",");
+}
+function stampOf(r) { return `${r.status}|${r.updated_at}|${r.submitted_at}|${issueStamp(r.issue)}`; }
 
 export function clearRequestCache() { cache.clear(); }
 
