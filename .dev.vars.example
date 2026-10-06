@@ -5,6 +5,8 @@ ADMIN_EMAILS=parinya.paw@gmail.com
 BACKUP_KEY=dev-backup-key
 # Accept id_token "dev:<email>" instead of calling Google, and enable the devReset action. LOCAL ONLY.
 DEV_FAKE_GOOGLE=1
-# Browser Rendering (phase 2b) — unused in 2a
+# Browser Rendering (phase 2b, PDF download). Production: CF_ACCOUNT_ID = Cloudflare account id, CF_BR_TOKEN = API token with
+# "Browser Rendering - Edit" (set both as secrets in the Pages dashboard). Locally leave CF_BR_TOKEN EMPTY: with DEV_FAKE_GOOGLE=1 the
+# server then stores a tiny mock PDF instead of calling Cloudflare (needs the R2 binding: `npm run dev` passes --r2 FILES).
 CF_ACCOUNT_ID=
 CF_BR_TOKEN=

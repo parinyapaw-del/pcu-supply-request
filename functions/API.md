@@ -8,11 +8,11 @@ Items marked **2b–2e** (except 2d, now live) are reserved: the action name exi
 - `POST /api` — body JSON `{ "action": "<name>", "token": "<token|omit>", ...params }`. Content-Type may be `text/plain` (no CORS preflight,
   what `js/api.js` sends) or `application/json`. Same-origin only (no CORS headers).
 - Response is **always HTTP 200**: `{ "ok": true, "data": {...} }` or `{ "ok": false, "error": { "code", "message": "<Thai>", ...extra } }`.
-  (Exceptions: `GET /api/export.xlsx` and `POST /api/cron/backup` use real HTTP status codes because they are not called through `api.js`.)
+  (Exceptions: `GET /api/export.xlsx`, `GET /api/pdf/:id` and `POST /api/cron/backup` use real HTTP status codes because they are not called through `api.js`.)
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT{items:[{code,total,limit_month,limit_year,used_fy}]}` · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT{items:[{code,total,limit_month,limit_year,used_fy}]}` · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - Fiscal year (พ.ศ.): `fy(month) = CE_year + (month >= 10 ? 1 : 0) + 543` → `2026-10` … `2027-09` = FY2570.
@@ -56,7 +56,8 @@ Items marked **2b–2e** (except 2d, now live) are reserved: the action name exi
 | `saveLines` | `month, lines:{code:{stock,op,pp,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...] }` |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
-| `requestPdf` | – | **2b** `NOT_IMPLEMENTED` |
+| `requestPdf` | `month` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}` |
+| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code]}` for `print.html` |
 | `issueLines`, `issueAll`, `issueDone` (staff) | – | **2c** `NOT_IMPLEMENTED` |
 
 `saveLines` rules
@@ -105,12 +106,13 @@ PCU-side lines never include price/issued fields (Q78).
 Form fallback: if no `form_versions` row exists for the round's fy, the latest version of any fy is used (so Sep 2026 = FY2569 still works).
 
 ## 5. Admin / dispenser actions
-Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `GET /api/export.xlsx`; everything else `FORBIDDEN`.
+Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, `GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN`.
 `adminLoginGoogle` / `adminLoginBackup` are public.
 
 | action | params | data |
 |---|---|---|
 | `adminLoginGoogle` | `id_token` | `{token, exp, email, role, units}` · `FORBIDDEN` if not a user |
+| `adminRequestPdf` (admin or dispenser) | `pcu, month` | §6b — same result as `requestPdf` for that PCU's request |
 | `adminLoginBackup` | `password` | `{token, exp, role:"admin"}` · `BAD_PASSWORD{remaining}` · `LOCKED{until}` · `NOT_FOUND` if none set |
 | `adminBootstrap` | – | §5.1 |
 | `adminRequests` | `month?` (omitted = current + previous month) | `{requests:[RequestObj without lines + pcu_name + progress], rounds:[RoundInfo], server_time, current_month}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` |
@@ -140,10 +142,33 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminFormSave` | `base_version_id:int, note?:string(≤200), form:{steps:[...]}` | `{saved:true, form, versions, diff}` or `{saved:false, same:true, form, versions}` — new form version, §5.2 |
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` / `adminImportApply` / other `adminImport*` ≠ `adminImportSeed` | – | **2e** `NOT_IMPLEMENTED` |
-| `devReset`, `devPutBackup{key}`, `devListBackups` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}` |
+| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request |
+| header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
 | header `X-Dev-Month: YYYY-MM` | – | only honoured when `DEV_FAKE_GOOGLE==="1"` (POST /api and the export): overrides "the current Bangkok month" so tests do not depend on the real date |
 
 All mutating admin/PCU actions (except autosave) append to `audit_log` in the same D1 batch.
+
+### 5.1 `adminBootstrap` data (admin; dispenser gets only `me, server_time, current_month, config, pcus(code,name,print_name,group), form, form_versions, rounds, months`)
+```
+{
+  me: {email|"backup", role, units:[...]}, server_time, current_month,
+  config: { limit_mode, stock_required, deadline_day, fy_current, budget_op, budget_pp, budget_total },
+  pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool} ],
+  form: {id,fy,created_at,note,steps}, form_versions: [ {id,fy,created_at,created_by,note} ],     // form = latest of fy_current (incl. closed pages, §5.2)
+  plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
+  plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
+  stats:  { fy: <fy_current-1>, data: { pcu: { code: [median_m, p90_m, annual_qty] } } },   // basis for limits/reset
+  limits: { pcu: { code: {limit_month, limit_year, source, updated_by, updated_at, note} } },   // fy_current
+  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fy_current
+  hidden: { pcu: [code] },
+  prev: { "2569": { months:["2025-10",...,"2026-09"], actual:{ pcu:{ code:{op:[12],pp:[12]} } }, plans:{ pcu:{code:[op,pp]} }, prices:{code:price} } },  // one entry per fy in actual_prev
+  months: ["2026-10", ...],                                            // months having any request, newest first
+  rounds: [RoundInfo],                                                 // union(current, previous, months with requests, rounds rows) newest first
+  users: [ ...adminUsersList ] , users_source: "table"|"env"           // admin only
+}
+RoundInfo = { month, fy, deadline_date, deadline_source, locked:bool, locked_at, locked_by, note }
+```
+`deadline_date` = `rounds.deadline_date` if set, else `config.deadline_day` (clamped to the month length), else the last day of the month.
 
 ### 5.2 Form editor + seed export (2d) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
 A form version is immutable. "Editing" the form = `adminFormSave` inserts a new `form_versions` row (`data = {fy, note, steps}`, `fy` = the base's fy,
@@ -179,28 +204,6 @@ every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips t
 `config` (fy_current, limit_mode, stock_required, budget_op/pp/total, deadline_day). No `verify` block. Re-importing it is a no-op: `form:"same"`, `limits_inserted:0`
 (the importer skips a limits row identical to the stored one), every table keeps its row count, and export → import → export is a fixed point.
 
-### 5.1 `adminBootstrap` data (admin; dispenser gets only `me, server_time, current_month, config, pcus(code,name,print_name,group), form, form_versions, rounds, months`)
-```
-{
-  me: {email|"backup", role, units:[...]}, server_time, current_month,
-  config: { limit_mode, stock_required, deadline_day, fy_current, budget_op, budget_pp, budget_total },
-  pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool} ],
-  form: {id,fy,created_at,note,steps}, form_versions: [ {id,fy,created_at,created_by,note} ],     // form = latest of fy_current (incl. closed pages, §5.2)
-  plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
-  plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
-  stats:  { fy: <fy_current-1>, data: { pcu: { code: [median_m, p90_m, annual_qty] } } },   // basis for limits/reset
-  limits: { pcu: { code: {limit_month, limit_year, source, updated_by, updated_at, note} } },   // fy_current
-  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fy_current
-  hidden: { pcu: [code] },
-  prev: { "2569": { months:["2025-10",...,"2026-09"], actual:{ pcu:{ code:{op:[12],pp:[12]} } }, plans:{ pcu:{code:[op,pp]} }, prices:{code:price} } },  // one entry per fy in actual_prev
-  months: ["2026-10", ...],                                            // months having any request, newest first
-  rounds: [RoundInfo],                                                 // union(current, previous, months with requests, rounds rows) newest first
-  users: [ ...adminUsersList ] , users_source: "table"|"env"           // admin only
-}
-RoundInfo = { month, fy, deadline_date, deadline_source, locked:bool, locked_at, locked_by, note }
-```
-`deadline_date` = `rounds.deadline_date` if set, else `config.deadline_day` (clamped to the month length), else the last day of the month.
-
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
 Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else form price) ·
@@ -208,10 +211,39 @@ OP · PP · รวม · เป็นเงิน · จ่ายจริง OP
 **รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (0 in 2a); submitted/issued only) ·
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
 
+## 6b. PDF (phase 2b) — `requestPdf` · `adminRequestPdf` · `printData` · `GET /api/pdf/:id`
+Result of `requestPdf{month}` (PCU token, always `token.pcu`) and `adminRequestPdf{pcu,month}` (admin or dispenser):
+- `{status:"ready", url:"/api/pdf/<request_id>?k=<content_key>", filename:"ใบเบิก_<print_name>_<เดือนไทย ปีพ.ศ.>.pdf", content_key}`
+- `{status:"pending", retry_after:<s>}` — Browser Rendering answered 429 (its `Retry-After`, default 10). The client retries, giving up after 60 s total.
+- Errors: `NOT_FOUND` (no request, or status `draft`: "ต้องส่งใบเบิกก่อนจึงจะดาวน์โหลด PDF ได้") · `PDF_UNAVAILABLE` (no `env.FILES`, or no
+  `CF_BR_TOKEN`/`CF_ACCOUNT_ID` outside dev mock) · `PDF_FAILED{detail}` (renderer error / timeout / non-PDF body / R2 error) · `BAD_REQUEST` (month / pcu).
+  The two PDF errors carry a Thai message telling the user to use พิมพ์ → Save as PDF.
+
+Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({v:form_version_id, pn:print_name,
+sa:submitted_at, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0)}))` → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
+else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<pcu>/<month>/<content_key>.pdf")` + `pdf_files` row + audit `pdf_create`
+(actor = PCU code or staff e-mail) in one D1 batch.
+- Print token = `signToken({t:"print", pcu, month, ck:content_key, exp: now+120000})` (same HMAC format as §2). `printData` verifies it, requires type
+  `print`, recomputes the content key and answers `CONFLICT` if the request changed since the token was minted (so a PDF is never cached under a wrong key).
+  `form` = version bound to the request (`form_version_id`), else latest of the round's fy. Lines have the PCU shape (no price/issued fields).
+- Browser Rendering call (checked 2026-10-06 against the API reference; the guide page now writes the path as `.../browser-run/pdf`):
+  `POST https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/browser-rendering/pdf`, `Authorization: Bearer ${CF_BR_TOKEN}`, body
+  `{"url":"<print url>","viewport":{"width":794,"height":1123},"gotoOptions":{"waitUntil":"load","timeout":30000},"waitForSelector":{"selector":".print-ready","timeout":30000},"pdfOptions":{"format":"a4","landscape":false,"printBackground":true,"preferCSSPageSize":true}}`.
+  Response 200 = raw PDF bytes (must start `%PDF`); 429 → `pending`; anything else → `PDF_FAILED`.
+- **Dev mock**: `DEV_FAKE_GOOGLE==="1"` and empty `CF_BR_TOKEN` ⇒ a hand-built 1-page A4 PDF (`MOCK PDF <request_id> <content_key>`, < 2 KB) is stored instead
+  (R2 put, `pdf_files`, download and caching all behave as real). Never used when `CF_BR_TOKEN` is set or in production.
+- `print.html?k=…` (static page, no login) calls `printData`, renders every printable step (`active !== false`) with the same builder as the print route, waits for
+  fonts, then adds class `print-ready` (or `print-error` + the message on failure).
+
+`GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>` (token may also be `Authorization: Bearer`): a PCU token must own the request (`token.pcu ==
+request.pcu`) else 403; admin / dispenser any. HTTP 401 (no/invalid token) · 403 · 400 (malformed `k`) · 404 JSON (no request, no `pdf_files` row or R2 object).
+200 streams the R2 object: `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="request.pdf"; filename*=UTF-8''<encoded filename>`,
+`Cache-Control: private, max-age=0`. Older versions stay downloadable by their own `k`. `adminClearTrial` deletes every `pdf_files` row and its R2 object.
+
 ## 7. `POST /api/cron/backup` (header `X-Backup-Key == env.BACKUP_KEY`)
 Dumps every table to R2 `backup/YYYY-MM-DD.json` (Bangkok date) = `{exported_at, schema_version, tables:{name:[rows]}}`, deletes `backup/*` older than 90 days.
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted}}`. Called nightly by `.github/workflows/backup.yml`
-(cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`). `GET /api/pdf/:id` → HTTP 501 (2b).
+(cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
 ## 8. D1 schema as implemented (`functions/_lib/db.js`, migration v1)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
@@ -249,7 +281,7 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
 | `GOOGLE_CLIENT_ID` | tokeninfo `aud` check |
 | `ADMIN_EMAILS` | comma list; admins while `users` is empty |
 | `BACKUP_KEY` | `X-Backup-Key` for `/api/cron/backup` |
-| `CF_ACCOUNT_ID`, `CF_BR_TOKEN` | Browser Rendering (2b) — unused in 2a |
+| `CF_ACCOUNT_ID`, `CF_BR_TOKEN` | Browser Rendering (2b): account id + API token with permission *Browser Rendering – Edit*. Both required in production; without them (or without the `FILES` binding) PDF actions answer `PDF_UNAVAILABLE`. Leave `CF_BR_TOKEN` empty locally to get the mock |
 | `DEV_FAKE_GOOGLE=1` | **local only**: `dev:<email>` id_tokens + `devReset` |
 Bindings: `DB` (D1 `pcu-supply`), `FILES` (R2 `pcu-supply-files`). Local values: `.dev.vars` (gitignored; template `.dev.vars.example`).
 
@@ -257,10 +289,15 @@ Bindings: `DB` (D1 `pcu-supply`), `FILES` (R2 `pcu-supply-files`). Local values:
 ```
 npm install
 cp .dev.vars.example .dev.vars          # once
-npm run dev                             # wrangler pages dev public --local --port 8788  (D1/R2 under .wrangler/state)
+npm run dev                             # wrangler pages dev public --local --port 8788 --r2 FILES  (D1/R2 under .wrangler/state)
 npm test                                # node tools/test_api.mjs   → http://localhost:8788 (override with API_BASE=...)
 ```
 `npm test` uses a server already listening on `API_BASE`; if none is reachable it starts `wrangler pages dev` itself with a throw-away
 `--persist-to .wrangler/test-state` and stops it at the end. In both cases the suite calls `devReset` first (clean D1), then imports the
 fixture (`seed/seed_2570.json` if present, else a synthetic seed built from `public/data/form2569.json`). Two-terminal flow: terminal 1 `npm run dev`, terminal 2 `npm test`
 (**this wipes the dev database**; use `API_BASE` against a throw-away instance if you have data you want to keep).
+
+`--r2 FILES` gives the local server the `FILES` R2 binding (backups, PDFs) even though `[[r2_buckets]]` is commented out in `wrangler.toml`
+(until the account has R2); wrangler accepts the flag together with `wrangler.toml` (verified wrangler 4.x). The test runner passes it too.
+Without it `devPutBackup`, the backup tests and every PDF action fail (`PDF_UNAVAILABLE`). To keep your own data when testing, run the suite on another port:
+`API_BASE=http://localhost:8790 npm test` (it starts and stops a throw-away server with `--persist-to .wrangler/test-state`).
