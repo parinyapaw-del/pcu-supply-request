@@ -55,3 +55,12 @@
 → นำเข้ากลับด้วย `adminImportSeed` ได้แบบ no-op (`form:"same"`, `limits_inserted:0`) ใช้แทนไฟล์ตั้งต้นที่ล้าสมัยหลัง admin แก้ฟอร์มใน form editor
 `item.seq` = เลขลำดับต่อเนื่องทั้งฟอร์ม (P2 ต่อจาก P1) และ `step.order`/`page_no` ถูก server คำนวณใหม่ทุกครั้งที่บันทึกจาก editor (page_no เฉพาะหน้า active)
 
+
+## เปิดปีงบใหม่ (backend actions `adminImportPreview` / `adminImportApply`, 2e)
+ไฟล์ `import_<ปี>.json` ของปีถัดไป (`fy = fy_current + 1`) ต้องมีอย่างน้อย `form` + `plans["<fy>"]` — ที่เหลือ optional · รายละเอียดใน `functions/API.md` §5.3
+- `preview` ไม่เขียนอะไร (บอก mode `rollover`/`same_fy`, ผลต่างฟอร์ม/ราคา, ยอดแผนเป็นบาท, limits ที่จะสร้าง, สิ่งที่จะ config) · `apply` เปิดปีใหม่ + ตั้ง `fy_current`
+- **ฟอร์มปีใหม่ = ฟอร์มในไฟล์ + รายการของปีเก่าที่ไฟล์ไม่มีแล้ว เก็บไว้เป็น `active:false`** ในหน้าเดิม (ไม่ลบ — รหัสในใบเบิก/stats เดิมยังหาเจอ) แล้ว renumber แบบ form editor
+- ฟอร์มในไฟล์ถูกตรวจด้วยกฎเดียวกับ form editor (≤ 10 หน้าที่ active, ≤ 24 รายการ active/หน้า, ≤ 2 หัวหมวด/หน้า, รหัสไม่ซ้ำ …)
+- `actual_prev["<fy เก่า>"]`, `prices_prev["<fy เก่า>"]`, `stats["<fy เก่า>"]`: ถ้าไฟล์ไม่มี → ระบบคำนวณจากใบเบิกที่ส่งแล้ว (`submitted`/`issued`) ของปีเก่าใน D1 (ราคา = ฟอร์มล่าสุดของปีเก่า · stats = median/p90 แบบ numpy linear ของยอด op+pp 12 เดือน)
+- `limits["<fy ใหม่>"]`: ถ้าไฟล์ไม่มี → สร้างตามกฎ Q81 ข้างบนจาก `plans[fy ใหม่]` ∪ `stats[fy เก่า]` (source `stat<fy เก่า−2500>` / `plan<fy ใหม่−2500>`)
+- `adminImportSeed` ตรวจรูปแบบทั้งไฟล์ก่อนเขียน (ไฟล์เสีย = ไม่เขียนอะไรเลย)
