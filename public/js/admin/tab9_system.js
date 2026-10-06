@@ -46,6 +46,23 @@ export function renderTab9(container, ctx) {
   const impMsg = el("div", { id: "t9-import-result" });
   impCard.appendChild(el("div", { class: "admin-toolbar" }, [file, el("label", { class: "admin-inline-check" }, [setFy, "ตั้งเป็นปีงบปัจจุบัน (set_current_fy)"])]));
   impCard.appendChild(impMsg);
+
+  // 2d: download the live DB state in the same import format (adminExportSeed)
+  const expBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t9-export-seed" }, "ดาวน์โหลดข้อมูลตั้งต้นปัจจุบัน (JSON)");
+  const expMsg = el("p", { class: "admin-note", id: "t9-export-msg" }, "ไฟล์นี้อยู่ในรูปแบบเดียวกับไฟล์นำเข้า — เก็บไว้เป็นต้นฉบับหลังแก้ฟอร์ม/เพดาน");
+  expBtn.addEventListener("click", async () => {
+    expBtn.disabled = true;
+    try {
+      const res = await ctx.adminCall("adminExportSeed", {});
+      const seed = res.seed;
+      const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Bangkok" }).format(new Date());
+      downloadJson(seed, `seed_${seed.fy || b().config.fy_current}_${ymd}.json`);
+      toast("ดาวน์โหลดข้อมูลตั้งต้นแล้ว");
+    } catch (err) { toast("ดาวน์โหลดไม่สำเร็จ: " + errMessage(err), "err"); } finally { expBtn.disabled = false; }
+  });
+  impCard.appendChild(el("hr"));
+  impCard.appendChild(el("div", { class: "admin-toolbar" }, [expBtn]));
+  impCard.appendChild(expMsg);
   container.appendChild(impCard);
 
   file.addEventListener("change", async () => {

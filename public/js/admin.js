@@ -15,6 +15,7 @@ import { renderTab6 } from "./admin/tab6_excel.js";
 import { renderTab7 } from "./admin/tab7_pcu.js";
 import { renderTab8 } from "./admin/tab8_users.js";
 import { renderTab9 } from "./admin/tab9_system.js";
+import { renderTab10 } from "./admin/tab10_form.js";
 
 const root = document.getElementById("admin-root");
 
@@ -26,6 +27,7 @@ const TABS = [
   { id: "tab3", hash: "budget", label: "งบ", render: renderTab3 },
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
   { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5 },
+  { id: "tab10", hash: "form", label: "แบบฟอร์ม", render: renderTab10 },
   { id: "tab6", hash: "excel", label: "Excel", render: renderTab6, staff: true },
   { id: "tab7", hash: "pcu", label: "รพ.สต. (PIN / รายการที่ซ่อน)", render: renderTab7 },
   { id: "tab8", hash: "users", label: "ผู้ใช้", render: renderTab8 },
@@ -62,7 +64,7 @@ function showLogin(msg) {
 }
 
 // Every admin call goes through here: an expired token / removed user sends the person back to login.
-const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetRequest", "adminUsersList", "adminAuditLog"]);
+const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetRequest", "adminUsersList", "adminAuditLog", "adminFormGet"]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function adminCall(action, params = {}) {

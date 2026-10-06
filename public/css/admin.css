@@ -249,3 +249,77 @@
   .admin-table tr { page-break-inside: avoid; }
   .admin-table .name-cell { min-width: 0; }
 }
+
+/* ---- form editor (tab 10, phase 2d) ---- */
+.t10-head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.t10-head-row h2 { margin-bottom: 6px; }
+.t10-cur { font-size: 0.9rem; margin: 4px 0 10px; }
+.t10-ver-bar { margin-bottom: 0; }
+.t10-ver-bar label { flex-wrap: wrap; }
+.t10-ver-bar .select-input { max-width: 100%; min-width: 0; }
+.t10-dirty-chip { font-size: 0.8rem; }
+
+.t10-strip { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 2px 0 8px; margin-bottom: 8px; }
+.t10-chip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; font-size: 0.85rem; white-space: nowrap;
+}
+.t10-chip-no { font-weight: 700; min-width: 1.2em; text-align: center; }
+.t10-chip-n { font-size: 0.75rem; color: var(--muted); }
+.t10-chip.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+.t10-chip.active .t10-chip-n { color: inherit; opacity: 0.8; }
+.t10-chip.closed { opacity: 0.55; border-style: dashed; }
+.t10-page-actions { margin-bottom: 0; }
+
+.t10-fields-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 14px; }
+.t10-fields-grid .admin-form-field { margin: 6px 0; }
+.t10-fields-grid .admin-form-field input, .t10-fields-grid .admin-form-field select { max-width: none; width: 100%; }
+
+.t10-counter { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+.t10-counter.over { color: var(--danger); }
+.t10-scroll { max-height: 70vh; overflow: auto; }
+.t10-table { min-width: 860px; }
+.t10-table td { vertical-align: middle; }
+.t10-in { width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-family: inherit; font-size: 0.88rem; }
+.t10-in-name { min-width: 260px; }
+.t10-in-unit { width: 80px; }
+.t10-in-price { width: 96px; text-align: right; }
+.t10-in.bad { border-color: var(--danger); background: var(--danger-bg); }
+.t10-in-section { font-weight: 700; }
+.t10-section-row td { background: var(--muted-bg); }
+.t10-item-row.t10-closed td { opacity: 0.5; }
+.t10-item-row.t10-closed td.t10-status-cell { opacity: 1; }
+.t10-item-row.t10-new td.code-cell { color: var(--success); font-weight: 700; }
+.admin-table tr.t10-focus td { box-shadow: inset 0 2px 0 var(--focus); }
+.admin-table tr.t10-error td { background: var(--danger-bg); }
+.t10-status-cell { white-space: nowrap; }
+.t10-order-cell { white-space: nowrap; text-align: center; }
+.t10-icon-btn { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 6px; min-width: 30px; min-height: 30px; cursor: pointer; font-size: 0.75rem; }
+.t10-icon-btn:disabled { opacity: 0.35; cursor: default; }
+.t10-move { max-width: 170px; min-height: 32px; font-size: 0.82rem; }
+.t10-row-actions { margin: 12px 0 0; }
+.t10-closed td { opacity: 0.55; }
+
+.t10-footer {
+  position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; box-shadow: 0 -4px 14px rgba(0,0,0,.08);
+}
+.t10-foot-info { flex: 1 1 220px; min-width: 0; }
+.t10-foot-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+.t10-diff-summary { font-weight: 600; }
+.t10-diff-list { margin: 4px 0 10px; padding-left: 20px; font-size: 0.88rem; }
+.t10-ro-card h3 { margin: 16px 0 6px; }
+
+@media (max-width: 600px) {
+  .t10-footer { padding: 8px 10px; }
+  .t10-foot-btns { width: 100%; }
+  .t10-foot-btns .btn { flex: 1 1 auto; }
+  .t10-fields-grid { grid-template-columns: 1fr; }
+  .t10-in-name { min-width: 200px; }
+}
+.t10-strip { position: relative; scroll-behavior: auto; }
+@media (max-width: 600px) {
+  .t10-foot-info { display: none; }
+  .t10-foot-btns { flex-wrap: nowrap; gap: 6px; }
+  .t10-foot-btns .btn { min-height: 38px; padding: 4px 8px; font-size: 0.8rem; white-space: normal; line-height: 1.2; }
+}

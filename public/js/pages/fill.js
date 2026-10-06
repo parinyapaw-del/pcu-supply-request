@@ -94,13 +94,27 @@ export async function renderFill(container, app, stepCode, params) {
 
 function formVersionBanner(app, request) {
   if (!request || !request.form_version_id || request.form_version_id >= app.boot.form_version_id) return "";
-  // TODO(2d): the request is bound to an older form version. Without the old version's data we can only count active
-  // items that have no line in the request (n); price changes (m) need the bound version -> 0 until 2d.
-  const have = request.lines || {};
-  let n = 0;
-  app.boot.form.steps.forEach((s) => getActiveItemRows(s).forEach((it) => { if (!(it.code in have)) n++; }));
-  const m = 0;
-  return `<div class="notice notice-info">ฟอร์มมีการปรับ: เพิ่ม ${n} รายการ · ราคาเปลี่ยน ${m} รายการ — ค่าที่กรอกไว้คงอยู่ตามรหัสรายการ</div>`;
+  // 2d: pcuBootstrap.forms holds the (PCU-stripped) form version a request is bound to when it differs from the latest.
+  // n = active items of the latest form not in the bound version · m = price changes · k = items closed since.
+  const bound = (app.boot.forms || {})[request.form_version_id];
+  const latest = {};
+  app.boot.form.steps.forEach((s) => getActiveItemRows(s).forEach((it) => { latest[it.code] = it; }));
+  let n = 0, m = 0, k = 0;
+  if (bound && Array.isArray(bound.steps)) {
+    const old = {};
+    bound.steps.forEach((s) => (s.rows || []).forEach((r) => { if (r.type === "item") old[r.code] = r; }));
+    Object.values(latest).forEach((it) => {
+      const o = old[it.code];
+      if (!o) n++;
+      else if (Math.round(Number(o.price) * 100) !== Math.round(Number(it.price) * 100)) m++;
+    });
+    Object.values(old).forEach((o) => { if (o.active !== false && !latest[o.code]) k++; });
+  } else {
+    // bound version not available: count active items that have no line in the request
+    const have = request.lines || {};
+    Object.keys(latest).forEach((code) => { if (!(code in have)) n++; });
+  }
+  return `<div class="notice notice-info" id="fill-form-banner">ฟอร์มมีการปรับ: เพิ่ม ${n} รายการ · ราคาเปลี่ยน ${m} รายการ${k > 0 ? ` · ปิด ${k} รายการ` : ""} — ค่าที่กรอกไว้คงอยู่ตามรหัสรายการ</div>`;
 }
 
 function renderBanners(app, month) {
