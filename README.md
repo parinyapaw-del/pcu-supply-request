@@ -1,33 +1,20 @@
-# ระบบเบิกวัสดุการแพทย์ รพ.สต. — phase 1.5 (รอบทดลองออนไลน์)
+# ใบเบิกวัสดุการแพทย์ รพ.สต. — phase 2 (Cloudflare Pages + Functions + D1 + R2)
 
-## คืออะไร
-เว็บให้ รพ.สต. 15 แห่ง กรอกใบเบิกวัสดุการแพทย์ (ฟอร์มปี 2569, 7 แบบ 125 รายการ) บนมือถือ/คอม แล้วพิมพ์ใบ A4 เหมือนฟอร์ม Excel เดิม
-ข้อมูลบันทึกบน server กลาง (Google Apps Script + Google Sheet) — กรอกเครื่องหนึ่งแล้วไปทำต่ออีกเครื่องได้
+Live: https://pcu-supply-request.pages.dev · Spec: `../phase 2.md` · สถานะงาน: `../progression_phase2.md` · API contract: `functions/API.md` · seed/import format: `seed/FORMAT.md`
 
-phase 1.5 = **รอบทดลอง** ย้อนเล่นปีงบ 2568 (รอบ ก.ย. 2568 + ต.ค. 2568) โดยใช้ข้อมูลเบิกจริงปี 2568 + ยอดคงเหลือจำลอง
-- รพ.สต. เข้าด้วย PIN 5 หลัก (เริ่มต้น 12345 ทุกแห่ง, ผู้ดูแลเปลี่ยนได้)
-- ตั้ง "รายการที่ไม่เบิก" ของแต่ละแห่งได้ (ไม่ขึ้นตอนกรอก แต่ยังพิมพ์ในใบ)
-- เพดานเบิกต่อรายการ (ตั้งต้นจากสถิติปี 68, ผู้ดูแลแก้ได้, โหมดเตือน/บังคับ)
-- หน้าผู้ดูแล `admin.html` (Sign in with Google หรือรหัสสำรอง): ความคืบหน้า, รับเรื่อง/ส่งกลับ, ใบจัดของ, งบ, คงเหลือ, เพดาน, PIN
+## โครง
+- `public/` — static site: `index.html` (ฝั่ง รพ.สต. — PIN, กรอก, ส่ง, พิมพ์, PDF), `admin.html` (หลังบ้าน), `print.html` (shell ที่ Browser Rendering ใช้สร้าง PDF), `docs/import_template.md` (คู่มือ AI สำหรับนำเข้าปีใหม่)
+- `functions/` — Pages Functions: `api/index.js` router (POST /api) · `api/export.xlsx.js` · `api/pdf/[id].js` · `api/cron/backup.js` · `_lib/*` (auth, db schema+migrations, pcu, admin, form_editor, issue, importer, import_fy, pdf, export, backup)
+- `seed/` — `FORMAT.md` + `seed_2570.json` (**gitignored** — hospital data; import through admin → ระบบ)
+- `tools/` — `test_api.mjs` (HTTP test suite), `build_*.py` (seed builders from the Excel sources), `check_import_2570.mjs`
+- `_archive/apps-script-1.5/` — phase 1.5 backend (ไม่ใช้แล้ว)
+- repo root `index.html`/`admin.html` — redirect stubs for the old GitHub Pages URL (served by GitHub Pages from `main`; Cloudflare serves `public/`)
 
-Spec: `../phase 1.5.md` · สถานะ: `../progression_phase2.md` · API: `apps-script/API.md`
-
-## โครงสร้าง
-- `index.html` + `js/main.js`, `js/pages/*` — ฝั่ง รพ.สต. (login PIN, หน้าหลัก, กรอก 7 step, รายการที่ไม่เบิก, พิมพ์)
-- `admin.html` + `js/admin.js`, `js/admin/*` — ฝั่งผู้ดูแล 9 แท็บ
-- `js/api.js`, `js/config.js` (URL ของ Apps Script), `js/sync.js` (autosave + สำเนาในเครื่องกันเน็ตหลุด)
-- `apps-script/` — backend (clasp) · `_seed.html` = ข้อมูลตั้งต้น (gitignored, สร้างด้วย `tools/make_seed_html.py`)
-- `tools/build_seed_2568.py` — สร้างข้อมูลตั้งต้นจากไฟล์สถิติปี 2568 (อยู่นอก repo: `../phase15_seed/`)
-- `tools/dev_server.mjs` + `tools/gas_mock.mjs` — รัน backend จริงในเครื่องด้วย mock ของ Google (ไม่ต้องใช้บัญชี Google)
-- `tools/test_api.mjs` — ทดสอบ API (`node tools/test_api.mjs`)
-
-## รันในเครื่อง
-```bash
-node tools/dev_server.mjs 8770 --reset
+## Dev
 ```
-เปิด `http://localhost:8770/` (PIN 12345) และ `http://localhost:8770/admin.html` (ช่อง dev login ใส่อีเมล admin)
-
-## Deploy
-- frontend: push `main` → GitHub Pages
-- backend: `cd apps-script && clasp push --force && clasp create-deployment --deploymentId <ID เดิม>` (URL คงเดิม) ·
-  เจ้าของรัน `RUN_ME_setup` ใน editor เมื่อข้อมูลตั้งต้นเปลี่ยน
+npm install
+cp .dev.vars.example .dev.vars      # once (DEV_FAKE_GOOGLE=1 → dev login box + devReset)
+npm run dev                         # http://localhost:8788  (wrangler pages dev --local --r2 FILES)
+npm test                            # node tools/test_api.mjs  (WIPES the DB it talks to; use API_BASE=http://localhost:8791 for a throw-away server)
+```
+Deploy = push `main` (Cloudflare Pages auto-build). Secrets in the Pages dashboard: `TOKEN_SECRET`, `GOOGLE_CLIENT_ID`, `ADMIN_EMAILS`, `BACKUP_KEY`, `CF_ACCOUNT_ID`, `CF_BR_TOKEN` (PDF). Bindings: D1 `DB`, R2 `FILES` (`wrangler.toml`).
