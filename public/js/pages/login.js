@@ -31,6 +31,24 @@ export async function renderLogin(container, app, onLoggedIn) {
     }
   }
 
+  // Empty DB (seed not imported yet) → explain instead of crashing on pcuList[0]; "ลองใหม่" refetches.
+  if (!Array.isArray(pcuList) || pcuList.length === 0) {
+    app.pcuList = null;
+    box.innerHTML = `
+      <h2>เข้าสู่ระบบ รพ.สต.</h2>
+      <div class="notice notice-info">
+        <strong>ระบบยังไม่พร้อมใช้งาน</strong> — ยังไม่มีรายชื่อ รพ.สต. บน server<br>
+        ผู้ดูแลระบบต้องเข้า <a href="admin.html">หน้าผู้ดูแลระบบ</a> → แท็บ <strong>ระบบ</strong> → "นำเข้าข้อมูลตั้งต้น" ก่อน
+        จากนั้นกดลองใหม่
+      </div>
+      <button type="button" class="btn btn-secondary" id="btn-retry-pcus">ลองใหม่</button>
+    `;
+    container.innerHTML = "";
+    container.appendChild(box);
+    box.querySelector("#btn-retry-pcus").addEventListener("click", () => renderLogin(container, app, onLoggedIn));
+    return;
+  }
+
   const selected = pcuList.some((p) => p.code === savedPcu) ? savedPcu : pcuList[0].code;
 
   box.innerHTML = `

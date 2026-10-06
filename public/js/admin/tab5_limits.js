@@ -29,8 +29,13 @@ function parseLimitInput(text) {
 export function renderTab5(container, ctx) {
   const { state } = ctx;
   const b = () => state.bootstrap;
-  const ts = { pcu: b().pcus[0].code, onlyActive: true, q: "", preview: null };
   container.innerHTML = "";
+  if (!b().pcus || b().pcus.length === 0) {
+    container.appendChild(el("div", { class: "notice notice-info" },
+      "ยังไม่มี รพ.สต. ในระบบ — นำเข้าข้อมูลตั้งต้นที่แท็บ \"ระบบ\" ก่อน แล้วเปิดแท็บนี้ใหม่"));
+    return;
+  }
+  const ts = { pcu: b().pcus[0].code, onlyActive: true, q: "", preview: null };
 
   // ---- mode card -------------------------------------------------------------------------------------
   const modeCard = el("div", { class: "admin-card", id: "t5-mode-card" });
