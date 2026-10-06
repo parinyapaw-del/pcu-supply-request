@@ -3,7 +3,7 @@
 // fonts, then marks the wrapper `.print-ready` (Browser Rendering waits for that selector). On failure it renders the error
 // text and marks `.print-error` instead, so the renderer times out and the server answers PDF_FAILED.
 import { call } from "./api.js";
-import { renderAllPages } from "./pages/print.js";
+import { renderAllPages, fitPrintPages } from "./pages/print.js";
 
 const root = document.getElementById("print-root");
 
@@ -32,6 +32,7 @@ async function main() {
   // the PDF must embed TH Sarabun New: wait until both faces are loaded for the text that is on the page
   await Promise.all([document.fonts.load('16px "TH Sarabun New"'), document.fonts.load('bold 16px "TH Sarabun New"')]);
   await document.fonts.ready;
+  fitPrintPages(pages); // row heights can change once TH Sarabun New is in
   wrap.classList.add("print-ready");
 }
 

@@ -1,7 +1,9 @@
 // A4 print sheet — reproduces the original xlsx layout (spec §4, phase 2 spec §4.4).
-// One <table> (13 cols, A..M) per form step, each step = one A4 page (scale s=0.73 fixed via --print-scale, so every
-// page uses the same font size; the worst case 24 items + 2 section rows fits). ALL steps of the form are rendered, numbered
-// "< n >" by step order; the toolbar's checkboxes choose which pages PRINT (unchecked = display:none under @media print).
+// One <table> (13 cols, A..M) per form step, each step = one A4 page (fixed scale --print-scale, so every page uses the
+// same font size; the worst case 24 items + 2 section rows fits). ALL steps of the form are rendered, numbered "< n >" by
+// step order; the toolbar's checkboxes choose which pages PRINT (unchecked = display:none under @media print).
+// Every length is a multiple of --pu (1 xlsx point, relative to the page width — see css/print.css header) so Safari,
+// Chrome and Firefox paginate identically; fitPrintPages() is the safety net for a sheet that still ends up too tall.
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
@@ -105,6 +107,7 @@ export async function renderPrint(container, app, params) {
 
   container.innerHTML = "";
   container.appendChild(wrap);
+  window.addEventListener("beforeprint", () => fitPrintPages(pagesHost));
 
   const editable = !asAdmin && isEditable(app, month);
   if (isPreview) {
@@ -113,6 +116,7 @@ export async function renderPrint(container, app, params) {
       page.dataset.step = step.code;
       pagesHost.appendChild(page);
     });
+    fitWhenReady(pagesHost);
     document.getElementById("print-status").textContent = `ตัวอย่างใบพิมพ์จากฟอร์มที่กำลังแก้ (ยังไม่บันทึก) — ${steps.length} หน้า`;
     controls.querySelectorAll(".print-step-chk").forEach((chk) =>
       chk.addEventListener("change", () => {
@@ -147,6 +151,7 @@ export async function renderPrint(container, app, params) {
       if (unchecked.has(step.code)) page.classList.add("print-skip");
       pagesHost.appendChild(page);
     });
+    fitWhenReady(pagesHost);
     renderStatus();
   }
   renderPages();
@@ -224,6 +229,7 @@ export function renderAllPages(host, form, request, pcu, hidden, month) {
     page.dataset.step = step.code;
     host.appendChild(page);
   });
+  fitPrintPages(host);
 }
 
 export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber) {
@@ -236,7 +242,7 @@ export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber)
   const colgroup = document.createElement("colgroup");
   COL_WIDTHS_PT.forEach((w) => {
     const col = document.createElement("col");
-    col.style.width = `calc(${w}pt * var(--print-scale))`;
+    col.style.width = `calc(${w} * var(--pu))`;
     colgroup.appendChild(col);
   });
   table.appendChild(colgroup);
@@ -257,14 +263,37 @@ export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber)
   appendSignatureBlock(tbody, step, pageNumber);
 
   table.appendChild(tbody);
-  page.appendChild(table);
+  const sheet = document.createElement("div");
+  sheet.className = "print-sheet";
+  sheet.appendChild(table);
+  page.appendChild(sheet);
   return page;
+}
+
+/** Scales down any sheet whose table is taller than the printable area (.print-sheet), so it never spills onto a second
+ *  page. Sheet and table are both sized from the page width, so the ratio measured on screen holds on paper. Call after
+ *  rendering and again once the fonts are loaded (row heights can change with the font). */
+export function fitPrintPages(host) {
+  host.querySelectorAll(".print-page").forEach((page) => {
+    const sheet = page.querySelector(".print-sheet");
+    const table = page.querySelector(".print-table");
+    if (!sheet || !table) return;
+    table.style.transform = "";
+    const avail = sheet.clientHeight;
+    const need = table.offsetHeight;
+    if (avail > 0 && need > avail) table.style.transform = `scale(${(avail / need).toFixed(4)})`;
+  });
+}
+
+function fitWhenReady(host) {
+  fitPrintPages(host);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => fitPrintPages(host));
 }
 
 function tr(className, cells, heightPt) {
   const row = document.createElement("tr");
   if (className) row.className = className;
-  if (heightPt) row.style.height = `calc(${heightPt}pt * var(--print-scale))`;
+  if (heightPt) row.style.height = `calc(${heightPt} * var(--pu))`;
   cells.forEach((c) => row.appendChild(c));
   return row;
 }

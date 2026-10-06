@@ -1,5 +1,14 @@
 /* A4 print sheet — reproduces the original xlsx form (spec §4, phase 2 §4.4: all form steps, 1 page each, no watermark).
-   Loaded with media="print,screen" so the on-screen preview matches the printed page. */
+   Loaded with media="print,screen" so the on-screen preview matches the printed page.
+
+   Sizing model (2026-10-06 fix for Safari page overflow + browser header/footer):
+   - every length on the sheet is a fraction of the page width `--pw` (8.27in on screen, 100vw when printing). Browsers do
+     not agree on how big "1pt" is on paper (WebKit/Safari prints CSS lengths ~6.7% larger than Chrome), but all of them
+     map 100vw to the full paper width once @page has no margin — so a sheet defined in `--pw` paginates identically.
+   - `--pu` = 1 xlsx point at the fixed scale `--print-scale` (same font size on every page; the worst-case sheet —
+     24 items + 2 section rows — fits one A4 with ~4% slack). Column widths / row heights in js/pages/print.js use it too.
+   - @page { margin: 0 } + the margins as padding of .print-page: Chrome/Edge/Firefox draw their date / title / URL
+     header+footer only inside the page margin, so with no margin nothing is printed there. */
 
 @font-face {
   font-family: "TH Sarabun New";
@@ -16,13 +25,23 @@
 
 @page {
   size: A4 portrait;
-  margin: 0.75in 0.71in;
+  margin: 0; /* margins live in .print-page padding (see header comment) */
 }
 
 :root {
   /* Fixed scale for every printed page (spec: same font size on every page,
      sized so the worst-case sheet — 24 items + 2 section headers — fits one A4). */
-  --print-scale: 0.73;
+  --print-scale: 0.71;
+  /* page width: the A4 preview on screen; 100vw on paper (set under @media print) */
+  --pw: 8.27in;
+  /* 1 xlsx point, scaled — A4 is 595.28pt wide */
+  --pu: calc(var(--pw) * var(--print-scale) / 595.28);
+  /* A4 margins 0.75in (top/bottom) and 0.71in (left/right) as fractions of the 8.27in width */
+  --page-pad-v: calc(var(--pw) * 0.0907);
+  --page-pad-h: calc(var(--pw) * 0.08585);
+  /* printable height = 297mm − 2 × 0.75in, as a fraction of the width (kept 0.3% short of the paper so rounding
+     never spills a blank sheet) */
+  --sheet-h: calc(var(--pw) * 1.2286);
 }
 
 .print-wrap { padding-bottom: 24px; }
@@ -31,14 +50,20 @@
 
 .print-page {
   position: relative;
+  box-sizing: border-box;
   background: #ffffff;
   color: #000000;
-  width: 8.27in;
-  min-height: 11.69in;
+  width: var(--pw);
   margin: 0 auto 28px;
-  padding: 0.75in 0.71in;
+  padding: var(--page-pad-v) var(--page-pad-h);
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.18);
   font-family: "TH Sarabun New", "Sarabun", serif;
+  overflow: hidden;
+}
+/* the printable area: fixed height so page + padding = one A4; a sheet that is still too tall is scaled down to fit
+   by fitPrintPages() (js/pages/print.js) instead of spilling onto a second sheet */
+.print-sheet {
+  height: var(--sheet-h);
   overflow: hidden;
 }
 
@@ -48,12 +73,13 @@
   width: fit-content;
   margin: 0 auto;
   font-family: "TH Sarabun New", "Sarabun", serif;
-  font-size: calc(16pt * var(--print-scale));
+  font-size: calc(16 * var(--pu));
   color: #000000;
+  transform-origin: top center; /* fitPrintPages() */
 }
 
 .print-table td {
-  padding: 0 3pt;
+  padding: 0 calc(3 * var(--pu));
   overflow: hidden;
   /* TH Sarabun's natural line box (~1.6em) is taller than Excel's 20–21pt rows; clamp so rows keep their set height */
   line-height: 1.2;
@@ -82,15 +108,14 @@
 }
 
 @media print {
-  html, body { background: #fff; }
+  :root { --pw: 100vw; } /* 100vw = the full paper width in every engine once @page has no margin */
+  html, body { background: #fff; margin: 0; padding: 0; }
   main.container > h1, .print-controls { display: none !important; }
   #print-pages { overflow: visible; }
+  .print-wrap { padding: 0; }
   main.container { padding: 0 !important; margin: 0 !important; max-width: none !important; }
   .print-page {
-    width: auto;
-    min-height: auto;
     margin: 0;
-    padding: 0;
     box-shadow: none;
   }
   /* break BEFORE every page but the first, so pages the user unticked (display:none) never leave a blank sheet */
