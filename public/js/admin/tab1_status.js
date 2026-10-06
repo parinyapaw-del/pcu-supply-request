@@ -1,5 +1,7 @@
 // Tab 1 — สถานะรอบ (phase 2.md §5.2 / functions/API.md §5 adminRequests, adminSetRound, adminLockRound, adminNote).
 import { formatMoney } from "../format.js";
+import { getAdminToken } from "../api.js";
+import { requestPdfReady, startPdfDownload } from "../pdf_client.js";
 import {
   el, escapeHtml, tableScroll, formatBangkokDateTime, formatBangkokTimeSec, formatDateThai, monthLong,
   confirmDialog, formDialog, toast, errMessage
@@ -192,6 +194,9 @@ export function renderTab1(container, ctx) {
       const actions = [
         canOpen ? `<a class="btn btn-secondary btn-sm" href="${printUrl}" target="_blank" rel="noopener" data-act="open" data-pcu="${pcu.code}">เปิดใบ</a>` : `<span class="muted small">–</span>`
       ];
+      if (req && (req.status === "submitted" || req.status === "issued")) {
+        actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="pdf" data-pcu="${pcu.code}" title="ดาวน์โหลดใบเบิกเป็น PDF">PDF</button>`);
+      }
       if (isAdmin) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}">โน้ตขอให้แก้</button>`);
         if (req && req.admin_note) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="clear-note" data-pcu="${pcu.code}">ล้างโน้ต</button>`);
@@ -212,8 +217,31 @@ export function renderTab1(container, ctx) {
       <thead><tr><th class="left">รพ.สต.</th><th class="left">สถานะ</th><th class="num">บาท</th><th class="left">การดำเนินการ</th></tr></thead>
       <tbody>${rows}</tbody></table>`);
 
+    tableHost.querySelectorAll('[data-act="pdf"]').forEach((b) => b.addEventListener("click", () => downloadPdf(b)));
     tableHost.querySelectorAll('[data-act="note"]').forEach((b) => b.addEventListener("click", () => editNote(b.dataset.pcu, reqs[b.dataset.pcu])));
     tableHost.querySelectorAll('[data-act="clear-note"]').forEach((b) => b.addEventListener("click", () => saveNote(b.dataset.pcu, "")));
+  }
+
+  // PDF of one request (adminRequestPdf → pending/ready; the file is then fetched with the admin token)
+  async function downloadPdf(btn) {
+    const pcu = btn.dataset.pcu;
+    const token = getAdminToken();
+    const label = btn.textContent;
+    btn.disabled = true;
+    try {
+      toast(`กำลังสร้าง PDF ${pcu}…`);
+      const r = await requestPdfReady("adminRequestPdf", { pcu, month: tabState.month }, token, {
+        onWait: (n) => { btn.textContent = `รอ ${n} วิ`; },
+        callFn: (a, p) => ctx.adminCall(a, p)
+      });
+      startPdfDownload(r.url, token);
+      toast(`ดาวน์โหลด ${r.filename}`);
+    } catch (err) {
+      toast(errMessage(err), "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
   }
 
   async function editNote(pcu, req) {

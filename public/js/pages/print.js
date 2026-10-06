@@ -4,10 +4,11 @@
 // "< n >" by step order; the toolbar's checkboxes choose which pages PRINT (unchecked = display:none under @media print).
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
 import { getOrderedSteps, getItemRows } from "../data.js";
-import { call, getAdminToken } from "../api.js";
+import { call, getAdminToken, getPcuToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
 import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog } from "./common.js";
 import { trySend } from "./send.js";
+import { requestPdfReady, startPdfDownload, pdfErrorHtml } from "../pdf_client.js";
 
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
 
@@ -18,6 +19,11 @@ const SIG_DATE_LINE = "วันที่ .......... / .......... / ..........";
 function fillOrDots(dots, value, fill) {
   if (!fill || value == null || value === "") return esc(dots);
   return `<span class="fill-slot" style="min-width:${(dots.length * 0.15).toFixed(1)}em">${esc(String(value))}</span>`;
+}
+
+// Steps that are printed: all of them in order, except steps switched off (`active === false`, form editor 2d).
+function printableSteps(form) {
+  return getOrderedSteps(form).filter((s) => s.active !== false);
 }
 
 function blankRequestFor(pcu, month) {
@@ -58,7 +64,7 @@ export async function renderPrint(container, app, params) {
     hidden = app.boot.hidden || [];
   }
 
-  const steps = getOrderedSteps(form);
+  const steps = printableSteps(form);
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
 
@@ -73,8 +79,8 @@ export async function renderPrint(container, app, params) {
     </div>
     <div class="print-actions">
       <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
+      <button type="button" class="btn btn-secondary" id="btn-do-pdf">ดาวน์โหลด PDF</button>
       <button type="button" class="btn btn-secondary" id="btn-print-back">กลับ</button>
-      <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf{pcu,month}; always all pages, spec §4.4). Not in 2a. -->
     </div>`;
   wrap.appendChild(controls);
 
@@ -139,6 +145,34 @@ export async function renderPrint(container, app, params) {
     window.print();
   });
 
+  // PDF = always all pages, rendered on the server from the same sheet (print.html). Sends the request first when needed.
+  const pdfBtn = document.getElementById("btn-do-pdf");
+  pdfBtn.addEventListener("click", async () => {
+    const statusEl = document.getElementById("print-status");
+    pdfBtn.disabled = true;
+    printBtn.disabled = true;
+    try {
+      if (needsSend()) {
+        if (!(await trySend(app, month))) return;
+        request = requestOf(app, month) || request;
+        renderPages();
+      }
+      const token = asAdmin ? getAdminToken() : getPcuToken();
+      const [action, params] = asAdmin ? ["adminRequestPdf", { pcu: pcu.code, month }] : ["requestPdf", { month }];
+      statusEl.textContent = "กำลังสร้าง PDF…";
+      const r = await requestPdfReady(action, params, token, { onWait: (n) => { statusEl.textContent = `กำลังสร้าง PDF… (รอ ${n} วิ)`; } });
+      startPdfDownload(r.url, token);
+      renderStatus();
+      statusEl.textContent += ` — ดาวน์โหลดแล้ว: ${r.filename}`;
+    } catch (e) {
+      renderStatus();
+      await alertDialog("ดาวน์โหลด PDF ไม่สำเร็จ", pdfErrorHtml(e && e.message, esc));
+    } finally {
+      pdfBtn.disabled = false;
+      printBtn.disabled = false;
+    }
+  });
+
   document.getElementById("btn-print-back").addEventListener("click", () => {
     if (asAdmin) {
       if (history.length > 1) history.back(); else window.close();
@@ -148,7 +182,17 @@ export async function renderPrint(container, app, params) {
   });
 }
 
-function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber) {
+/** Renders every printable step of `form` as an A4 page into `host` (the print shell used for the server-side PDF). */
+export function renderAllPages(host, form, request, pcu, hidden, month) {
+  host.innerHTML = "";
+  printableSteps(form).forEach((step, i) => {
+    const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+    page.dataset.step = step.code;
+    host.appendChild(page);
+  });
+}
+
+export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber) {
   const page = document.createElement("div");
   page.className = "print-page";
 

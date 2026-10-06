@@ -5,7 +5,7 @@
   "type": "module",
   "description": "ระบบเบิกวัสดุการแพทย์ รพ.สต. — Cloudflare Pages + Functions + D1 + R2",
   "scripts": {
-    "dev": "wrangler pages dev public --local --port 8788",
+    "dev": "wrangler pages dev public --local --port 8788 --r2 FILES",
     "test": "node tools/test_api.mjs"
   },
   "devDependencies": {

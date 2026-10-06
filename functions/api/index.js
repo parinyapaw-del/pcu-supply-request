@@ -5,6 +5,7 @@ import { requirePcu, requireStaff } from "../_lib/auth.js";
 import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
+import * as pdf from "../_lib/pdf.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 
 const PUBLIC = {
@@ -12,6 +13,7 @@ const PUBLIC = {
   pcuLogin: pcu.pcuLogin,
   adminLoginGoogle: admin.adminLoginGoogle,
   adminLoginBackup: admin.adminLoginBackup,
+  printData: pdf.printData,
 };
 const PCU = {
   pcuBootstrap: pcu.pcuBootstrap,
@@ -19,12 +21,14 @@ const PCU = {
   saveLines: pcu.saveLines,
   setHidden: pcu.setHidden,
   pcuAck: pcu.pcuAck,
+  requestPdf: pdf.requestPdf,
 };
 // admin + dispenser
 const STAFF = {
   adminBootstrap: admin.adminBootstrap,
   adminRequests: admin.adminRequests,
   adminGetRequest: admin.adminGetRequest,
+  adminRequestPdf: pdf.adminRequestPdf,
 };
 // admin only
 const ADMIN = {
@@ -57,7 +61,7 @@ const REMOVED = {
   adminReturn: "ใช้ adminNote (โน้ตขอให้แก้) แทน adminReturn",
   adminSetMode: "ใช้ adminSetLimitMode (off/warn/enforce) แทน adminSetMode",
 };
-const RESERVED = new Set(["requestPdf", "issueLines", "issueAll", "issueDone"]);
+const RESERVED = new Set(["issueLines", "issueAll", "issueDone"]);
 const isReserved = (a) => RESERVED.has(a) || /^adminForm/.test(a) || (/^adminImport/.test(a) && a !== "adminImportSeed");
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 
@@ -74,6 +78,18 @@ async function devAction(action, ctx, p) {
     const l = await ctx.env.FILES.list({ prefix: "backup/" });
     return { keys: l.objects.map((o) => o.key), sizes: Object.fromEntries(l.objects.map((o) => [o.key, o.size])) };
   }
+  if (action === "devListFiles") { // R2 keys under a prefix (2b tests: pdf/…)
+    const prefix = String(p.prefix || "");
+    const keys = [];
+    let cursor;
+    do {
+      const l = await ctx.env.FILES.list({ prefix, cursor });
+      keys.push(...l.objects.map((o) => o.key));
+      cursor = l.truncated ? l.cursor : undefined;
+    } while (cursor);
+    return { keys };
+  }
+  if (action === "devPrintToken") return pdf.devPrintToken(ctx, p); // fresh print token for {pcu, month}
   throw err("BAD_REQUEST", "ไม่รู้จัก action");
 }
 
@@ -86,7 +102,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|PutBackup|ListBackups)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|PutBackup|ListBackups|ListFiles|PrintToken)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

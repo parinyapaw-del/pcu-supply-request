@@ -88,7 +88,7 @@ async function ensureServer() {
   const state = path.join(REPO, ".wrangler", "test-state");
   fs.rmSync(state, { recursive: true, force: true });
   console.log(`starting wrangler pages dev on :${u.port || 8788} (persist: .wrangler/test-state) …`);
-  server = spawn("npx", ["wrangler", "pages", "dev", "public", "--local", "--port", String(u.port || 8788), "--persist-to", state], {
+  server = spawn("npx", ["wrangler", "pages", "dev", "public", "--local", "--port", String(u.port || 8788), "--r2", "FILES", "--persist-to", state], {
     cwd: REPO, stdio: ["ignore", "pipe", "pipe"], detached: true,
   });
   let log = "";
@@ -192,13 +192,13 @@ async function main() {
     expectErr(sub, "BAD_REQUEST", "removed action submit");
     ok(/saveLines/.test(sub.error.message), "submit message points to saveLines (Thai hint)");
     expectErr(await api("withdraw", { month: CUR }), "BAD_REQUEST", "removed action withdraw");
-    expectErr(await api("requestPdf", {}), "NOT_IMPLEMENTED", "requestPdf reserved (2b)");
+    expectErr(await api("requestPdf", {}), "AUTH_REQUIRED", "requestPdf is a PCU action (2b)");
     expectErr(await api("adminFormSave", {}), "NOT_IMPLEMENTED", "adminForm* reserved (2d)");
     expectErr(await api("issueLines", {}), "NOT_IMPLEMENTED", "issueLines reserved (2c)");
     const bad = await (await fetch(BASE + "/api", { method: "POST", body: "{not json" })).json();
     expectErr(bad, "BAD_REQUEST", "malformed JSON body");
     const pdf = await get("/api/pdf/abc");
-    eq(pdf.status, 501, "GET /api/pdf/:id stub → HTTP 501");
+    eq(pdf.status, 401, "GET /api/pdf/:id without a token → HTTP 401 (2b)");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
@@ -757,6 +757,145 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("pdf (2b)");
+  {
+    // dev mock renderer (DEV_FAKE_GOOGLE=1, no CF_BR_TOKEN) + local R2 (--r2 FILES): the whole flow is real except Browser Rendering itself
+    const P = "PCU11", Q = "PCU13";
+    const pr = (await mustOk("pcuList")).pcus.find((x) => x.code === P);
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const TQ = (await mustOk("pcuLogin", { pcu: Q, pin: "12345" })).token;
+    const T3b = (await mustOk("pcuLogin", { pcu: "PCU03", pin: "12345" })).token; // another PCU
+    const DSPE = "pdf.dispenser@example.com"; // the earlier dispenser was removed by the users section; a temporary one (removed again below)
+    await mustOk("adminUsersAdd", { email: DSPE, role: "dispenser", units: ["LAB"] }, ADM2);
+    const DSP2 = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSPE })).token;
+    const tt = (s) => `2026-11-12T10:00:${String(s).padStart(2, "0")}.000Z`;
+    const idP = `${P}_${CUR}`;
+    const files = async (prefix) => (await mustOk("devListFiles", { prefix })).keys;
+    const expectedName = `ใบเบิก_${pr.print_name}_พฤศจิกายน 2569.pdf`;
+    const reqWith = (headers, body) => fetch(BASE + "/api", { method: "POST", headers: { "content-type": "text/plain;charset=utf-8", "x-dev-month": devMonth, ...headers }, body: JSON.stringify(body) }).then((r) => r.json());
+
+    // --- guards (before anything is sent)
+    expectErr(await api("requestPdf", { month: CUR }), "AUTH_REQUIRED", "requestPdf without a token");
+    expectErr(await api("requestPdf", { month: CUR }, ADM2), "FORBIDDEN", "requestPdf with an admin token");
+    expectErr(await api("adminRequestPdf", { pcu: P, month: CUR }, TP), "FORBIDDEN", "adminRequestPdf with a PCU token");
+    expectErr(await api("requestPdf", {}, TP), "BAD_REQUEST", "requestPdf without a month");
+    expectErr(await api("requestPdf", { month: CUR }, TP), "NOT_FOUND", "requestPdf with no request at all");
+    await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 4, pp: 1, updated_at: tt(1) }, [B.code]: { op: 2, updated_at: tt(1) } } }, TP);
+    const nf = await api("requestPdf", { month: CUR }, TP);
+    expectErr(nf, "NOT_FOUND", "requestPdf on a draft");
+    ok(/ต้องส่งใบเบิกก่อน/.test(nf.error.message), "draft message asks the user to send the request first (Thai)");
+    expectErr(await api("adminRequestPdf", { pcu: P, month: CUR }, ADM2), "NOT_FOUND", "adminRequestPdf on a draft");
+    expectErr(await api("adminRequestPdf", { month: CUR }, ADM2), "BAD_REQUEST", "adminRequestPdf without pcu");
+    expectErr(await api("adminRequestPdf", { pcu: "PCU99", month: CUR }, ADM2), "NOT_FOUND", "adminRequestPdf unknown PCU");
+
+    // --- submit → ready
+    await mustOk("saveLines", { month: CUR, lines: {}, send: true }, TP);
+    const p1 = await mustOk("requestPdf", { month: CUR }, TP);
+    eq(p1.status, "ready", "requestPdf after submit → ready");
+    ok(/^[0-9a-f]{64}$/.test(p1.content_key) && p1.url === `/api/pdf/${idP}?k=${p1.content_key}`, "ready.url = /api/pdf/<request_id>?k=<content_key>");
+    eq(p1.filename, expectedName, "filename = ใบเบิก_<print_name>_<เดือนไทย ปีพ.ศ.>.pdf");
+    eq((await files(`pdf/${P}/`)), [`pdf/${P}/${CUR}/${p1.content_key}.pdf`], "R2 object stored at pdf/<pcu>/<month>/<content_key>.pdf");
+
+    // --- download access
+    const noTok = await get(p1.url);
+    const noTokJ = await noTok.json();
+    ok([401, 403].includes(noTok.status) && noTokJ.ok === false && noTokJ.error.code === "AUTH_REQUIRED", "GET pdf without a token → 401 JSON");
+    const other = await get(p1.url + "&token=" + encodeURIComponent(T3b));
+    ok(other.status === 403 && (await other.json()).error.code === "FORBIDDEN", "GET pdf with another PCU's token → 403");
+    eq((await get(p1.url + "&token=garbage")).status, 401, "GET pdf with a garbage token → 401");
+    const own = await get(p1.url + "&token=" + encodeURIComponent(TP));
+    eq(own.status, 200, "GET pdf with own token → 200");
+    eq(own.headers.get("content-type"), "application/pdf", "content-type: application/pdf");
+    const body = Buffer.from(await own.arrayBuffer());
+    ok(body.subarray(0, 4).toString() === "%PDF" && body.length < 2048 && body.toString("latin1").includes(`MOCK PDF ${idP} `), "body is a valid small PDF (starts %PDF, mock text with request id)");
+    const cd = own.headers.get("content-disposition") || "";
+    ok(/^attachment;/.test(cd) && cd.includes("filename*=UTF-8''" + encodeURIComponent(expectedName)), "content-disposition: attachment with the UTF-8 filename");
+    ok(/max-age=0/.test(own.headers.get("cache-control") || "") && /private/.test(own.headers.get("cache-control") || ""), "cache-control: private, max-age=0");
+    eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 200, "admin may download any PDF (Authorization: Bearer)");
+    eq((await get(p1.url, { authorization: "Bearer " + DSP2 })).status, 200, "dispenser may download any PDF");
+    eq((await get(`/api/pdf/${idP}?k=${"0".repeat(64)}`, { authorization: "Bearer " + ADM2 })).status, 404, "unknown content key → 404");
+    eq((await get(`/api/pdf/${idP}?k=zz`, { authorization: "Bearer " + ADM2 })).status, 400, "malformed content key → 400");
+    eq((await get(`/api/pdf/NOPE_2026-11?k=${p1.content_key}`, { authorization: "Bearer " + ADM2 })).status, 404, "unknown request id → 404");
+
+    // --- cache: same content → same key, no second row / object
+    const p2 = await mustOk("requestPdf", { month: CUR }, TP);
+    eq(p2.content_key, p1.content_key, "second requestPdf → same content_key (cache hit)");
+    eq((await files(`pdf/${P}/`)).length, 1, "still exactly one R2 object after the second request");
+    const pa = await mustOk("adminRequestPdf", { pcu: P, month: CUR }, ADM2);
+    eq([pa.status, pa.content_key, pa.filename], ["ready", p1.content_key, expectedName], "adminRequestPdf (admin) → same key + filename");
+    eq((await mustOk("adminRequestPdf", { pcu: P, month: CUR }, DSP2)).content_key, p1.content_key, "adminRequestPdf works for a dispenser");
+
+    // --- changed content → new key
+    await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 6, pp: 1, updated_at: tt(5) } } }, TP);
+    await mustOk("saveLines", { month: CUR, lines: {}, send: true }, TP);
+    const p3 = await mustOk("requestPdf", { month: CUR }, TP);
+    ok(p3.status === "ready" && p3.content_key !== p1.content_key, "changed line + resubmit → different content_key");
+    eq((await files(`pdf/${P}/`)).length, 2, "two R2 objects after the change");
+    eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 200, "the older version stays downloadable by its key");
+
+    // --- hidden items are part of the sheet → part of the key
+    await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
+    const p4 = await mustOk("requestPdf", { month: CUR }, TP);
+    ok(p4.content_key !== p3.content_key && p4.content_key !== p1.content_key, "hiding an item changes the content_key");
+    await mustOk("adminSetHidden", { pcu: P, codes: [] }, ADM2);
+    eq((await mustOk("requestPdf", { month: CUR }, TP)).content_key, p3.content_key, "un-hiding returns to the cached key");
+    eq((await files(`pdf/${P}/`)).length, 3, "three objects (v1, v2, hidden variant)");
+
+    // --- printData (public, print token)
+    const dt = await mustOk("devPrintToken", { pcu: P, month: CUR });
+    eq(dt.content_key, p3.content_key, "devPrintToken carries the current content key");
+    const pd = await mustOk("printData", { k: dt.token });
+    const adm = await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2);
+    eq([pd.pcu.code, pd.pcu.print_name, pd.month], [P, pr.print_name, CUR], "printData: pcu + month");
+    eq(pd.form.id, adm.form_version_id, "printData.form = the version bound to the request");
+    eq(pd.form.steps.length, seed.form.steps.length, "printData.form carries every step");
+    eq([pd.request.id, pd.request.status, pd.request.lines[A.code].op, pd.request.lines[A.code].pp, pd.request.lines[B.code].op], [idP, "submitted", 6, 1, 2], "printData.request lines");
+    ok(pd.request.submitted_at && !("price_snapshot" in pd.request.lines[A.code]), "printData.request has submitted_at and no price/issued fields");
+    eq(pd.hidden, [], "printData.hidden");
+    await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
+    const dt2 = await mustOk("devPrintToken", { pcu: P, month: CUR });
+    eq((await mustOk("printData", { k: dt2.token })).hidden, [CSI.code], "printData.hidden lists the PCU's hidden items");
+    await mustOk("adminSetHidden", { pcu: P, codes: [] }, ADM2);
+    expectErr(await api("printData", { k: dt.token.slice(0, -3) + "AAA" }), "AUTH_EXPIRED", "printData with a tampered token");
+    expectErr(await api("printData", {}), "AUTH_EXPIRED", "printData without k");
+    expectErr(await api("printData", { k: TP }), "FORBIDDEN", "printData rejects a PCU session token (wrong token type)");
+    if (TOKEN_SECRET) {
+      const mk = (o) => forgeToken({ t: "print", pcu: P, month: CUR, ck: p3.content_key, exp: Date.now() + 60000, ...o });
+      expectErr(await api("printData", { k: mk({ exp: Date.now() - 1000 }) }), "AUTH_EXPIRED", "printData with an expired print token");
+      ok((await api("printData", { k: mk({}) })).ok, "printData accepts a correctly signed print token (documented HMAC format)");
+      expectErr(await api("printData", { k: mk({ ck: "0".repeat(64) }) }), "CONFLICT", "printData with a stale content key → CONFLICT");
+      expectErr(await api("printData", { k: mk({ pcu: "PCU12" }) }), "NOT_FOUND", "printData for a PCU without a sent request → NOT_FOUND");
+    } else { for (let i = 0; i < 4; i++) ok(true, "(skipped print-token forgery test: no TOKEN_SECRET readable)"); }
+    await mustOk("saveLines", { month: CUR, lines: { [B.code]: { op: 3, updated_at: tt(9) } } }, TP); // edit after the token was minted
+    expectErr(await api("printData", { k: dt.token }), "CONFLICT", "request edited after the token was minted → CONFLICT");
+    expectErr(await api("devPrintToken", { pcu: "PCU12", month: CUR }), "NOT_FOUND", "devPrintToken without a sent request");
+
+    // --- dev switches for the pending / failed branches (mock mode only)
+    const pend = await reqWith({ "x-dev-pdf": "pending" }, { action: "requestPdf", token: TQ, month: CUR });
+    expectErr(pend, "NOT_FOUND", "(PCU13 has not sent yet) → NOT_FOUND before any renderer branch");
+    await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 1, updated_at: tt(2) } }, send: true }, TQ);
+    const pend2 = await reqWith({ "x-dev-pdf": "pending" }, { action: "requestPdf", token: TQ, month: CUR });
+    ok(pend2.ok && pend2.data.status === "pending" && pend2.data.retry_after > 0, "renderer 429 → {status:pending, retry_after}");
+    eq((await files(`pdf/${Q}/`)).length, 0, "pending stores nothing");
+    const fl = await reqWith({ "x-dev-pdf": "fail" }, { action: "requestPdf", token: TQ, month: CUR });
+    ok(!fl.ok && fl.error.code === "PDF_FAILED" && /Save as PDF/.test(fl.error.message) && fl.error.detail, "renderer error → PDF_FAILED{detail} + print/Save-as-PDF hint");
+    eq((await files(`pdf/${Q}/`)).length, 0, "failed render stores nothing");
+
+    // --- audit
+    const au = (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.filter((e) => e.action === "pdf_create");
+    ok(au.some((e) => e.actor === P && e.role === "pcu" && e.pcu === P && e.month === CUR), "audit: pdf_create by the PCU");
+    ok(au.length === 3, `audit: one pdf_create per stored file (${au.length})`);
+
+    // --- admin renders for a PCU that never asked; PCU then hits the cache
+    const qa = await mustOk("adminRequestPdf", { pcu: Q, month: CUR }, DSP2);
+    eq(qa.status, "ready", "dispenser can create a PDF for a sent request");
+    eq((await mustOk("requestPdf", { month: CUR }, TQ)).content_key, qa.content_key, "PCU gets the PDF the dispenser created (cache)");
+    ok((await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.some((e) => e.action === "pdf_create" && e.actor === DSPE && e.role === "dispenser"), "audit: pdf_create by the dispenser (staff e-mail)");
+    eq((await files("pdf/")).length, 4, "R2 holds 4 PDFs before the trial wipe");
+    ok((await api("adminUsersRemove", { email: DSPE }, ADM2)).ok, "temporary dispenser removed again");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   section("clear trial data");
   {
     expectErr(await api("adminClearTrial", { confirm: "yes" }, ADM2), "BAD_REQUEST", "clear trial needs the confirmation word");
@@ -765,6 +904,9 @@ async function main() {
     const c = await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2);
     ok(c.deleted_requests >= 7 && c.deleted_lines >= 7, `adminClearTrial deletes requests + lines (${c.deleted_requests}/${c.deleted_lines})`);
     ok("deleted_issue_status" in c && "deleted_pdf_files" in c, "adminClearTrial reports issue_status / pdf_files");
+    ok(c.deleted_pdf_files >= 4, `adminClearTrial deletes the pdf_files rows (${c.deleted_pdf_files})`);
+    eq((await mustOk("devListFiles", { prefix: "pdf/" })).keys, [], "adminClearTrial removed the PDF objects from R2");
+    ok((await mustOk("devListFiles", { prefix: "backup/" })).keys.length > 0, "…but left the backups alone");
     eq((await mustOk("adminRequests", { month: CUR }, ADM2)).requests, [], "no requests left");
     const ab = await mustOk("adminBootstrap", {}, ADM2);
     eq(ab.months, [], "adminBootstrap.months empty");
