@@ -1,0 +1,49 @@
+# Import / seed JSON — `pcu-supply-import/1`
+ล็อก 2026-10-06 (phase 2 §2.3, §5.10) · ไฟล์เดียวใช้ทั้ง `seed/seed_2570.json` (seed ปี 70 ด้วยมือ) และ `import_<ปี>.json`
+(2e อัปโหลดผ่านหน้า admin) · backend นำเข้าแบบ **idempotent** (§ด้านล่าง) · ห้ามแก้รูปแบบโดยไม่อัปเดตไฟล์นี้ + `functions/API.md`
+
+## โครง
+```jsonc
+{
+  "format": "pcu-supply-import/1",
+  "fy": 2570,                                   // ปีงบที่ไฟล์นี้เปิด (พ.ศ.)
+  "generated_at": "2026-10-06T08:00:00Z", "generated_by": "tools/build_seed_2570.py", "sources": ["..."],
+  "pcus": [ { "code":"PCU01", "name":"มหาดไทย", "print_name":"มหาดไทย", "group":"ทั่วไป" } ],      // 15 แห่ง
+  "form": {                                     // form version แรกของปีงบนี้ (โครงเดียวกับ data/form2569.json + dispense_unit/active)
+    "fy": 2570, "note": "โครงฟอร์ม 2569 + ราคาตามแผนปี 70",
+    "steps": [ { "code":"P1", "order":1, "sheet":"แบบ พัสดุ 1", "page_no":1,
+                 "title":"ใบเบิกวัสดุสำนักงานและวัสดุการแพทย์", "subject":"...", "to":"ผู้อำนวยการโรงพยาบาลอ่างทอง",
+                 "dispense_unit": "พัสดุ",       // "พัสดุ" | "จ่ายกลาง" | "LAB"   (P1–P5 = พัสดุ, CS = จ่ายกลาง, LAB = LAB)
+                 "rows": [ { "type":"section", "title":"วัสดุสำนักงาน" },
+                           { "type":"item", "code":"P1-01", "seq":1, "name":"...", "unit":"ห่อ", "price":34.0, "active":true } ] } ]
+  },
+  "plans":       { "2570": { "PCU01": { "P1-01": [plan_op, plan_pp] } },      // จำนวน (หน่วยตามฟอร์ม) เฉพาะคู่ที่ไม่เป็น 0 ทั้งคู่
+                   "2569": { ... } },                                           // จากคอลัมน์ "แผนปีงบ 69" (อ้างอิง admin)
+  "prices_prev": { "2569": { "P1-01": 49.0 } },                                // ราคาปีก่อน (ใช้คิดเงินปีก่อนในแท็บ "ปีก่อน")
+  "actual_prev": { "2569": { "months": ["2025-10","2025-11",...,"2026-09"],   // 12 เดือน CE, index 0 = ต.ค. 68
+                             "data": { "PCU01": { "P1-01": { "op":[12 ตัวเลข], "pp":[12 ตัวเลข] } } } } },  // เฉพาะรายการที่มีค่า > 0 บางเดือน
+  "stats":       { "2569": { "PCU01": { "P1-01": [median_m, p90_m, annual_qty] } } },   // จากยอดรายเดือน op+pp 12 เดือน (numpy percentile linear) · เฉพาะ annual_qty > 0
+  "limits":      { "2570": { "PCU01": { "P1-01": [limit_month|null, limit_year|null, "plan70"|"stat69"] } } },
+  "config":      { "fy_current":2570, "limit_mode":"warn", "stock_required":0,
+                   "budget_op":520000, "budget_pp":390000, "budget_total":910000, "deadline_day":null,
+                   "plan_total": { "2570": { "op":1355995.02, "pp":577581.85, "total":1933576.87 } } },
+  "verify":      { "plan_2570_per_pcu": { "PCU01": { "op":56390.26, "pp":6780.0, "total":63170.26 } },   // แถว "รวมเป็นเงิน" ในไฟล์ต้นทาง
+                   "actual_2569_per_pcu": { "PCU01": { "op":40187.94, "pp":12570.98, "total":52758.92 } },
+                   "actual_2569_network": { "op":631464.24, "pp":147392.74 } }
+}
+```
+- ตัวเลขจำนวน: integer ถ้าเป็นจำนวนเต็ม มิฉะนั้น float · เงิน: float 2 ตำแหน่ง · `null` = ไม่มีค่า
+- `limits` ตั้งต้น (Q81): `limit_year = plan_op+plan_pp` ปี fy (0 → null) · `limit_month = ceil(p90_m ปีก่อน)` ถ้า p90_m > 0 (source `stat69`)
+  มิฉะนั้น `ceil(limit_year/12×2)` (source `plan70`) · ถ้า limit_year null และ p90 ไม่มี → ไม่มีแถว
+- ข้อมูลใน `actual_prev`/`plans`/`stats` เป็นข้อมูลภายใน รพ. — ไฟล์นี้อยู่ใน repo **private** เท่านั้น ไม่อยู่ใต้ `public/`
+
+## การนำเข้า (backend action `adminImportSeed`, idempotent — รันซ้ำได้)
+| ส่วน | กฎ |
+|---|---|
+| `pcus` | upsert code/name/print_name/group · **ไม่แตะ** pin_hash/pin_salt/pin_version/pin_fail/pin_locked_until ที่มีอยู่ · แห่งใหม่ได้ PIN ตั้งต้น `12345` |
+| `form` | ถ้ายังไม่มี `form_versions` ของ fy นี้ → insert version แรก · ถ้ามีแล้วและ data เท่ากัน (hash) → ข้าม · ถ้ามีแล้วและต่าง → **ไม่ทับ** รายงานว่าข้าม (admin ใช้ form editor แทน) |
+| `plans`, `actual_prev`, `prices_prev`, `stats` | replace ทั้ง fy ที่อยู่ในไฟล์ (ลบของ fy นั้นแล้วใส่ใหม่) |
+| `limits` | insert เฉพาะคู่ที่ยังไม่มีแถว หรือแถวเดิม `source != 'admin'` · แถวที่ admin แก้แล้วคงไว้ |
+| `config` | ตั้งเฉพาะ key ที่ยังไม่มีค่า (ไม่ทับที่ admin แก้) · ยกเว้นเมื่อเรียกด้วย `set_current_fy:true` (2e เปิดปีงบใหม่) → ตั้ง `fy_current` = fy ของไฟล์ |
+| ใบเบิก / users / audit / hidden_items / limit_unlocks | ไม่แตะเลย |
+ผลลัพธ์: `{ imported: {pcus, form:"inserted"|"same"|"skipped_differs", plans, actual_rows, stats, limits_inserted, limits_kept_admin, config_set}, warnings:[...] }` + audit `import_seed`
