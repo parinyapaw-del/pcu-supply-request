@@ -1,7 +1,8 @@
 /* A4 print sheet — reproduces the original xlsx form (spec §4, phase 2 §4.4: all form steps, 1 page each, no watermark).
    Loaded with media="print,screen" so the on-screen preview matches the printed page.
 
-   Sizing model (2026-10-06 fix for Safari page overflow + browser header/footer):
+   Sizing model (2026-10-06 fix for Safari page overflow + browser header/footer; round 3 the same day: iOS Safari
+   paginates inside the printer's printable rect, so the page needs ~70pt more slack than the paper alone suggests):
    - every length on the sheet is absolute (pt via `--pu` = 1 xlsx point at the fixed scale `--print-scale`). Safari/WebKit
      prints CSS lengths 6.7% larger than Chrome (0.8pt per CSS px) — so the printed sheet is sized with that much slack —
      but it is at least independent of the window: viewport units are NOT (in WebKit's print layout 100vw = 0.8 × the
@@ -32,15 +33,18 @@
 :root {
   /* Fixed scale for every printed page (spec: same font size on every page,
      sized so the worst-case sheet — 24 items + 2 section headers — fits one A4). */
-  --print-scale: 0.71;
+  --print-scale: 0.66;
   /* 1 xlsx point, scaled */
   --pu: calc(1pt * var(--print-scale));
-  /* A4 margins 0.75in (top/bottom) and 0.71in (left/right) */
-  --page-pad-v: 0.75in;
+  /* margins: 0.5in top (0.15in bottom when printing), 0.71in left/right */
+  --page-pad-v: 0.5in;
   --page-pad-h: 0.71in;
-  /* printable area height. A4 leaves 733pt between the margins; 700pt keeps room for Safari's 6.7% (700 × 1.067 + top
-     margin 54 × 1.067 = 804pt < 842pt) and still holds the worst-case sheet (26 rows = 704pt → scaled 0.99). */
-  --sheet-h: 700pt;
+  /* printable area height. The whole printed page (top pad 36 + sheet + bottom pad 11) must stay inside the SMALLEST
+     page box any engine gives us. iOS Safari paginates inside the printer's printable rect, not the paper (2026-10-06,
+     14 pages on an iPhone with the old 54 + 700 + 18 = 772pt): A4 minus 0.25in printer margins leaves ~755pt in layout
+     units, US Letter minus margins ~709pt. 36 + 656 + 11 = 703pt fits both. Worst-case sheet (26 rows = 991.5 xlsx pt)
+     at scale 0.66 = 654.4pt → still one page without fitPrintPages() scaling, so every page keeps the same font size. */
+  --sheet-h: 656pt;
 }
 
 .print-wrap { padding-bottom: 24px; }
@@ -117,7 +121,7 @@
     width: auto;      /* the paper (WebKit lays an auto-width block out at the paper width; a fixed width does not fit Safari's 1.067) */
     min-height: 0;    /* natural height: top margin + sheet + bottom margin — never a fixed page height (Safari) */
     margin: 0;
-    padding-bottom: 0.25in; /* the sheet is shorter than the printable area, so a small bottom pad is enough */
+    padding-bottom: 0.15in; /* the sheet is shorter than the printable area, so a small bottom pad is enough */
     box-shadow: none;
     overflow: visible;
   }
