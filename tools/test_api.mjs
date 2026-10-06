@@ -1397,6 +1397,283 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("open fiscal year (2e)");
+  {
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const OLD = 2570, NEW = 2571;
+    const r2 = (x) => Math.round((x + 1e-9) * 100) / 100;
+    const itemsOfSteps = (steps) => steps.flatMap((s) => s.rows.filter((r) => r.type === "item").map((r) => ({ ...r, step: s.code })));
+    const sortedObj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, sortedObj(o[k])])) : o);
+    const byCode = (arr) => [...arr].sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
+    const monthsOld = fyMonths(OLD);
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+
+    // ---- controlled requests of FY2570 (PCU11 / PCU12), sent in several months via X-Dev-Month ----
+    const T11 = (await mustOk("pcuLogin", { pcu: "PCU11", pin: "12345" })).token;
+    const T12 = (await mustOk("pcuLogin", { pcu: "PCU12", pin: "12345" })).token;
+    const C = seedItems.find((i) => i.step === "P3");
+    const send = async (tok, month, lines) => api("saveLines", { month, lines, send: true }, tok, { month });
+    const sent = [
+      [T11, "2026-10", { [A.code]: { op: 3, pp: 1 } }],
+      [T11, "2027-08", { [A.code]: { op: 10, pp: 0 } }],
+      [T11, "2027-09", { [A.code]: { op: 2, pp: 4 } }],
+      [T12, "2026-12", { [LABI.code]: { op: 3, pp: 0 }, [A.code]: { op: 7, pp: 1 } }],
+      [T12, "2027-03", { [A.code]: { op: 7, pp: 1 }, [C.code]: { op: 5, pp: 0 } }],
+    ];
+    let allSent = true;
+    for (const [tok, month, lines] of sent) { const r = await send(tok, month, lines); if (!r.ok || r.data.status !== "submitted") { allSent = false; console.log(JSON.stringify(r)); } }
+    ok(allSent, "setup: 5 requests sent in 5 different months of FY2570 (PCU11 ×3, PCU12 ×2)");
+
+    // snapshot of what the DB holds for FY2570 (independent of the code under test): every submitted/issued line with qty
+    const reqCells = {};
+    let nReq = 0; const reqMonths = new Set();
+    for (const m of monthsOld) {
+      const lst = (await mustOk("adminRequests", { month: m }, ADM2)).requests.filter((r) => ["submitted", "issued"].includes(r.status));
+      for (const r of lst) {
+        nReq++; reqMonths.add(m);
+        const g = await mustOk("adminGetRequest", { pcu: r.pcu, month: m }, ADM2);
+        for (const [code, l] of Object.entries(g.request.lines)) if ((l.op || 0) + (l.pp || 0) > 0) reqCells[`${r.pcu}|${code}|${m}`] = [l.op || 0, l.pp || 0];
+      }
+    }
+    ok(nReq >= 7 && Object.keys(reqCells).length >= 9, `setup: snapshot of FY2570 has ${nReq} sent requests / ${Object.keys(reqCells).length} cells (incl. PCU13/PCU14 of the 2d tests)`);
+    const tm = {}; // "pcu|code" -> 12 monthly totals
+    for (const [k, [op, pp]] of Object.entries(reqCells)) { const [pcu, code, m] = k.split("|"); (tm[pcu + "|" + code] ||= new Array(12).fill(0))[monthsOld.indexOf(m)] += op + pp; }
+    const expStats = {};
+    for (const [k, arr] of Object.entries(tm)) {
+      const s = [...arr].sort((a, b) => a - b), ann = arr.reduce((a, b) => a + b, 0);
+      if (ann > 0) expStats[k] = [r2(pct(s, 0.5)), r2(pct(s, 0.9)), ann];
+    }
+
+    // ---- build seed71 from the LATEST FY2570 form in the DB ----
+    const boot0 = await mustOk("adminBootstrap", {}, ADM2);
+    const oldForm = boot0.form;
+    const versions0 = boot0.form_versions.length;
+    const oldItems = itemsOfSteps(oldForm.steps);
+    const oldPrice = Object.fromEntries(oldItems.map((i) => [i.code, i.price]));
+    const p3 = oldForm.steps.find((s) => s.code === "P3").rows.filter((r) => r.type === "item" && r.active !== false);
+    const REM = p3[p3.length - 1];
+    ok(REM.code !== C.code, "setup: removed item differs from the item with requests");
+    const NEWC = "P3-901";
+    const renameItem = oldForm.steps.find((s) => s.code === "P4").rows.find((r) => r.type === "item");
+    const form71 = { fy: NEW, note: "ฟอร์มปี 71 (ทดสอบ)", steps: cl(oldForm.steps) };
+    for (const s of form71.steps) {
+      s.rows = s.rows.filter((r) => !(r.type === "item" && r.code === REM.code));
+      for (const r of s.rows) if (r.type === "item") { r.price = Math.round(r.price * 1.1 * 100) / 100; if (r.code === renameItem.code) r.name += " (ชื่อใหม่ 71)"; }
+    }
+    form71.steps.find((s) => s.code === "P3").rows.push({ type: "item", code: NEWC, name: "รายการใหม่ปี 71", unit: "กล่อง", price: 25, active: true });
+    const price71 = { ...oldPrice, ...Object.fromEntries(itemsOfSteps(form71.steps).map((i) => [i.code, i.price])) }; // removed item keeps its old price
+    const plans71 = {};
+    for (const [pcu, m] of Object.entries(boot0.plans)) for (const [code, v] of Object.entries(m)) (plans71[pcu] ||= {})[code] = [v[0] * 2, v[1] * 2];
+    (plans71.PCU11 ||= {})[A.code] = [6, 2];      // p90 5.8 → limit [6, 8, stat70]
+    plans71.PCU11[CSI.code] = [12, 0];            // no requests → plan-only [2, 12, plan71]
+    plans71.PCU11[NEWC] = [4, 1];                 // new item, plan-only [1, 5, plan71]
+    delete (plans71.PCU12 ||= {})[LABI.code];     // 1 month only (p90 0) and no plan → skipped
+    delete plans71.PCU12[A.code];                 // p90 7.2 and no plan → [8, null, stat70]
+    const seed71 = {
+      format: "pcu-supply-import/1", fy: NEW, generated_at: "2027-09-01T00:00:00Z", generated_by: "tools/test_api.mjs (2e)",
+      pcus: seed.pcus, form: form71, plans: { [NEW]: plans71 },
+      config: { fy_current: NEW, limit_mode: "enforce", budget_op: 1 },
+    };
+
+    // ---- expected numbers (computed here, independently of the backend) ----
+    const sumBaht = (m) => {
+      let op = 0, pp = 0;
+      for (const [code, v] of Object.entries(m)) { op += v[0] * (price71[code] || 0); pp += v[1] * (price71[code] || 0); }
+      return { op: Math.round(op * 100) / 100, pp: Math.round(pp * 100) / 100, total: Math.round((op + pp) * 100) / 100 };
+    };
+    const expPlanPcu = Object.fromEntries(Object.entries(plans71).map(([pcu, m]) => [pcu, sumBaht(m)]));
+    const expLimits = {}; // pcu -> code -> [lm, ly, source]
+    const pairs = new Set([...Object.entries(plans71).flatMap(([p, m]) => Object.keys(m).map((c) => p + "|" + c)), ...Object.keys(expStats)]);
+    let nLim = 0;
+    for (const k of pairs) {
+      const [pcu, code] = k.split("|");
+      const d = defaultLimitRule(plans71[pcu] && plans71[pcu][code], expStats[k], NEW);
+      if (d.lm === null && d.ly === null) continue;
+      (expLimits[pcu] ||= {})[code] = [d.lm, d.ly, d.source]; nLim++;
+    }
+    const expPriceChanged = byCode(oldItems.filter((i) => i.code !== REM.code).map((i) => ({ code: i.code, old: i.price, new: Math.round(i.price * 1.1 * 100) / 100 })).filter((x) => x.old !== x.new));
+    const oldActive = oldItems.filter((i) => i.active !== false).length;
+
+    // ---- preview: same fiscal year ----
+    const pv0 = await mustOk("adminImportPreview", { seed }, ADM2);
+    eq([pv0.fy, pv0.fy_current, pv0.mode], [OLD, OLD, "same_fy"], "preview of the FY2570 seed → mode same_fy");
+    eq(pv0.summary.form.version_action, "same", "preview same_fy: version_action same (the seed form is version 1 of FY2570)");
+    eq(pv0.summary.rollover, null, "preview same_fy: rollover null");
+    ok(pv0.summary.limits.in_file > 0 && pv0.summary.limits.will_default === 0, "preview same_fy: limits in_file > 0, will_default 0");
+    let seedTotal = 0;
+    for (const [pcu, m] of Object.entries(seed.plans[String(OLD)])) for (const [code, v] of Object.entries(m)) seedTotal += (v[0] + v[1]) * ((seedItems.find((x) => x.code === code) || {}).price || 0);
+    ok(near(pv0.summary.plans.network.total, seedTotal, 0.02), "preview same_fy: network plan total = Σ qty × price of the file");
+    eq(pv0.summary.pcus.new, [], "preview same_fy: no new pcus");
+    expectErr(await api("adminImportApply", { seed, confirm: "เปิดปีงบ 2570" }, ADM2), "CONFLICT", "apply of the current fiscal year's file → CONFLICT (use adminImportSeed)");
+
+    // ---- preview: rollover ----
+    const pv = await mustOk("adminImportPreview", { seed: seed71 }, ADM2);
+    eq([pv.fy, pv.fy_current, pv.mode], [NEW, OLD, "rollover"], "preview seed71 → mode rollover");
+    const S = pv.summary;
+    eq(S.form.version_action, "insert", "preview rollover: version_action insert");
+    eq(S.form.items_new, [NEWC], "preview: items_new = the one new item");
+    eq(S.form.items_closed, [REM.code], "preview: items_closed = the item dropped from the file");
+    eq(S.form.items_reopened, [], "preview: no reopened items");
+    eq(byCode(S.form.price_changed), expPriceChanged, `preview: price_changed (${expPriceChanged.length} items × 1.1) with old/new`);
+    eq(S.form.renamed, 1, "preview: renamed = 1");
+    eq([S.form.steps, S.form.active_items], [oldForm.steps.length, oldActive], "preview: steps / active_items of the form that will be stored");
+    eq(S.pcus.known.length, 15, "preview: 15 known pcus");
+    eq([S.pcus.new, S.pcus.missing_in_file], [[], []], "preview: no new / missing pcus");
+    eq(Object.keys(S.plans.per_pcu).sort(), Object.keys(plans71).sort(), "preview: per_pcu has every pcu of the plan");
+    ok(Object.entries(expPlanPcu).every(([pcu, e]) => ["op", "pp", "total"].every((f) => near(S.plans.per_pcu[pcu] && S.plans.per_pcu[pcu][f], e[f], 0.011))), "preview: per_pcu op/pp/total = Σ qty × price (2 decimals)");
+    const netExp = Object.values(expPlanPcu).reduce((a, e) => a + e.total, 0);
+    ok(near(S.plans.network.total, netExp, 0.1) && near(S.plans.network.op + S.plans.network.pp, S.plans.network.total, 0.011), "preview: network total = Σ per pcu, op + pp = total");
+    eq(S.plans.rows, Object.values(plans71).reduce((a, m) => a + Object.keys(m).length, 0), "preview: plans.rows");
+    ok(S.limits.will_default > 0 && S.limits.in_file === 0, "preview: limits.will_default > 0 (the file has no limits)");
+    eq(S.limits.will_default, nLim, "preview: will_default = pairs of plans ∪ stats minus the skipped ones");
+    eq(S.config.will_set, ["fy_current"], "preview: config.will_set = fy_current only (the other keys already have values)");
+    eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort()], "preview: rollover from_fy / requests_counted / actual_months");
+    eq(S.rollover.source, { actual_prev: "db", prices_prev: "db", stats: "db" }, "preview: old-fy numbers come from the DB");
+    ok(Array.isArray(pv.warnings) && pv.warnings.some((w) => /ปิดแล้ว/.test(w)), "preview: warning that dropped items are kept closed");
+
+    // nothing written by a preview
+    const boot1 = await mustOk("adminBootstrap", {}, ADM2);
+    eq([boot1.form_versions.length, boot1.config.fy_current, Object.keys(boot1.prev), boot1.plan_totals.fy], [versions0, OLD, ["2569"], OLD], "preview wrote nothing (versions, fy_current, prev, plan_totals unchanged)");
+
+    // preview variants
+    const pvPcu = await mustOk("adminImportPreview", { seed: { ...seed71, pcus: [...seed71.pcus.filter((x) => x.code !== "PCU15"), { code: "PCU99", name: "ใหม่" }] } }, ADM2);
+    eq([pvPcu.summary.pcus.new, pvPcu.summary.pcus.missing_in_file], [["PCU99"], ["PCU15"]], "preview: new / missing_in_file pcus");
+    eq((await mustOk("pcuList")).pcus.length, 15, "preview created no pcu");
+    const pvLim = await mustOk("adminImportPreview", { seed: { ...seed71, limits: { [NEW]: { PCU11: { [A.code]: [3, 9, "import"] } } }, stats: { [OLD]: { PCU11: { [A.code]: [1, 2, 3] } } } } }, ADM2);
+    eq([pvLim.summary.limits, pvLim.summary.rollover.source.stats], [{ in_file: 1, will_default: 0 }, "file"], "preview: limits/stats supplied by the file are used as they are");
+
+    // preview / apply errors (all BAD_REQUEST, nothing written)
+    const bp = async (label, mut, needle, action = "adminImportPreview") => {
+      const s = cl(seed71); mut(s);
+      const r = await api(action, { seed: s, confirm: "เปิดปีงบ 2571" }, ADM2);
+      expectErr(r, "BAD_REQUEST", label);
+      if (needle) ok(r.error && r.error.message.includes(needle), `${label}: message names "${needle}"`);
+    };
+    const s12 = cl(seed71); s12.fy = 2572; s12.form.fy = 2572; s12.plans = { 2572: plans71 };
+    expectErr(await api("adminImportPreview", { seed: s12 }, ADM2), "BAD_REQUEST", "preview: fy 2572 (two years ahead) → BAD_REQUEST");
+    const s09 = cl(seed71); s09.fy = 2569; s09.form.fy = 2569; s09.plans = { 2569: plans71 };
+    expectErr(await api("adminImportPreview", { seed: s09 }, ADM2), "BAD_REQUEST", "preview: fy 2569 (older) → BAD_REQUEST");
+    expectErr(await api("adminImportPreview", { seed: { ...seed71, format: "x" } }, ADM2), "BAD_REQUEST", "preview: wrong format");
+    await bp("preview: no form", (s) => { delete s.form; });
+    await bp("preview: no plans for the fy", (s) => { s.plans = {}; });
+    await bp("preview: form.fy ≠ fy", (s) => { s.form.fy = 2570; });
+    await bp("preview: duplicate item code", (s) => { s.form.steps[0].rows.push({ ...s.form.steps[0].rows.find((r) => r.type === "item") }); }, A.code);
+    await bp("preview: 25 active items on a page", (s) => { const x = s.form.steps.find((y) => y.code === "P2"); for (let i = 0; i < 25; i++) x.rows.push({ type: "item", code: `P2-8${String(i).padStart(2, "0")}`, name: "x", unit: "อัน", price: 1, active: true }); }, "P2");
+    await bp("preview: 11 active pages", (s) => { for (let i = 1; i <= 11; i++) s.form.steps.push({ code: `T${i}`, title: "t", rows: [] }); }, "10");
+    await bp("preview: negative price", (s) => { s.form.steps[0].rows.find((r) => r.type === "item").price = -1; });
+    await bp("preview: closing a page that still has active items", (s) => { s.form.steps.find((y) => y.code === "CS").active = false; }, "CS");
+    await bp("apply: invalid form is rejected before anything is written", (s) => { s.form.steps[0].rows.push({ ...s.form.steps[0].rows.find((r) => r.type === "item") }); }, A.code, "adminImportApply");
+
+    // ---- apply: guards ----
+    expectErr(await api("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2570" }, ADM2), "BAD_REQUEST", "apply with a wrong confirm word → BAD_REQUEST");
+    expectErr(await api("adminImportApply", { seed: seed71 }, ADM2), "BAD_REQUEST", "apply without confirm → BAD_REQUEST");
+    expectErr(await api("adminImportApply", { seed: s12, confirm: "เปิดปีงบ 2572" }, ADM2), "BAD_REQUEST", "apply of fy 2572 (not fy_current + 1) → BAD_REQUEST");
+    const boot2 = await mustOk("adminBootstrap", {}, ADM2);
+    eq([boot2.form_versions.length, boot2.config.fy_current, Object.keys(boot2.prev)], [versions0, OLD, ["2569"]], "rejected applies wrote nothing");
+
+    // ---- permissions ----
+    await mustOk("adminUsersAdd", { email: "disp.fy@example.com", role: "dispenser", units: ["LAB"] }, ADM2);
+    const DSPF = (await mustOk("adminLoginGoogle", { id_token: "dev:disp.fy@example.com" })).token;
+    expectErr(await api("adminImportPreview", { seed: seed71 }, DSPF), "FORBIDDEN", "dispenser: adminImportPreview");
+    expectErr(await api("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2571" }, DSPF), "FORBIDDEN", "dispenser: adminImportApply");
+    expectErr(await api("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2571" }, T11), "FORBIDDEN", "PCU token: adminImportApply");
+    expectErr(await api("adminImportPreview", { seed: seed71 }), "AUTH_REQUIRED", "adminImportPreview without a token");
+    ok((await api("adminUsersRemove", { email: "disp.fy@example.com" }, ADM2)).ok, "temporary dispenser removed again");
+    const reqBefore = (await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2));
+
+    // ---- apply ----
+    const ap = await mustOk("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2571" }, ADM2, "apply seed71");
+    eq(ap.fy_current, NEW, "apply → fy_current 2571");
+    eq(ap.imported.form, "inserted", "apply: imported.form = inserted (version 1 of the new fy)");
+    ok(ap.imported.config_set.includes("fy_current") && ap.imported.plans > 0 && ap.imported.stats > 0 && ap.imported.actual_rows > 0, "apply: imported plans / stats / actual_prev / fy_current");
+    ok(ap.rollover.form_version_id > boot0.form.id, "apply: rollover.form_version_id is a new row");
+    eq(ap.rollover.actual_rows, Object.keys(reqCells).length, "apply: rollover.actual_rows = cells with qty in FY2570");
+    eq(ap.rollover.stats_rows, Object.keys(expStats).length, "apply: rollover.stats_rows");
+    eq(ap.rollover.prices_rows, Object.keys(oldPrice).length, "apply: rollover.prices_rows = items of the old form");
+    eq(ap.rollover.limits_rows, nLim, "apply: rollover.limits_rows = default limits generated");
+
+    const boot3 = await mustOk("adminBootstrap", {}, ADM2);
+    eq(boot3.config.fy_current, NEW, "adminBootstrap: config.fy_current 2571");
+    eq(boot3.config.limit_mode, "off", "apply left limit_mode (existing value) alone");
+    eq([boot3.form.fy, boot3.form.id, boot3.form_versions.length], [NEW, ap.rollover.form_version_id, versions0 + 1], "adminBootstrap.form = the new FY2571 version (the only one of its fy)");
+    eq(boot3.form_versions[0].created_by, ADMIN_EMAIL, "new form version: created_by = the actor");
+    eq(boot3.form.note, "ฟอร์มปี 71 (ทดสอบ)", "new form version: note from the file");
+    const nf = itemsOfSteps(boot3.form.steps);
+    eq(new Set(oldItems.map((i) => i.code)).size, nf.filter((i) => i.code !== NEWC).length, "new form: carries every old item code (+ the new one)");
+    eq(nf.find((i) => i.code === REM.code).active, false, "new form: the item removed from the file is kept with active:false");
+    eq(nf.find((i) => i.code === REM.code).step, "P3", "…in its original page");
+    ok(nf.find((i) => i.code === NEWC) && nf.find((i) => i.code === NEWC).active === true && nf.find((i) => i.code === NEWC).price === 25, "new form: the new item is active at its price");
+    eq(nf.find((i) => i.code === A.code).price, Math.round(oldPrice[A.code] * 1.1 * 100) / 100, "new form: prices are the file's (× 1.1)");
+    eq(nf.map((i) => i.seq), nf.map((_, i) => i + 1), "new form: canonical numbering (item.seq running over the form)");
+    ok(boot3.plan_totals.fy === NEW && near(boot3.plan_totals.total, netExp, 0.1) && near(boot3.plan_totals.total, S.plans.network.total, 0.011), "plan_totals: fy 2571 and equal to the preview's network total");
+    eq(Object.keys(boot3.plans.PCU11).length, Object.keys(plans71.PCU11).length, "plans[2571] imported (PCU11)");
+
+    // actual_prev[2570] = the requests
+    const pv70 = boot3.prev[String(OLD)];
+    ok(pv70 && pv70.months.length === 12 && pv70.months[0] === "2026-10" && pv70.months[11] === "2027-09", "adminBootstrap.prev has FY2570 (12 months, 2026-10 … 2027-09)");
+    const got = {};
+    for (const [pcu, items] of Object.entries(pv70.actual)) for (const [code, e] of Object.entries(items)) e.op.forEach((v, i) => { if (v > 0 || e.pp[i] > 0) got[`${pcu}|${code}|${pv70.months[i]}`] = [v, e.pp[i]]; });
+    eq(sortedObj(got), sortedObj(reqCells), "actual_prev[2570] = every sent line with qty (all cells equal)");
+    eq(pv70.actual.PCU11[A.code].op, [3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 2], "spot-check PCU11/A op by month");
+    eq(pv70.actual.PCU11[A.code].pp, [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4], "spot-check PCU11/A pp by month");
+    eq([pv70.actual.PCU12[LABI.code].op[2], pv70.actual.PCU12[C.code].op[5]], [3, 5], "spot-check PCU12 LAB item (Dec) and P3 item (Mar)");
+    eq(sortedObj(pv70.prices), sortedObj(oldPrice), "prices_prev[2570] = the prices of the old form (every item)");
+
+    // stats[2570]
+    const st = boot3.stats;
+    eq(st.fy, OLD, "adminBootstrap.stats.fy = 2570 (basis of the new year)");
+    eq(st.data.PCU11[A.code], [0, 5.8, 20], "stats PCU11/A: months [4,0,…,10,6] → median 0, p90 5.8 (numpy linear), annual 20");
+    eq(st.data.PCU12[A.code], [0, 7.2, 16], "stats PCU12/A: months [0,0,8,0,0,8,0…] → p90 7.2");
+    eq(st.data.PCU12[LABI.code], [0, 0, 3], "stats PCU12 LAB item: a single month → [0, 0, 3]");
+    const gotStats = {};
+    for (const [pcu, items] of Object.entries(st.data)) for (const [code, v] of Object.entries(items)) gotStats[`${pcu}|${code}`] = v;
+    eq(Object.keys(gotStats).sort(), Object.keys(expStats).sort(), "stats: one row per (pcu,item) with annual > 0 — no others");
+    ok(Object.entries(expStats).every(([k, e]) => e.every((x, i) => near(gotStats[k] && gotStats[k][i], x, 0.0051))), "stats: median / p90 / annual equal the independent computation for every pair");
+
+    // limits[2571]
+    eq(boot3.limits.PCU11[A.code] && [boot3.limits.PCU11[A.code].limit_month, boot3.limits.PCU11[A.code].limit_year, boot3.limits.PCU11[A.code].source], [6, 8, "stat70"], "limits PCU11/A: ceil(p90 5.8) = 6, year 6+2 = 8, source stat70");
+    const lc = boot3.limits.PCU11[CSI.code];
+    eq([lc.limit_month, lc.limit_year, lc.source], [2, 12, "plan71"], "limits PCU11/CS item: plan only → ceil(12/12×2) = 2, year 12, source plan71");
+    const ln = boot3.limits.PCU11[NEWC];
+    eq([ln.limit_month, ln.limit_year, ln.source], [1, 5, "plan71"], "limits PCU11/new item: plan [4,1] → year 5, month ceil(5/12×2) = 1");
+    ok(!(boot3.limits.PCU12 && boot3.limits.PCU12[LABI.code]), "limits PCU12/LAB item: no plan and p90 0 → no row (skipped)");
+    const l12 = boot3.limits.PCU12[A.code];
+    eq([l12.limit_month, l12.limit_year, l12.source], [8, null, "stat70"], "limits PCU12/A: p90 7.2, no plan → [8, null, stat70]");
+    const gotLim = {};
+    for (const [pcu, items] of Object.entries(boot3.limits)) for (const [code, v] of Object.entries(items)) (gotLim[pcu] ||= {})[code] = [v.limit_month, v.limit_year, v.source];
+    eq(sortedObj(gotLim), sortedObj(expLimits), "limits[2571]: every row equals the rule (plans ∪ stats) — nothing more, nothing less");
+    ok(Object.values(boot3.limits).every((o) => Object.values(o).every((v) => v.updated_by === "import")), "limits[2571]: written as import rows (admin edits would stay)");
+
+    // the new year in the PCU app
+    const pbNew = await api("pcuBootstrap", {}, T11, { month: "2027-10" });
+    ok(pbNew.ok && pbNew.data.form.id === ap.rollover.form_version_id && pbNew.data.form.fy === NEW, "X-Dev-Month 2027-10: pcuBootstrap.form = the FY2571 version");
+    eq(pbNew.data.config.fy_current, NEW, "pcuBootstrap.config.fy_current 2571");
+    eq([pbNew.data.limits[A.code], pbNew.data.plans[A.code]], [[6, 8], [6, 2]], "pcuBootstrap (2027-10): limits / plans of PCU11 are 2571's");
+    const stepsNew = pbNew.data.form.steps;
+    ok(!itemsOfSteps(stepsNew).some((i) => i.code === REM.code && i.active !== false) && itemsOfSteps(stepsNew).some((i) => i.code === NEWC), "PCU form for 2027-10: new item present, dropped item not active");
+    const pbOldMonth = await mustOk("pcuBootstrap", {}, T11); // current month 2026-11 is still FY2570, but drafts follow fy_current's latest form
+    const v11 = (await mustOk("adminGetRequest", { pcu: "PCU11", month: "2026-10" }, ADM2)).form_version_id;
+    ok(pbOldMonth.form.fy === NEW && v11 === boot0.form.id && pbOldMonth.forms[v11] && pbOldMonth.forms[v11].fy === OLD, "pcuBootstrap: a request sent before the rollover keeps its FY2570 form (forms[old id]); drafts use the new latest form");
+    const reqAfter = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
+    eq([reqAfter.request, reqAfter.form_version_id, reqAfter.form.fy], [reqBefore.request, reqBefore.form_version_id, OLD], "old requests untouched (same lines, still bound to the old form version)");
+
+    // idempotence / re-run / audit
+    expectErr(await api("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2571" }, ADM2), "CONFLICT", "re-apply the same file → CONFLICT (ปีงบเปิดแล้ว)");
+    eq((await mustOk("adminBootstrap", {}, ADM2)).form_versions.length, versions0 + 1, "re-apply created no extra form version");
+    const pvAfter = await api("adminImportPreview", { seed: seed71 }, ADM2);
+    ok(pvAfter.ok && pvAfter.data.mode === "same_fy" && pvAfter.data.summary.form.version_action === "skipped_differs", "preview of the same file after opening → same_fy (stored form = file + the closed carry-over, so it differs from the raw file)");
+    const aud = (await mustOk("adminAuditLog", { limit: 30 }, ADM2)).entries.find((e) => e.action === "fy_open");
+    ok(aud && aud.actor === ADMIN_EMAIL, "audit has fy_open");
+    const ad = aud ? JSON.parse(aud.detail) : {};
+    ok(ad.fy === NEW && ad.from_fy === OLD && ad.actual_rows === ap.rollover.actual_rows && ad.limits_rows === nLim, "audit fy_open detail = JSON {fy, from_fy, counts}");
+    const ex = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    ok(ex.fy === NEW && ex.config.fy_current === NEW && ex.form.fy === NEW && ex.actual_prev[String(OLD)] && ex.stats[String(OLD)] && ex.limits[String(NEW)], "adminExportSeed after the rollover: fy 2571 with the FY2570 history");
+    const rei = await mustOk("adminImportSeed", { seed: ex }, ADM2);
+    ok(rei.imported.form === "same" && rei.imported.limits_inserted === 0 && rei.imported.config_set.length === 0, "export → import is a no-op for the new year (form same, limits_inserted 0)");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }
 

@@ -12,7 +12,7 @@ const nn = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const round2 = (x) => Math.round(x * 100) / 100;
 const CONFIG_KEYS = ["fy_current", "limit_mode", "stock_required", "budget_op", "budget_pp", "budget_total", "deadline_day"];
 
-function validateForm(form) {
+export function validateForm(form) {
   if (!isObj(form) || !Array.isArray(form.steps) || !form.steps.length) throw err("BAD_REQUEST", "form.steps ไม่ถูกต้อง");
   const seen = new Set();
   for (const s of form.steps) {
@@ -27,12 +27,40 @@ function validateForm(form) {
   }
 }
 
-export async function adminImportSeed(ctx, p) {
-  const { DB, who } = ctx;
-  const seed = p.seed;
+// Shape checks of a whole seed, run up front (adminImportSeed, and the 2e preview/apply) so that a bad file writes nothing.
+// The same checks still run again where each block is processed below.
+export function validateSeed(seed) {
   if (!isObj(seed)) throw err("BAD_REQUEST", "ต้องมี seed (object)");
   if (seed.format !== "pcu-supply-import/1") throw err("BAD_REQUEST", "format ต้องเป็น pcu-supply-import/1");
   if (!Number.isInteger(seed.fy)) throw err("BAD_REQUEST", "ต้องมี fy (พ.ศ.)");
+  if (Array.isArray(seed.pcus)) {
+    for (const r of seed.pcus) if (!isObj(r) || !isStr(r.code) || !isStr(r.name)) throw err("BAD_REQUEST", "pcus: แถวไม่ถูกต้อง");
+  }
+  if (seed.form !== undefined && seed.form !== null) validateForm(seed.form);
+  for (const k of ["plans", "prices_prev", "stats", "limits", "actual_prev"]) {
+    const blk = seed[k];
+    if (blk === undefined || blk === null || !isObj(blk)) continue; // an absent / non-object block is ignored, as before
+    for (const [fyKey, v] of Object.entries(blk)) {
+      if (!Number.isInteger(Number(fyKey)) || !isObj(v)) throw err("BAD_REQUEST", k === "actual_prev" ? "actual_prev: ต้องมี months (12 เดือน CE) และ data" : `${k}: รูปแบบไม่ถูกต้อง`);
+      if (k === "actual_prev" && (!Array.isArray(v.months) || v.months.length !== 12 || !v.months.every(isMonth) || !isObj(v.data))) {
+        throw err("BAD_REQUEST", "actual_prev: ต้องมี months (12 เดือน CE) และ data");
+      }
+    }
+  }
+}
+
+// The form_versions record of a seed form: normalised data + its hash (the hash decides inserted / same / skipped_differs).
+export async function formRecord(formIn, seedFy) {
+  const form = normalizeForm(formIn);
+  const formFy = Number.isInteger(form.fy) ? form.fy : seedFy;
+  const data = { fy: formFy, note: form.note ?? null, steps: form.steps };
+  return { formFy, data, dataJson: JSON.stringify(data), hash: await sha256Hex(stableStringify(data)) };
+}
+
+export async function adminImportSeed(ctx, p) {
+  const { DB, who } = ctx;
+  const seed = p.seed;
+  validateSeed(seed);
   const warnings = [];
   const imported = { pcus: 0, form: "none", plans: 0, actual_rows: 0, prices_prev: 0, stats: 0, limits_inserted: 0, limits_kept_admin: 0, config_set: [] };
   const ts = nowIso();
@@ -62,11 +90,8 @@ export async function adminImportSeed(ctx, p) {
   let formForCheck = null;
   if (seed.form !== undefined && seed.form !== null) {
     validateForm(seed.form);
-    const form = normalizeForm(seed.form);
-    const formFy = Number.isInteger(form.fy) ? form.fy : seed.fy;
-    const data = { fy: formFy, note: form.note ?? null, steps: form.steps };
-    const dataJson = JSON.stringify(data);
-    const hash = await sha256Hex(stableStringify(data));
+    const { formFy, data, dataJson, hash } = await formRecord(seed.form, seed.fy);
+    const form = seed.form;
     formForCheck = data;
     const { results: existing } = await DB.prepare(`SELECT id, data_hash FROM form_versions WHERE fy = ?`).bind(formFy).all();
     if (!existing.length) {

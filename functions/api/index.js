@@ -5,6 +5,7 @@ import { requirePcu, requireStaff } from "../_lib/auth.js";
 import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
+import { adminImportApply, adminImportPreview } from "../_lib/import_fy.js";
 import { adminExportSeed, adminFormGet, adminFormSave } from "../_lib/form_editor.js";
 import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
@@ -58,6 +59,8 @@ const ADMIN = {
   adminUsersAdd: admin.adminUsersAdd,
   adminUsersRemove: admin.adminUsersRemove,
   adminImportSeed,
+  adminImportPreview,
+  adminImportApply,
   adminExportSeed,
   adminFormGet,
   adminFormSave,
@@ -72,7 +75,7 @@ const REMOVED = {
   adminReturn: "ใช้ adminNote (โน้ตขอให้แก้) แทน adminReturn",
   adminSetMode: "ใช้ adminSetLimitMode (off/warn/enforce) แทน adminSetMode",
 };
-const isReserved = (a) => /^adminImport/.test(a) && a !== "adminImportSeed"; // 2e
+const isReserved = () => false; // nothing reserved since 2e
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 
 // dev-only helpers (DEV_FAKE_GOOGLE=1)
