@@ -6,7 +6,7 @@
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
-import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog } from "./common.js";
+import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog, formForRequest } from "./common.js";
 import { trySend } from "./send.js";
 
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
@@ -24,11 +24,27 @@ function blankRequestFor(pcu, month) {
   return { pcu, month, status: "not_started", submitter_name: "", lines: {}, submitted_at: null, edited_after_submit: false };
 }
 
+const PREVIEW_KEY = "pcuSupply2:formPreview";
+
 export async function renderPrint(container, app, params) {
   const asAdmin = params && params.get("as") === "admin";
+  const isPreview = asAdmin && params.get("preview") === "1";
   let month, pcu, form, hidden, request;
 
-  if (asAdmin) {
+  if (isPreview) {
+    // 2d form editor preview: the admin page stores the draft form in sessionStorage and opens this route.
+    let stored = null;
+    try { stored = JSON.parse(sessionStorage.getItem(PREVIEW_KEY) || "null"); } catch (e) { stored = null; }
+    if (!stored || !stored.form || !Array.isArray(stored.form.steps)) {
+      container.innerHTML = '<div class="notice notice-error">ไม่พบฟอร์มตัวอย่าง — เปิดจากปุ่ม "ตัวอย่างใบพิมพ์" ในหน้าผู้ดูแลระบบ</div>';
+      return;
+    }
+    form = stored.form;
+    month = stored.month || (app.boot && app.boot.rounds ? app.boot.rounds[0].month : new Date().toISOString().slice(0, 7));
+    pcu = { code: "", name: "(ตัวอย่าง)", print_name: stored.print_name || "(ตัวอย่าง)", group: "" };
+    request = blankRequestFor("", month);
+    hidden = [];
+  } else if (asAdmin) {
     // Admin reprint (linked from the admin page): adminGetRequest also returns the form version bound to the request.
     const adminToken = getAdminToken();
     const pcuParam = params.get("pcu");
@@ -51,14 +67,13 @@ export async function renderPrint(container, app, params) {
   } else {
     month = (params && params.get("month")) || app.monthKey;
     pcu = app.boot.pcu;
-    // TODO(2d): render with the form version bound to the request (request.form_version_id) when it differs from
-    // the bootstrap's latest version. 2a has a single version, so the bootstrap form is always the right one.
-    form = app.boot.form;
     request = requestOf(app, month) || blankRequestFor(pcu.code, month);
+    // 2d: a sent request prints with the form version it was sent with; drafts print with the latest form.
+    form = formForRequest(app, request);
     hidden = app.boot.hidden || [];
   }
 
-  const steps = getOrderedSteps(form);
+  const steps = getOrderedSteps(form).filter((s) => s.active !== false); // 2d: closed pages are not printed
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
 
@@ -86,6 +101,23 @@ export async function renderPrint(container, app, params) {
   container.appendChild(wrap);
 
   const editable = !asAdmin && isEditable(app, month);
+  if (isPreview) {
+    steps.forEach((step, i) => {
+      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+      page.dataset.step = step.code;
+      pagesHost.appendChild(page);
+    });
+    document.getElementById("print-status").textContent = `ตัวอย่างใบพิมพ์จากฟอร์มที่กำลังแก้ (ยังไม่บันทึก) — ${steps.length} หน้า`;
+    controls.querySelectorAll(".print-step-chk").forEach((chk) =>
+      chk.addEventListener("change", () => {
+        const page = pagesHost.querySelector(`.print-page[data-step="${chk.value}"]`);
+        if (page) page.classList.toggle("print-skip", !chk.checked);
+      })
+    );
+    document.getElementById("btn-do-print").addEventListener("click", () => window.print());
+    document.getElementById("btn-print-back").addEventListener("click", () => window.close());
+    return;
+  }
 
   function needsSend() {
     return editable && (!(request.status === "submitted" || request.status === "issued") || !!request.edited_after_submit);

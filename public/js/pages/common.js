@@ -109,7 +109,23 @@ export async function loadOlderMonth(app, month) {
   const data = await call("pcuGetMonth", { month }, { token: getPcuToken() });
   app.older = app.older || {};
   app.older[month] = data;
+  // 2d: pcuGetMonth carries the form version bound to that month's request when it differs from the latest.
+  if (data.form && data.form.id) {
+    app.boot.forms = app.boot.forms || {};
+    app.boot.forms[data.form.id] = data.form;
+  }
   sync.initSession(pcuCode(app), month, data.request);
+}
+
+// 2d: the form version a request should be rendered with. A sent request (no edits after its last send) is bound to
+// `request.form_version_id`; drafts and edited requests use the latest form (they are re-bound on the next send).
+export function formForRequest(app, request) {
+  const latest = app.boot.form;
+  if (!request || !request.form_version_id) return latest;
+  if (request.status !== "submitted" && request.status !== "issued") return latest;
+  if (request.edited_after_submit) return latest;
+  const forms = app.boot.forms || {};
+  return forms[request.form_version_id] || latest;
 }
 
 // ---------------- status badge ----------------
