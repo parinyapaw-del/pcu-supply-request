@@ -2,11 +2,12 @@
    Loaded with media="print,screen" so the on-screen preview matches the printed page.
 
    Sizing model (2026-10-06 fix for Safari page overflow + browser header/footer):
-   - every length on the sheet is a fraction of the page width `--pw` (8.27in on screen, 100vw when printing). Browsers do
-     not agree on how big "1pt" is on paper (WebKit/Safari prints CSS lengths ~6.7% larger than Chrome), but all of them
-     map 100vw to the full paper width once @page has no margin — so a sheet defined in `--pw` paginates identically.
-   - `--pu` = 1 xlsx point at the fixed scale `--print-scale` (same font size on every page; the worst-case sheet —
-     24 items + 2 section rows — fits one A4 with ~4% slack). Column widths / row heights in js/pages/print.js use it too.
+   - every length on the sheet is absolute (pt via `--pu` = 1 xlsx point at the fixed scale `--print-scale`). Safari/WebKit
+     prints CSS lengths 6.7% larger than Chrome (0.8pt per CSS px) — so the printed sheet is sized with that much slack —
+     but it is at least independent of the window: viewport units are NOT (in WebKit's print layout 100vw = 0.8 × the
+     window width, so a vw-based sheet gave 14 pages in Safari — never use vw/vh here).
+   - the page box has no fixed height when printing (a fixed 297mm box spills in Safari); pages are separated by
+     break-before. The printable area .print-sheet has a fixed height and fitPrintPages() scales a sheet that is taller.
    - @page { margin: 0 } + the margins as padding of .print-page: Chrome/Edge/Firefox draw their date / title / URL
      header+footer only inside the page margin, so with no margin nothing is printed there. */
 
@@ -32,16 +33,14 @@
   /* Fixed scale for every printed page (spec: same font size on every page,
      sized so the worst-case sheet — 24 items + 2 section headers — fits one A4). */
   --print-scale: 0.71;
-  /* page width: the A4 preview on screen; 100vw on paper (set under @media print) */
-  --pw: 8.27in;
-  /* 1 xlsx point, scaled — A4 is 595.28pt wide */
-  --pu: calc(var(--pw) * var(--print-scale) / 595.28);
-  /* A4 margins 0.75in (top/bottom) and 0.71in (left/right) as fractions of the 8.27in width */
-  --page-pad-v: calc(var(--pw) * 0.0907);
-  --page-pad-h: calc(var(--pw) * 0.08585);
-  /* printable height = 297mm − 2 × 0.75in, as a fraction of the width (kept 0.3% short of the paper so rounding
-     never spills a blank sheet) */
-  --sheet-h: calc(var(--pw) * 1.2286);
+  /* 1 xlsx point, scaled */
+  --pu: calc(1pt * var(--print-scale));
+  /* A4 margins 0.75in (top/bottom) and 0.71in (left/right) */
+  --page-pad-v: 0.75in;
+  --page-pad-h: 0.71in;
+  /* printable area height. A4 leaves 733pt between the margins; 700pt keeps room for Safari's 6.7% (700 × 1.067 + top
+     margin 54 × 1.067 = 804pt < 842pt) and still holds the worst-case sheet (26 rows = 704pt → scaled 0.99). */
+  --sheet-h: 700pt;
 }
 
 .print-wrap { padding-bottom: 24px; }
@@ -53,7 +52,8 @@
   box-sizing: border-box;
   background: #ffffff;
   color: #000000;
-  width: var(--pw);
+  width: 8.27in;
+  min-height: 11.69in; /* screen: looks like an A4 sheet; not used when printing */
   margin: 0 auto 28px;
   padding: var(--page-pad-v) var(--page-pad-h);
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.18);
@@ -108,15 +108,18 @@
 }
 
 @media print {
-  :root { --pw: 100vw; } /* 100vw = the full paper width in every engine once @page has no margin */
   html, body { background: #fff; margin: 0; padding: 0; }
   main.container > h1, .print-controls { display: none !important; }
   #print-pages { overflow: visible; }
   .print-wrap { padding: 0; }
   main.container { padding: 0 !important; margin: 0 !important; max-width: none !important; }
   .print-page {
+    width: auto;      /* the paper (WebKit lays an auto-width block out at the paper width; a fixed width does not fit Safari's 1.067) */
+    min-height: 0;    /* natural height: top margin + sheet + bottom margin — never a fixed page height (Safari) */
     margin: 0;
+    padding-bottom: 0.25in; /* the sheet is shorter than the printable area, so a small bottom pad is enough */
     box-shadow: none;
+    overflow: visible;
   }
   /* break BEFORE every page but the first, so pages the user unticked (display:none) never leave a blank sheet */
   .print-page + .print-page { break-before: page; }
