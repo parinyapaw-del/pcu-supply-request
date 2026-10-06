@@ -17,6 +17,7 @@ import { renderTab7 } from "./admin/tab7_pcu.js";
 import { renderTab8 } from "./admin/tab8_users.js";
 import { renderTab9 } from "./admin/tab9_system.js";
 import { renderTab10 } from "./admin/tab10_form.js";
+import { renderTab11 } from "./admin/tab11_import.js";
 
 const root = document.getElementById("admin-root");
 
@@ -30,6 +31,7 @@ const TABS = [
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
   { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5 },
   { id: "tab10", hash: "form", label: "แบบฟอร์ม", render: renderTab10 },
+  { id: "tab11", hash: "import", label: "นำเข้า / เปิดปีงบใหม่", render: renderTab11 },
   { id: "tab6", hash: "excel", label: "Excel", render: renderTab6, staff: true },
   { id: "tab7", hash: "pcu", label: "รพ.สต. (PIN / รายการที่ซ่อน)", render: renderTab7 },
   { id: "tab8", hash: "users", label: "ผู้ใช้", render: renderTab8 },
