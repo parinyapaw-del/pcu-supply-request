@@ -2,6 +2,7 @@
 import { formatMoney } from "../format.js";
 import { getAdminToken } from "../api.js";
 import { requestPdfReady, startPdfDownload } from "../pdf_client.js";
+import { DISPENSE_UNITS } from "./compute.js";
 import {
   el, escapeHtml, tableScroll, formatBangkokDateTime, formatBangkokTimeSec, formatDateThai, monthLong,
   confirmDialog, formDialog, toast, errMessage
@@ -9,6 +10,22 @@ import {
 
 const AUTO_REFRESH_MS = 30000;
 const SOURCE_LABEL = { round: "ตั้งเฉพาะรอบนี้", config: "ค่าตั้งต้นรายเดือน", month_end: "สิ้นเดือน (ค่าตั้งต้น)" };
+
+// 2c: compact per-unit strip "พัสดุ ✓ · จ่ายกลาง – · LAB ○" from an IssueInfo
+// (✓ done · ○ has requested lines but not done yet · – no requested lines for that unit).
+export function unitStripHtml(issue) {
+  if (!issue || !issue.units) return "";
+  const parts = DISPENSE_UNITS.map((u) => {
+    const x = issue.units[u];
+    if (!x || !x.needed) return `<span class="unit-pill unit-none" title="ไม่มีรายการของหน่วยนี้">${escapeHtml(u)} –</span>`;
+    if (x.done) {
+      const who = x.done_by === "backup" ? "รหัสสำรอง" : (x.done_by || "");
+      return `<span class="unit-pill unit-done" title="จ่ายแล้ว ${escapeHtml(formatBangkokDateTime(x.done_at))}${who ? " โดย " + escapeHtml(who) : ""}">${escapeHtml(u)} ✓</span>`;
+    }
+    return `<span class="unit-pill unit-wait" title="ยังไม่จ่าย (บันทึกแล้ว ${x.issued_lines || 0}/${x.lines || 0} รายการ)">${escapeHtml(u)} ○</span>`;
+  });
+  return `<span class="unit-strip" data-role="unit-strip">${parts.join('<span class="unit-sep"> · </span>')}</span>`;
+}
 
 // Status text for one request row (or null = ไม่มีใบ).
 function statusCell(req) {
@@ -19,14 +36,18 @@ function statusCell(req) {
   if (req.status === "draft") {
     return `<span class="badge badge-warn">กำลังกรอก</span> <span class="muted small">ขั้น ${escapeHtml(req.last_step || "–")} · ${lines} รายการ</span>`;
   }
+  const strip = req.issue ? `<div class="unit-strip-line">${unitStripHtml(req.issue)}</div>` : "";
   if (req.status === "submitted") {
     return `<span class="badge badge-success">ส่งแล้ว</span> <span class="small">${escapeHtml(formatBangkokDateTime(req.submitted_at))}</span>`
       + ` <span class="muted small">×${req.submit_count || 1}</span>`
-      + (req.edited_after_submit ? ` <span class="badge badge-warn" title="มีการแก้ไขหลังส่งครั้งล่าสุด">แก้หลังส่ง</span>` : "");
+      + (req.edited_after_submit ? ` <span class="badge badge-warn" title="มีการแก้ไขหลังส่งครั้งล่าสุด">แก้หลังส่ง</span>` : "")
+      + strip;
   }
   if (req.status === "issued") {
-    return `<span class="badge badge-success">จ่ายแล้ว</span> <span class="small">${escapeHtml(formatBangkokDateTime(req.submitted_at))}</span>`
-      + ` <span class="muted small">×${req.submit_count || 1}</span>`;
+    return `<span class="badge badge-issued">จ่ายแล้ว</span> <span class="small">ส่ง ${escapeHtml(formatBangkokDateTime(req.submitted_at))}</span>`
+      + ` <span class="muted small">×${req.submit_count || 1}</span>`
+      + (req.issued_seen_at ? ` <span class="muted small" title="รพ.สต. กดรับทราบแล้ว">รับทราบแล้ว</span>` : "")
+      + strip;
   }
   return `<span class="badge badge-muted">${escapeHtml(req.status)}</span>`;
 }
@@ -196,6 +217,7 @@ export function renderTab1(container, ctx) {
       ];
       if (req && (req.status === "submitted" || req.status === "issued")) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="pdf" data-pcu="${pcu.code}" title="ดาวน์โหลดใบเบิกเป็น PDF">PDF</button>`);
+        actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="issue" data-pcu="${pcu.code}" title="บันทึกจ่ายจริงของใบนี้">จ่าย</button>`);
       }
       if (isAdmin) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}">โน้ตขอให้แก้</button>`);
@@ -210,14 +232,18 @@ export function renderTab1(container, ctx) {
     }).join("");
 
     const submitted = Object.values(reqs).filter((r) => r.status === "submitted" || r.status === "issued");
+    const issuedN = submitted.filter((r) => r.status === "issued").length;
     const totalBaht = submitted.reduce((s, r) => s + ((r.progress && r.progress.baht) || 0), 0);
-    const summary = `ส่งแล้ว ${submitted.length}/${state.bootstrap.pcus.length} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`;
+    const summary = `ส่งแล้ว ${submitted.length}/${state.bootstrap.pcus.length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`;
 
     tableHost.innerHTML = `<p class="admin-note" id="t1-summary">${summary}</p>` + tableScroll(`<table class="admin-table" id="t1-tbl">
       <thead><tr><th class="left">รพ.สต.</th><th class="left">สถานะ</th><th class="num">บาท</th><th class="left">การดำเนินการ</th></tr></thead>
       <tbody>${rows}</tbody></table>`);
 
     tableHost.querySelectorAll('[data-act="pdf"]').forEach((b) => b.addEventListener("click", () => downloadPdf(b)));
+    tableHost.querySelectorAll('[data-act="issue"]').forEach((b) => b.addEventListener("click", () => {
+      location.hash = `#issue?pcu=${encodeURIComponent(b.dataset.pcu)}&month=${encodeURIComponent(tabState.month)}`;
+    }));
     tableHost.querySelectorAll('[data-act="note"]').forEach((b) => b.addEventListener("click", () => editNote(b.dataset.pcu, reqs[b.dataset.pcu])));
     tableHost.querySelectorAll('[data-act="clear-note"]').forEach((b) => b.addEventListener("click", () => saveNote(b.dataset.pcu, "")));
   }

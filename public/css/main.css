@@ -383,3 +383,27 @@ button, input, select {
 @media print {
   body > .demo-banner, body > .admin-banner, .app-footer, .no-print, .progress-bar, .wizard-nav { display: none !important; }
 }
+
+/* ---- 2c: issued pages + issue detail ---- */
+.notice-issued { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+.notice-issued a { color: inherit; }
+.progress-pill.pill-issued { border-style: dashed; opacity: 0.75; }
+.summary-table tr.row-issued td { background: var(--success-bg); }
+.issue-summary { font-weight: 600; }
+.issue-units { display: flex; flex-wrap: wrap; gap: 6px; }
+.issue-table-wrap { overflow-x: auto; max-width: 100%; }
+.issue-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.95rem; }
+.issue-table th, .issue-table td { border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; text-align: left; }
+.issue-table th { background: var(--muted-bg); }
+.issue-table .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.issue-table .issue-group-row td { background: var(--muted-bg); font-weight: 700; }
+.issue-table .issue-group-row .badge { margin-left: 6px; font-size: 0.75rem; }
+.issue-table tr.issue-short td { background: var(--warn-bg); }
+.issue-table .issue-name { overflow-wrap: anywhere; }
+.issue-table .issue-reason { min-width: 80px; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .issue-table { font-size: 0.85rem; }
+  .issue-table th, .issue-table td { padding: 5px 5px; }
+}
+.round-card-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
+.num-input:disabled { background: var(--muted-bg); color: var(--muted); cursor: not-allowed; }

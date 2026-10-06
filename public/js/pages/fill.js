@@ -8,7 +8,7 @@ import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, unlocksOf, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
-  requestOf, requestStatus, fyShort, monthLabel, formatThaiYmd, alertDialog,
+  requestOf, requestStatus, fyShort, monthLabel, formatThaiYmd, alertDialog, toast,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
 
@@ -41,6 +41,41 @@ function stepTotals(app, step, month) {
   return { op, pp, qty, money };
 }
 
+// ---------------- 2c: pages of issued units are locked (spec §4.3) ----------------
+function unitOfStep(step) {
+  if (step.dispense_unit) return step.dispense_unit;
+  if (step.code === "CS") return "จ่ายกลาง";
+  if (step.code === "LAB") return "LAB";
+  return "พัสดุ";
+}
+
+// Units whose issue_status is done for this month (IssueInfo.units[u].done).
+function issuedUnits(app, month) {
+  const issue = monthData(app, month).issue;
+  const out = new Set();
+  if (issue && issue.units) Object.entries(issue.units).forEach(([u, x]) => { if (x && x.done) out.add(u); });
+  return out;
+}
+
+function isStepIssued(app, month, step) {
+  return !!step && issuedUnits(app, month).has(unitOfStep(step));
+}
+
+// After a CONFLICT: store the fresh IssueInfo; when the round is open and some unit is issued, the refusal was
+// about an issued page — lift the month-wide read-only state so only those pages stay locked.
+function applyIssueRefresh(app, month, d) {
+  if (!d) return false;
+  if (app.boot.byMonth && app.boot.byMonth[month]) app.boot.byMonth[month].issue = d.issue || null;
+  else if (app.older && app.older[month]) app.older[month].issue = d.issue || null;
+  const anyDone = !!(d.issue && d.issue.units && Object.values(d.issue.units).some((x) => x && x.done));
+  if (anyDone && !(d.round && d.round.locked)) {
+    const sess = sync.getSession(pcuCode(app), month);
+    if (sess) { sess.conflict = false; sess.conflictMessage = ""; sess.lastOutcome = "ok"; }
+    return true;
+  }
+  return false;
+}
+
 function goToStep(app, month, stepCode) {
   sync.setLastStep(pcuCode(app), month, stepCode);
   sync.flush(pcuCode(app), month);
@@ -60,18 +95,21 @@ export async function renderFill(container, app, stepCode, params) {
   // Remember wherever the user actually lands (reload / bookmark / back button included).
   if (editable && stepCode !== "summary") sync.setLastStep(pcuCode(app), month, stepCode);
 
+  const curStep = stepCode === "summary" ? null : steps.find((s) => s.code === stepCode);
+  const stepLocked = isStepIssued(app, month, curStep);
+  const stepEditable = editable && !stepLocked;
+
   const wrap = document.createElement("div");
   wrap.className = "fill-page";
   wrap.appendChild(renderProgressBar(app, month, stepCode, steps, codes));
-  wrap.appendChild(renderBanners(app, month));
+  wrap.appendChild(renderBanners(app, month, stepLocked));
 
   const content = document.createElement("div");
   content.className = "fill-content";
   if (stepCode === "summary") {
     content.appendChild(renderSummary(app, month, steps));
   } else {
-    const step = steps.find((s) => s.code === stepCode);
-    content.appendChild(renderStepForm(app, month, step, editable));
+    content.appendChild(renderStepForm(app, month, curStep, stepEditable));
   }
   wrap.appendChild(content);
   wrap.appendChild(renderNav(app, month, stepCode, codes));
@@ -83,8 +121,8 @@ export async function renderFill(container, app, stepCode, params) {
   if (sess) updateAutosaveStatus({ state: sess.conflict ? "conflict" : sess.offline ? "offline" : sess.saving ? "saving" : "idle", lastSavedAt: sess.lastSavedAt });
 
   if (stepCode !== "summary") {
-    const step = steps.find((s) => s.code === stepCode);
-    wireStepEvents(app, month, step, editable);
+    const step = curStep;
+    wireStepEvents(app, month, step, stepEditable);
     markMissing(step, content, app, month);
     if (params && params.get("focus")) focusItem(params.get("focus"), params.get("field") || "stock");
   }
@@ -117,11 +155,14 @@ function formVersionBanner(app, request) {
   return `<div class="notice notice-info" id="fill-form-banner">ฟอร์มมีการปรับ: เพิ่ม ${n} รายการ · ราคาเปลี่ยน ${m} รายการ${k > 0 ? ` · ปิด ${k} รายการ` : ""} — ค่าที่กรอกไว้คงอยู่ตามรหัสรายการ</div>`;
 }
 
-function renderBanners(app, month) {
+function renderBanners(app, month, stepLocked) {
   const host = document.createElement("div");
   host.className = "fill-banners";
   const request = requestOf(app, month);
   const parts = [];
+  if (stepLocked) {
+    parts.push('<div class="notice notice-issued" id="fill-issued-banner"><strong>หน้านี้จ่ายของแล้ว — แก้ไขไม่ได้</strong> <a href="#/issue?month=' + esc(month) + '">ดูการจ่าย</a></div>');
+  }
   if (isLocked(app, month)) {
     parts.push('<div class="notice notice-error"><strong>รอบนี้ปิดรับแล้ว</strong> — ดูใบเบิกได้อย่างเดียว แก้ไขไม่ได้</div>');
   } else if (!isActiveRound(app, month)) {
@@ -155,12 +196,14 @@ function renderProgressBar(app, month, stepCode, steps, codes) {
 
   const pills = document.createElement("div");
   pills.className = "progress-pills";
+  const issued = issuedUnits(app, month);
   codes.forEach((code, i) => {
     const isSummary = code === "summary";
+    const locked = !isSummary && issued.has(unitOfStep(steps[i]));
     const dot = document.createElement("a");
-    dot.className = "progress-pill" + (isSummary ? " pill-summary" : "") + (code === stepCode ? " active" : i < idx ? " done" : "");
+    dot.className = "progress-pill" + (isSummary ? " pill-summary" : "") + (code === stepCode ? " active" : i < idx ? " done" : "") + (locked ? " pill-issued" : "");
     dot.textContent = isSummary ? "สรุป" : String(i + 1);
-    dot.title = isSummary ? "สรุป" : stepLabel(steps[i]);
+    dot.title = isSummary ? "สรุป" : stepLabel(steps[i]) + (locked ? " (จ่ายของแล้ว — แก้ไขไม่ได้)" : "");
     dot.href = `#/fill/${code}?month=${month}`;
     dot.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -217,6 +260,8 @@ function renderNav(app, month, stepCode, codes) {
           const d = await sync.reloadSession(pcuCode(app), month); // drop the refused local edits, show the server's copy
           const r = app.boot.rounds.find((x) => x.month === month);
           if (r && d && d.round) Object.assign(r, d.round);
+          // 2c: the refusal may be an issued page (not a locked round) — lock only the pages of issued units
+          if (applyIssueRefresh(app, month, d)) toast("บางหน้าจ่ายของแล้ว — แก้ไขไม่ได้ (ค่าที่แก้ในหน้านั้นไม่ถูกบันทึก)", "error");
         } catch (err) { /* keep the local view; the banner still says closed */ }
         renderFill(document.getElementById("app"), app, stepCode, null);
       }, 0);
@@ -598,15 +643,18 @@ function renderSummary(app, month, steps) {
   const box = document.createElement("div");
   box.className = "summary-page";
   const request = requestOf(app, month);
-  const editable = isEditable(app, month);
+  const issueInfo = monthData(app, month).issue;
+  // every needed unit issued -> nothing left to send (re-sending an issued request is pointless)
+  const editable = isEditable(app, month) && !(issueInfo && issueInfo.done);
   const round = roundOf(app, month);
 
   let grandOp = 0, grandPp = 0, grandQty = 0, grandMoney = 0;
   const stepRows = steps.map((step) => {
     const t = stepTotals(app, step, month);
     grandOp += t.op; grandPp += t.pp; grandQty += t.qty; grandMoney += t.money;
-    return { code: step.code, title: stepLabel(step), t };
+    return { code: step.code, title: stepLabel(step), t, issued: isStepIssued(app, month, step) };
   });
+  const lockedSteps = stepRows.filter((s) => s.issued);
   const { missing, overs } = collectIssues(app, month);
 
   box.innerHTML = `
@@ -614,10 +662,14 @@ function renderSummary(app, month, steps) {
     <table class="summary-table">
       <thead><tr><th>หน้า</th><th>OP</th><th>PP</th><th>รวม</th><th>เป็นเงิน (บาท)</th></tr></thead>
       <tbody>
-        ${stepRows.map((s) => `<tr><td>${esc(s.title)}</td><td>${formatInt(s.t.op)}</td><td>${formatInt(s.t.pp)}</td><td>${formatInt(s.t.qty)}</td><td>${formatMoney(s.t.money)}</td></tr>`).join("")}
+        ${stepRows.map((s) => `<tr${s.issued ? ' class="row-issued"' : ""}><td>${esc(s.title)}${s.issued ? ' <span class="badge badge-success">จ่ายแล้ว</span>' : ""}</td><td>${formatInt(s.t.op)}</td><td>${formatInt(s.t.pp)}</td><td>${formatInt(s.t.qty)}</td><td>${formatMoney(s.t.money)}</td></tr>`).join("")}
         <tr class="grand-row"><td>รวมทั้งหมด</td><td>${formatInt(grandOp)}</td><td>${formatInt(grandPp)}</td><td>${formatInt(grandQty)}</td><td>${formatMoney(grandMoney)}</td></tr>
       </tbody>
     </table>
+
+    ${lockedSteps.length ? `
+    <div class="notice notice-issued" id="summary-issued">หน้าที่จ่ายของแล้ว (แก้ไขไม่ได้): ${lockedSteps.map((s) => esc(s.title)).join(", ")}
+      — <a href="#/issue?month=${esc(month)}">ดูการจ่าย</a></div>` : ""}
 
     ${stockRequired(app) ? `
     <div class="summary-section" id="missing-box">

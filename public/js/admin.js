@@ -8,6 +8,7 @@ import { buildCatalog } from "./admin/compute.js";
 import { clearRequestCache } from "./admin/requests.js";
 import { renderTab1 } from "./admin/tab1_status.js";
 import { renderTab2 } from "./admin/tab2_totals.js";
+import { renderTab2b } from "./admin/tab2b_issue.js";
 import { renderTab3 } from "./admin/tab3_budget.js";
 import { renderTab4 } from "./admin/tab4_prev.js";
 import { renderTab5 } from "./admin/tab5_limits.js";
@@ -24,6 +25,7 @@ const root = document.getElementById("admin-root");
 const TABS = [
   { id: "tab1", hash: "status", label: "สถานะรอบ", render: renderTab1, staff: true },
   { id: "tab2", hash: "totals", label: "ยอดรวม / ใบจัดของ", render: renderTab2, staff: true },
+  { id: "tab2b", hash: "issue", label: "จ่ายจริง", render: renderTab2b, staff: true },
   { id: "tab3", hash: "budget", label: "งบ", render: renderTab3 },
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
   { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5 },
@@ -66,6 +68,13 @@ function showLogin(msg) {
 // Every admin call goes through here: an expired token / removed user sends the person back to login.
 const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetRequest", "adminUsersList", "adminAuditLog", "adminFormGet"]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// 2c issue actions answer FORBIDDEN for business rules too (unit not the dispenser's, "หมดเวลาแก้ไขการจ่าย") —
+// those must not end the session; only the auth-level FORBIDDEN messages (auth.js) do.
+const ISSUE_ACTIONS = new Set(["issueLines", "issueAll", "issueDone", "issueItem", "adminItemIssue"]);
+function isSessionForbidden(action, err) {
+  if (!ISSUE_ACTIONS.has(action)) return true;
+  return /บัญชีนี้ไม่มีสิทธิ์|ไม่มีสิทธิ์เข้าถึง/.test(err.message || "");
+}
 
 async function adminCall(action, params = {}) {
   try {
@@ -83,7 +92,7 @@ async function adminCall(action, params = {}) {
     if (err instanceof ApiError && (err.code === "AUTH_REQUIRED" || err.code === "AUTH_EXPIRED")) {
       clearAdminToken();
       showLogin("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่");
-    } else if (err instanceof ApiError && err.code === "FORBIDDEN") {
+    } else if (err instanceof ApiError && err.code === "FORBIDDEN" && isSessionForbidden(action, err)) {
       clearAdminToken();
       showLogin("บัญชีนี้ไม่มีสิทธิ์ทำรายการนี้ หรือถูกถอดสิทธิ์แล้ว — เข้าสู่ระบบใหม่");
     }
@@ -186,9 +195,25 @@ function renderShell() {
   shell.appendChild(panelBody);
   root.appendChild(shell);
 
-  const wanted = TABS.find((t) => "#" + t.hash === location.hash && panels[t.id]);
+  const wanted = tabFromHash();
   activate(wanted ? wanted.id : tabs[0].id);
 }
+
+// "#issue?pcu=PCU02&month=2026-10" -> the "issue" tab (params are read by the tab itself on show).
+function tabFromHash() {
+  const h = location.hash.split("?")[0];
+  return TABS.find((t) => "#" + t.hash === h && panels[t.id]) || null;
+}
+
+// Links between tabs (e.g. the status tab's "จ่าย" button) set location.hash.
+window.addEventListener("hashchange", () => {
+  const t = tabFromHash();
+  if (!t) return;
+  if (activeTabId !== t.id) { activate(t.id); return; }
+  const p = panels[t.id];
+  if (p && p.lifecycle && p.lifecycle.onShow) p.lifecycle.onShow();
+  try { history.replaceState(null, "", "#" + t.hash); } catch (e) { /* ignore */ }
+});
 
 async function boot() {
   const token = getAdminToken();

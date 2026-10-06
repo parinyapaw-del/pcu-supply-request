@@ -156,3 +156,36 @@ export function planFor(plans, pcu, code) {
   const v = ((plans || {})[pcu] || {})[code];
   return v ? [v[0] || 0, v[1] || 0] : [0, 0];
 }
+
+// ---- issue / จ่ายจริง (2c) --------------------------------------------------------------------------
+export const ISSUE_REASONS = { out_of_stock: "ของหมด/รอจัดซื้อ", other: "อื่น ๆ" };
+
+// OP-first split (phase 2.md §5.4): the shortfall is taken from OP first, then PP.
+// Returns {op, pp} or null when issuedTotal is null/undefined (= not recorded yet).
+export function splitIssued(op, pp, issuedTotal) {
+  if (issuedTotal === null || issuedTotal === undefined || issuedTotal === "") return null;
+  const o = Number(op) || 0, p = Number(pp) || 0;
+  const short = Math.max(0, o + p - Number(issuedTotal));
+  return { op: Math.max(0, o - short), pp: p - Math.max(0, short - o) };
+}
+
+// Issued baht of loaded requests (entries from requests.js loadMonth): Σ issued_op × price, issued_pp × price
+// (price = price_snapshot ?? form price). Lines without issued data count as 0.
+// -> { op, pp, total, recorded: n requests having ≥ 1 issued line, unrecorded: n requests with none }
+export function aggregateIssued(cat, entries) {
+  let op = 0, pp = 0, recorded = 0, unrecorded = 0;
+  entries.forEach(({ request }) => {
+    if (!request || !isUsableStatus(request.status)) return;
+    let any = false, requested = false;
+    Object.entries(request.lines || {}).forEach(([code, line]) => {
+      if ((Number(line.op) || 0) + (Number(line.pp) || 0) > 0) requested = true;
+      if (line.issued_total === null || line.issued_total === undefined) return;
+      any = true;
+      const price = linePrice(line, itemOrPlaceholder(cat, code));
+      op += (Number(line.issued_op) || 0) * price;
+      pp += (Number(line.issued_pp) || 0) * price;
+    });
+    if (any) recorded += 1; else if (requested) unrecorded += 1;
+  });
+  return { op, pp, total: op + pp, recorded, unrecorded };
+}

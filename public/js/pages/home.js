@@ -1,10 +1,10 @@
 // Home page (#/home): one card per round (current + previous month), status badge, deadline, admin note,
-// issue-notice bar (2c data — the list is empty in 2a) and the "older months" expander (phase 2 spec §4.1).
+// issue-notice bar + "ดูการจ่าย" (2c) and the "older months" expander (phase 2 spec §4.1).
 import { getOrderedSteps } from "../data.js";
 import { formatMonthKeyThai } from "../format.js";
 import {
   esc, pcuCode, requestOf, requestStatus, formatThaiYmd, monthLabel,
-  loadOlderMonth, alertDialog,
+  loadOlderMonth, alertDialog, monthData,
 } from "./common.js";
 import * as sync from "../sync.js";
 
@@ -31,10 +31,21 @@ function badgesHtml(st) {
     st.extra.map((e) => ` <span class="badge ${e.cls}">${esc(e.label)}</span>`).join("");
 }
 
+// 2c: status from IssueInfo — "จ่ายแล้ว" (every needed unit done) or "จ่ายแล้วบางหน่วย (x/y)".
+function withIssueStatus(st, issue) {
+  if (!issue || !issue.units_done) return st;
+  if (issue.done) {
+    if (st.label === "จ่ายแล้ว" || st.extra.some((e) => e.label === "จ่ายแล้ว")) return st;
+    return { ...st, extra: [...st.extra, { label: "จ่ายแล้ว", cls: "badge-success" }] };
+  }
+  return { ...st, extra: [...st.extra, { label: `จ่ายแล้วบางหน่วย (${issue.units_done}/${issue.units_total})`, cls: "badge-warn" }] };
+}
+
 function cardHtml(app, round) {
   const request = requestOf(app, round.month);
   const session = sync.getSession(pcuCode(app), round.month);
-  const st = requestStatus(request, round, session && session.conflict);
+  const issue = monthData(app, round.month).issue;
+  const st = withIssueStatus(requestStatus(request, round, session && session.conflict), issue);
   const locked = round.locked || !!(session && session.conflict);
   const started = !!request && request.status !== "not_started";
   const prog = stepProgress(app, request);
@@ -56,17 +67,20 @@ function cardHtml(app, round) {
         ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
         : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${started ? "ทำต่อ" : "กรอก"}</button>`}
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}" data-issue="${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </div>`;
 }
 
 function collapsedHtml(app, round) {
+  const issue = monthData(app, round.month).issue;
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(round.month)}">
     <summary><strong>${esc(monthLabel(round.month))}</strong> <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </details>`;
 }
@@ -74,7 +88,7 @@ function collapsedHtml(app, round) {
 function noticesHtml(app) {
   const list = app.boot.issue_notices || [];
   return list
-    .map((n) => `<div class="notice-bar" role="status">พัสดุจ่ายของเดือน ${esc(formatMonthKeyThai(n.month))} แล้ว — ครบ ${esc(n.complete)} รายการ · ไม่ครบ ${esc(n.incomplete)} รายการ
+    .map((n) => `<div class="notice-bar" role="status" data-notice="${esc(n.month)}"><span>พัสดุจ่ายของเดือน ${esc(formatMonthKeyThai(n.month))} แล้ว — ครบ ${esc(n.complete)} รายการ · ไม่ครบ ${esc(n.incomplete)} รายการ</span>
       <a href="#/issue?month=${esc(n.month)}" class="btn btn-sm btn-secondary">ดูรายละเอียด</a></div>`)
     .join("");
 }
