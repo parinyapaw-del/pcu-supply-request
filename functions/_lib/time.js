@@ -28,6 +28,13 @@ export function nextMonth(m) {
   return `${y}-${String(mo).padStart(2, "0")}`;
 }
 
+// n months before m (n ≥ 0). monthMinus("2026-10", 11) === "2025-11".
+export function monthMinus(m, n) {
+  const [y, mo] = m.split("-").map(Number);
+  const k = y * 12 + (mo - 1) - n;
+  return `${Math.floor(k / 12)}-${String((k % 12) + 1).padStart(2, "0")}`;
+}
+
 // Fiscal year (พ.ศ.) of a CE month key. 2026-10 → 2570.
 export function monthFy(m) {
   const [y, mo] = m.split("-").map(Number);

@@ -67,6 +67,9 @@ const ADMIN = {
   adminClearTrial: admin.adminClearTrial,
   adminBackupNow: admin.adminBackupNow,
   adminAuditLog: admin.adminAuditLog,
+  // 2b-R — PDF files on R2: list + usage, prune now
+  adminPdfFiles: admin.adminPdfFiles,
+  adminPdfPrune: admin.adminPdfPrune,
 };
 const REMOVED = {
   submit: "ไม่มี action submit แล้ว — ใช้ saveLines พร้อม send:true",
@@ -103,6 +106,7 @@ async function devAction(action, ctx, p) {
     return { keys };
   }
   if (action === "devPrintToken") return pdf.devPrintToken(ctx, p); // fresh print token for {pcu, month}
+  if (action === "devSetRequestMonth") return pdf.devSetRequestMonth(ctx, p); // back-date a request {pcu, month, new_month} (2b-R)
   throw err("BAD_REQUEST", "ไม่รู้จัก action");
 }
 
@@ -115,7 +119,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|PutBackup|ListBackups|ListFiles|PrintToken)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

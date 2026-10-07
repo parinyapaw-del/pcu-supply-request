@@ -840,7 +840,9 @@ async function main() {
     ok(p4.content_key !== p3.content_key && p4.content_key !== p1.content_key, "hiding an item changes the content_key");
     await mustOk("adminSetHidden", { pcu: P, codes: [] }, ADM2);
     eq((await mustOk("requestPdf", { month: CUR }, TP)).content_key, p3.content_key, "un-hiding returns to the cached key");
-    eq((await files(`pdf/${P}/`)).length, 3, "three objects (v1, v2, hidden variant)");
+    // 2b-R retention: the latest month keeps the newest 2 versions → storing the hidden variant (3rd version) pruned v1
+    eq((await files(`pdf/${P}/`)).sort(), [`pdf/${P}/${CUR}/${p3.content_key}.pdf`, `pdf/${P}/${CUR}/${p4.content_key}.pdf`].sort(), "two objects (v2 + hidden variant; v1 pruned by the 2-version rule)");
+    eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 404, "pruned v1 is no longer downloadable");
 
     // --- printData (public, print token)
     const dt = await mustOk("devPrintToken", { pcu: P, month: CUR });
@@ -892,8 +894,149 @@ async function main() {
     eq(qa.status, "ready", "dispenser can create a PDF for a sent request");
     eq((await mustOk("requestPdf", { month: CUR }, TQ)).content_key, qa.content_key, "PCU gets the PDF the dispenser created (cache)");
     ok((await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.some((e) => e.action === "pdf_create" && e.actor === DSPE && e.role === "dispenser"), "audit: pdf_create by the dispenser (staff e-mail)");
-    eq((await files("pdf/")).length, 4, "R2 holds 4 PDFs before the trial wipe");
+    eq((await files("pdf/")).length, 3, "R2 holds 3 PDFs (PCU11 ×2, PCU13 ×1) after the pdf section");
     ok((await api("adminUsersRemove", { email: DSPE }, ADM2)).ok, "temporary dispenser removed again");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("pdf retention + quota (2b-R)");
+  {
+    // latest month = CUR (X-Dev-Month). Rule: latest keeps 2 versions, other months 1, months older than CUR−11 are deleted.
+    const OLD12 = "2025-11", OLD11 = "2025-12"; // CUR−12 (outside the 12-month window) · CUR−11 (last month inside it)
+    const files = async (prefix) => (await mustOk("devListFiles", { prefix })).keys.sort();
+    const keyOf = (pcu, month, ck) => `pdf/${pcu}/${month}/${ck}.pdf`;
+    const tr = (s) => `2026-11-14T09:00:${String(s).padStart(2, "0")}.000Z`;
+    const pdfFiles = (p = {}) => mustOk("adminPdfFiles", p, ADM2);
+    const T12 = (await mustOk("pcuLogin", { pcu: "PCU12", pin: "12345" })).token;
+    const T14 = (await mustOk("pcuLogin", { pcu: "PCU14", pin: "12345" })).token;
+    const T15 = (await mustOk("pcuLogin", { pcu: "PCU15", pin: "12345" })).token;
+    const DSPR = "pdfr.dispenser@example.com";
+    await mustOk("adminUsersAdd", { email: DSPR, role: "dispenser", units: ["LAB"] }, ADM2);
+    const DSP3 = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSPR })).token;
+    const send = (tok, month, op, s) => mustOk("saveLines", { month, lines: { [A.code]: { op, updated_at: tr(s) } }, send: true }, tok);
+    const audits = async (action) => (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.filter((e) => e.action === action);
+
+    // --- permissions
+    expectErr(await api("adminPdfFiles", {}, DSP3), "FORBIDDEN", "adminPdfFiles with a dispenser token");
+    expectErr(await api("adminPdfPrune", {}, DSP3), "FORBIDDEN", "adminPdfPrune with a dispenser token");
+    expectErr(await api("adminPdfFiles", {}, T12), "FORBIDDEN", "adminPdfFiles with a PCU token");
+    ok(!("r2_max_bytes" in (await mustOk("adminBootstrap", {}, DSP3)).config), "dispenser adminBootstrap.config has no R2 caps");
+
+    // --- shape (state left by the pdf (2b) section: PCU11 v2 + hidden variant, PCU13 one file)
+    const f0 = await pdfFiles();
+    eq(f0.rule, { latest_month: CUR, keep_latest: 2, keep_other: 1, months: 12 }, "adminPdfFiles.rule");
+    eq(f0.total_files, 3, "adminPdfFiles: 3 files after the pdf section (v1 of PCU11 was pruned)");
+    ok(f0.files.every((f) => f.pcu && f.pcu_name && f.month === CUR && /^[0-9a-f]{64}$/.test(f.content_key) && f.created_at && f.bytes > 100
+      && f.url === `/api/pdf/${f.pcu}_${f.month}?k=${f.content_key}`), "adminPdfFiles.files: {pcu, pcu_name, month, content_key, created_at, bytes, url}");
+    ok(f0.files.every((f, i) => i === 0 || f0.files[i - 1].created_at >= f.created_at), "files are newest first");
+    eq(f0.total_bytes, f0.files.reduce((a, f) => a + f.bytes, 0), "total_bytes = Σ files.bytes");
+    const u0 = f0.usage;
+    ok(u0.period === new Date().toISOString().slice(0, 7) && u0.class_a >= f0.total_files && u0.renders_today >= 1 && u0.renders_month >= u0.renders_today,
+      `usage: UTC period, class_a ≥ stored PDFs (${u0.class_a}), renders_today ≥ 1 (${u0.renders_today})`);
+    eq([u0.pdf_bytes, u0.bytes_total], [f0.total_bytes, f0.total_bytes + u0.backup_bytes], "usage.pdf_bytes / bytes_total = pdf + backup bytes");
+    eq(u0.limits, { r2_max_bytes: 1000000000, r2_max_class_a: 100000, r2_max_class_b: 1000000 }, "usage.limits = defaults");
+    eq(u0.free_tier, { bytes: 10000000000, class_a: 1000000, class_b: 10000000 }, "usage.free_tier");
+    const cfg0 = (await mustOk("adminBootstrap", {}, ADM2)).config;
+    eq([cfg0.r2_max_bytes, cfg0.r2_max_class_a, cfg0.r2_max_class_b], [1000000000, 100000, 1000000], "adminBootstrap.config carries the effective R2 caps");
+
+    // --- latest month: v1, v2, v3 → v2 + v3 remain
+    const PR = "PCU12";
+    await send(T12, CUR, 1, 1);
+    const v1 = await mustOk("requestPdf", { month: CUR }, T12);
+    await send(T12, CUR, 2, 2);
+    const v2 = await mustOk("requestPdf", { month: CUR }, T12);
+    eq(await files(`pdf/${PR}/${CUR}/`), [keyOf(PR, CUR, v1.content_key), keyOf(PR, CUR, v2.content_key)].sort(), "latest month: two versions are both kept");
+    await send(T12, CUR, 3, 3);
+    const v3 = await mustOk("requestPdf", { month: CUR }, T12);
+    eq(await files(`pdf/${PR}/${CUR}/`), [keyOf(PR, CUR, v2.content_key), keyOf(PR, CUR, v3.content_key)].sort(), "latest month: 3rd version → v1 pruned, v2 + v3 kept");
+    eq((await pdfFiles({ pcu: PR })).files.map((f) => f.content_key), [v3.content_key, v2.content_key], "adminPdfFiles{pcu}: the 2 rows, newest first");
+    eq((await get(v1.url, { authorization: "Bearer " + ADM2 })).status, 404, "GET the pruned v1 → 404");
+    ok((await audits("pdf_prune")).some((e) => e.pcu === PR && e.actor === PR && /^1 files \/ \d+ bytes \/ pcu=PCU12 \/ reason=create$/.test(e.detail)), "audit pdf_prune (reason=create) by the PCU");
+
+    // --- Class B: one per download
+    const cb0 = (await pdfFiles()).usage.class_b;
+    eq((await get(v2.url + "&token=" + encodeURIComponent(T12))).status, 200, "the previous version (v2) is still downloadable");
+    eq((await pdfFiles()).usage.class_b, cb0 + 1, "usage.class_b grows by 1 per download");
+
+    // --- other month: keep only the newest
+    await send(T12, PREV, 1, 4);
+    const w1 = await mustOk("requestPdf", { month: PREV }, T12);
+    await send(T12, PREV, 2, 5);
+    const w2 = await mustOk("requestPdf", { month: PREV }, T12);
+    eq(await files(`pdf/${PR}/${PREV}/`), [keyOf(PR, PREV, w2.content_key)], "previous month: 2nd version replaces the 1st (keep 1)");
+    eq((await get(w1.url, { authorization: "Bearer " + ADM2 })).status, 404, "the replaced version → 404");
+
+    // --- 12-month window (back-dated requests via devSetRequestMonth)
+    expectErr(await api("devSetRequestMonth", { pcu: "PCU14", month: PREV, new_month: OLD12 }), "NOT_FOUND", "devSetRequestMonth without a request");
+    expectErr(await api("devSetRequestMonth", { pcu: "PCU14", month: PREV, new_month: "2025-13" }), "BAD_REQUEST", "devSetRequestMonth bad month");
+    await send(T14, PREV, 1, 6);
+    const x14 = await mustOk("requestPdf", { month: PREV }, T14);
+    await send(T15, PREV, 1, 7);
+    const x15 = await mustOk("requestPdf", { month: PREV }, T15);
+    eq((await mustOk("devSetRequestMonth", { pcu: "PCU14", month: PREV, new_month: OLD12 })).id, `PCU14_${OLD12}`, "devSetRequestMonth moves the request (id + month)");
+    await mustOk("devSetRequestMonth", { pcu: "PCU15", month: PREV, new_month: OLD11 });
+    expectErr(await api("devSetRequestMonth", { pcu: "PCU12", month: CUR, new_month: PREV }), "CONFLICT", "devSetRequestMonth onto an existing request");
+    const f1 = await pdfFiles();
+    ok(f1.files.some((f) => f.pcu === "PCU14" && f.month === OLD12 && f.content_key === x14.content_key && f.url === `/api/pdf/PCU14_${OLD12}?k=${x14.content_key}`),
+      "adminPdfFiles lists the back-dated file under its new month");
+    const pz = await mustOk("adminPdfPrune", {}, ADM2);
+    eq(pz.deleted, [keyOf("PCU14", PREV, x14.content_key)], "adminPdfPrune deletes only the file older than 12 months (by its stored r2_key)");
+    eq(pz.bytes, f1.files.find((f) => f.pcu === "PCU14").bytes, "adminPdfPrune.bytes = size of the deleted file");
+    const f2 = await pdfFiles();
+    ok(!f2.files.some((f) => f.pcu === "PCU14") && f2.files.some((f) => f.pcu === "PCU15" && f.month === OLD11), "PCU14 gone from adminPdfFiles; CUR−11 (window edge) kept");
+    eq(await files("pdf/PCU14/"), [], "R2 object of the old month deleted");
+    ok((await audits("pdf_prune")).some((e) => e.actor === ADMIN_EMAIL && /pcu=all \/ reason=admin$/.test(e.detail)), "audit pdf_prune (reason=admin, pcu=all)");
+    eq((await mustOk("adminPdfPrune", {}, ADM2)), { deleted: [], bytes: 0 }, "second adminPdfPrune deletes nothing");
+
+    // --- nightly cron: prune all PCUs + backup bytes
+    await mustOk("devSetRequestMonth", { pcu: "PCU15", month: OLD11, new_month: OLD12 });
+    const cr = await fetch(BASE + "/api/cron/backup", { method: "POST", headers: { "x-backup-key": BACKUP_KEY, "x-dev-month": CUR } });
+    const crj = await cr.json();
+    ok(cr.status === 200 && crj.ok && Array.isArray(crj.data.pdf_pruned), "cron/backup result has pdf_pruned (array)");
+    eq(crj.data.pdf_pruned, [keyOf("PCU15", PREV, x15.content_key)], "cron/backup pruned the file that fell out of the window");
+    const lb = await mustOk("devListBackups");
+    const u1 = (await pdfFiles()).usage;
+    eq([u1.backup_files, u1.backup_bytes], [lb.keys.length, lb.keys.reduce((a, k) => a + lb.sizes[k], 0)], "usage.backup_files / backup_bytes = what the backup listed");
+    eq(u1.bytes_total, u1.pdf_bytes + u1.backup_bytes, "usage.bytes_total = pdf_bytes + backup_bytes");
+
+    // --- bytes cap → prune (reason=quota) → still over → PDF_QUOTA; cache hits are unaffected
+    await mustOk("devSetRequestMonth", { pcu: "PCU13", month: CUR, new_month: "2025-01" }); // makes PCU13's file prunable
+    eq((await mustOk("adminSetConfig", { key: "r2_max_bytes", value: 1 }, ADM2)).config.r2_max_bytes, 1, "adminSetConfig r2_max_bytes=1");
+    eq((await mustOk("requestPdf", { month: CUR }, T12)).content_key, v3.content_key, "bytes cap reached: a cached PDF is still ready");
+    await send(T12, CUR, 4, 8);
+    const q1 = await api("requestPdf", { month: CUR }, T12);
+    expectErr(q1, "PDF_QUOTA", "new content over the bytes cap");
+    ok(q1.error && /ถึงเพดาน/.test(q1.error.message) && q1.error.detail && q1.error.usage && q1.error.usage.limits.r2_max_bytes === 1 && "class_a" in q1.error.usage && "class_b" in q1.error.usage && "bytes" in q1.error.usage,
+      "PDF_QUOTA carries the Thai message + {detail, usage:{bytes,class_a,class_b,limits}}");
+    ok((await audits("pdf_prune")).some((e) => /reason=quota$/.test(e.detail)), "bytes cap ran the prune first (audit reason=quota)");
+    eq(await files("pdf/PCU13/"), [], "…which deleted the out-of-window file");
+    eq(await files(`pdf/${PR}/${CUR}/`), [keyOf(PR, CUR, v2.content_key), keyOf(PR, CUR, v3.content_key)].sort(), "nothing stored while over the cap");
+    eq((await mustOk("adminSetConfig", { key: "r2_max_bytes", value: null }, ADM2)).config.r2_max_bytes, 1000000000, "value:null restores the default");
+    eq((await mustOk("adminBootstrap", {}, ADM2)).config.r2_max_bytes, 1000000000, "adminBootstrap.config.r2_max_bytes back to 1000000000");
+    const v4 = await mustOk("requestPdf", { month: CUR }, T12);
+    eq(await files(`pdf/${PR}/${CUR}/`), [keyOf(PR, CUR, v3.content_key), keyOf(PR, CUR, v4.content_key)].sort(), "after the reset the PDF is created (v3 + v4 kept)");
+
+    // --- Class A cap
+    await mustOk("adminSetConfig", { key: "r2_max_class_a", value: 1 }, ADM2);
+    await send(T12, CUR, 5, 9);
+    expectErr(await api("requestPdf", { month: CUR }, T12), "PDF_QUOTA", "Class A cap reached");
+    await mustOk("adminSetConfig", { key: "r2_max_class_a", value: null }, ADM2);
+    eq((await mustOk("requestPdf", { month: CUR }, T12)).status, "ready", "Class A cap reset → ready");
+    expectErr(await api("adminSetConfig", { key: "r2_max_class_a", value: "x" }, ADM2), "BAD_REQUEST", "r2_max_class_a = \"x\"");
+    expectErr(await api("adminSetConfig", { key: "r2_max_class_a", value: 0 }, ADM2), "BAD_REQUEST", "r2_max_class_a = 0");
+    expectErr(await api("adminSetConfig", { key: "r2_max_bytes", value: 1.5 }, ADM2), "BAD_REQUEST", "r2_max_bytes = 1.5");
+
+    // --- Class B cap → 429 before touching R2
+    await mustOk("adminSetConfig", { key: "r2_max_class_b", value: 1 }, ADM2);
+    const cb1 = (await pdfFiles()).usage.class_b;
+    const g429 = await get(v4.url + "&token=" + encodeURIComponent(T12));
+    const g429j = await g429.json();
+    ok(g429.status === 429 && g429j.ok === false && g429j.error.code === "PDF_QUOTA" && g429j.error.usage, "Class B cap reached → HTTP 429 {ok:false, error:{code:PDF_QUOTA, usage}}");
+    eq((await pdfFiles()).usage.class_b, cb1, "a refused download is not counted");
+    await mustOk("adminSetConfig", { key: "r2_max_class_b", value: null }, ADM2);
+    eq((await get(v4.url + "&token=" + encodeURIComponent(T12))).status, 200, "Class B cap reset → 200");
+
+    ok((await api("adminUsersRemove", { email: DSPR }, ADM2)).ok, "temporary dispenser removed again");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

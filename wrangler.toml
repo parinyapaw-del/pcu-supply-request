@@ -12,12 +12,11 @@ database_name = "pcu-supply"
 # `--local` ignores it, so local dev/tests work as-is.
 database_id = "fde5f357-0769-48c1-a7c5-525a4bfad330"
 
-# R2 (backups + 2b PDFs) — DISABLED until the account owner adds the R2 subscription in the dashboard
-# (R2 → "Add R2 subscription to my account", $0 within the free tier), then create bucket `pcu-supply-files`
-# and uncomment:
-# [[r2_buckets]]
-# binding = "FILES"
-# bucket_name = "pcu-supply-files"
+# R2 (backups + 2b PDFs). Bucket created 2026-10-07 via wrangler (location hint apac) with lifecycle rules
+# pdf/ → expire 400 d, backup/ → expire 100 d (backstop behind the app's own retention, see functions/API.md §6b).
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "pcu-supply-files"
 
 # Secrets / vars (set in the Pages dashboard, or .dev.vars locally — see .dev.vars.example):
 #   TOKEN_SECRET  GOOGLE_CLIENT_ID  ADMIN_EMAILS  BACKUP_KEY  CF_ACCOUNT_ID  CF_BR_TOKEN

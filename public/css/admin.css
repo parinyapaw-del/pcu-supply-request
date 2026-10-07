@@ -114,6 +114,16 @@
 .budget-bar-fill { height: 100%; background: var(--accent); border-radius: 999px 0 0 999px; }
 .budget-bar-fill.over-budget { background: var(--danger); }
 
+/* ---- tab 9: stored PDF files / R2 usage ---- */
+.t9-pdf-usage-row { margin: 8px 0 12px; }
+.t9-pdf-usage-label { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 0.85rem; margin-bottom: 4px; }
+.t9-pdf-bar { background: var(--muted-bg); border-radius: 999px; height: 8px; overflow: hidden; }
+.t9-pdf-bar-fill { height: 100%; background: var(--accent); border-radius: 999px; min-width: 2px; }
+.t9-pdf-bar-fill.warn { background: var(--warn); }
+.t9-pdf-bar-fill.over { background: var(--danger); }
+#t9-pdf-caps .admin-toolbar label { flex-direction: column; align-items: flex-start; font-weight: 500; }
+#t9-pdf-caps input[type="number"] { min-height: 38px; width: 11rem; max-width: 100%; padding: 4px 8px; }
+
 /* ---- forms / cards ---- */
 .admin-card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .admin-card h2 { font-size: 1.05rem; margin-top: 0; }

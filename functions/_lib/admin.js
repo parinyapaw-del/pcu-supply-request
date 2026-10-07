@@ -15,6 +15,8 @@ import {
   LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, roundInfo,
 } from "./views.js";
 import { runBackup } from "./backup.js";
+import { PDF_RULE, pdfDownloadUrl, prunePdfFiles } from "./pdf.js";
+import { R2_CAP_KEYS, r2Caps, readUsage } from "./usage.js";
 
 const round2 = (x) => Math.round(x * 100) / 100;
 
@@ -154,7 +156,7 @@ export async function adminBootstrap(ctx) {
   const { DB, env, who } = ctx;
   const cur = currentMonth(), prev = prevMonth(cur);
   const cfgAll = await getConfigAll(DB);
-  const cfg = { ...publicConfig(cfgAll, monthFy(cur)), ...budgetConfig(cfgAll) };
+  const cfg = { ...publicConfig(cfgAll, monthFy(cur)), ...budgetConfig(cfgAll), ...r2Caps(cfgAll) };
   const fy = cfg.fy_current;
   const isAdmin = who.role === "admin";
   const months12 = fyMonths(fy);
@@ -404,7 +406,7 @@ export async function adminLockRound(ctx, p) {
 // ---- config -------------------------------------------------------------------------------------------------------------------------------
 async function configResult(DB) {
   const cfgAll = await getConfigAll(DB);
-  return { ...publicConfig(cfgAll, monthFy(currentMonth())), ...budgetConfig(cfgAll) };
+  return { ...publicConfig(cfgAll, monthFy(currentMonth())), ...budgetConfig(cfgAll), ...r2Caps(cfgAll) };
 }
 
 export async function adminSetLimitMode(ctx, p) {
@@ -430,6 +432,12 @@ export async function adminSetConfig(ctx, p) {
     else {
       value = typeof value === "string" ? Number(value) : value;
       if (!Number.isInteger(value) || value < 1 || value > 31) throw err("BAD_REQUEST", "deadline_day ต้องเป็นจำนวนเต็ม 1–31 หรือว่าง");
+    }
+  } else if (R2_CAP_KEYS.includes(key)) { // 2b-R cost guard caps; null = default
+    if (value === null || value === "" || value === undefined) value = null;
+    else {
+      value = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+      if (!Number.isInteger(value) || value < 1) throw err("BAD_REQUEST", `${key} ต้องเป็นจำนวนเต็ม ≥ 1 หรือว่าง (ใช้ค่าตั้งต้น)`);
     }
   } else {
     throw err("BAD_REQUEST", "ไม่อนุญาตให้แก้ค่านี้: " + key);
@@ -711,6 +719,32 @@ export async function adminBackupNow(ctx) {
   const r = await runBackup(env);
   await DB.batch([auditStmt(DB, who.email, who.role, "adminBackupNow", "", "", `${r.key} ${r.size}B`)]);
   return r;
+}
+
+// ---- PDF files on R2 (2b-R) — admin only ----------------------------------------------------------------------------------------------------------
+export async function adminPdfFiles(ctx, p) {
+  const { DB } = ctx;
+  const pcu = isStr(p.pcu) && p.pcu ? p.pcu : null;
+  const sql = `SELECT pf.request_id, pf.content_key, pf.created_at, pf.bytes, r.pcu, r.month, pc.name AS pcu_name
+               FROM pdf_files pf JOIN requests r ON r.id = pf.request_id LEFT JOIN pcus pc ON pc.code = r.pcu
+               ${pcu ? "WHERE r.pcu = ?" : ""} ORDER BY pf.created_at DESC, pf.rowid DESC`;
+  const [{ results }, usage] = await Promise.all([(pcu ? DB.prepare(sql).bind(pcu) : DB.prepare(sql)).all(), readUsage(DB)]);
+  const files = results.map((r) => ({
+    pcu: r.pcu, pcu_name: r.pcu_name || r.pcu, month: r.month, content_key: r.content_key, created_at: r.created_at,
+    bytes: r.bytes === null || r.bytes === undefined ? null : Number(r.bytes), url: pdfDownloadUrl(r.request_id, r.content_key),
+  }));
+  return {
+    files,
+    total_files: files.length,
+    total_bytes: files.reduce((a, f) => a + (f.bytes || 0), 0),
+    rule: { latest_month: currentMonth(), ...PDF_RULE },
+    usage,
+  };
+}
+
+export async function adminPdfPrune(ctx) {
+  const { DB, env, who } = ctx;
+  return prunePdfFiles(env, DB, { reason: "admin", actor: who.email, role: who.role });
 }
 
 export async function adminAuditLog(ctx, p) {

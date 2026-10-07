@@ -1,11 +1,13 @@
 // GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>  (token may also be `Authorization: Bearer`) — streams the cached PDF from R2.
 // A PCU token must own the request; admin / dispenser may download any. Real HTTP status codes (not called through js/api.js).
+// 2b-R: every FILES.get is counted as R2 Class B; at the r2_max_class_b cap → 429 PDF_QUOTA before touching R2.
 import { ApiError, err, errorBody, jsonResponse } from "../../_lib/http.js";
-import { ensureSchema, getDb } from "../../_lib/db.js";
+import { ensureSchema, getConfigAll, getDb } from "../../_lib/db.js";
 import { requirePcu, requireStaff, verifyToken } from "../../_lib/auth.js";
 import { encodeFilename, loadForDownload, pdfFilename, pdfR2Key } from "../../_lib/pdf.js";
+import { MSG_QUOTA, bumpUsage, quotaUsage, r2Caps, readCounter, readUsage } from "../../_lib/usage.js";
 
-const STATUS = { AUTH_REQUIRED: 401, AUTH_EXPIRED: 401, FORBIDDEN: 403, BAD_REQUEST: 400, NOT_FOUND: 404 };
+const STATUS = { AUTH_REQUIRED: 401, AUTH_EXPIRED: 401, FORBIDDEN: 403, BAD_REQUEST: 400, NOT_FOUND: 404, PDF_QUOTA: 429 };
 
 export async function onRequestGet({ request, env, params }) {
   try {
@@ -28,7 +30,16 @@ export async function onRequestGet({ request, env, params }) {
     if (!found) throw err("NOT_FOUND", "ไม่พบไฟล์ PDF");
     if (pcuCode !== null && pcuCode !== found.reqRow.pcu) throw err("FORBIDDEN", "ไม่มีสิทธิ์ดาวน์โหลดไฟล์นี้");
     const row = await DB.prepare(`SELECT r2_key FROM pdf_files WHERE request_id = ? AND content_key = ?`).bind(found.reqRow.id, key).first();
-    const obj = row && env.FILES ? await env.FILES.get(row.r2_key || pdfR2Key(found.reqRow.pcu, found.reqRow.month, key)) : null;
+    let obj = null;
+    if (row && env.FILES) {
+      const [cfg, classB] = await Promise.all([getConfigAll(DB), readCounter(DB, "r2_class_b")]);
+      const cap = r2Caps(cfg).r2_max_class_b;
+      if (classB >= cap) {
+        throw err("PDF_QUOTA", MSG_QUOTA, { detail: `class_b ${classB} ≥ ${cap}`, usage: quotaUsage(await readUsage(DB, cfg)) });
+      }
+      await bumpUsage(DB, "r2_class_b"); // counted even when the object turns out to be missing
+      obj = await env.FILES.get(row.r2_key || pdfR2Key(found.reqRow.pcu, found.reqRow.month, key));
+    }
     if (!obj) throw err("NOT_FOUND", "ไม่พบไฟล์ PDF — กดดาวน์โหลดใหม่อีกครั้ง");
 
     const filename = pdfFilename(found.pcuRow && (found.pcuRow.print_name || found.pcuRow.name), found.reqRow.month);

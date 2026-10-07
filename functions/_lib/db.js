@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -61,10 +61,22 @@ const V1 = [
      id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, actor TEXT, role TEXT, action TEXT, pcu TEXT, month TEXT, detail TEXT)`,
 ];
 
-export const MIGRATIONS = [{ v: 1, statements: V1 }];
+// Migration v2 (2b-R, PDF retention + R2 cost guard): pdf_files.bytes + usage_counters (API.md §6b/§8).
+// `ALTER TABLE … ADD COLUMN` is not idempotent → v2 runs statement by statement and swallows only "duplicate column".
+const V2 = [
+  `ALTER TABLE pdf_files ADD COLUMN bytes INTEGER`,
+  `CREATE TABLE IF NOT EXISTS usage_counters (
+     period TEXT NOT NULL, metric TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, metric))`,
+];
+
+// oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
+export const MIGRATIONS = [
+  { v: 1, statements: V1 },
+  { v: 2, statements: V2, oneByOne: true, tolerate: /duplicate column/i },
+];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "stats", "pdf_files", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "stats", "pdf_files", "usage_counters", "audit_log",
 ];
 
 let migrated = false;
@@ -82,6 +94,17 @@ export async function ensureSchema(env) {
   const cur = Number((row && row.v) || 0);
   for (const m of MIGRATIONS) {
     if (m.v <= cur) continue;
+    if (m.oneByOne) {
+      for (const s of m.statements) {
+        try {
+          await DB.prepare(s).run();
+        } catch (e) {
+          if (!(m.tolerate && m.tolerate.test(String((e && e.message) || "") + " " + String((e && e.cause && e.cause.message) || "")))) throw e;
+        }
+      }
+      await DB.prepare(`INSERT INTO schema_version (v) VALUES (?)`).bind(m.v).run();
+      continue;
+    }
     const stmts = m.statements.map((s) => DB.prepare(s));
     stmts.push(DB.prepare(`INSERT INTO schema_version (v) VALUES (?)`).bind(m.v));
     await DB.batch(stmts);

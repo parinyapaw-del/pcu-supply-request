@@ -1,11 +1,13 @@
 // pdf.js — PDF of a submitted request: Cloudflare Browser Rendering (REST /pdf) → R2, cached by content key.
 // Actions: requestPdf (PCU), adminRequestPdf (admin|dispenser), printData (public, print token), dev helpers.
 // Contract: functions/API.md §4 / §5 / §6b. The download itself is functions/api/pdf/[id].js.
+// 2b-R: retention (prunePdfFiles), R2 cost guard (PDF_QUOTA) and usage counters (usage.js).
 import { err, sha256Hex, stableStringify } from "./http.js";
-import { auditStmt, formPublic, latestForm, loadForm } from "./db.js";
+import { auditStmt, batchChunked, formPublic, latestForm, loadForm } from "./db.js";
 import { signToken, verifyToken } from "./auth.js";
-import { isMonth, monthFy, nowIso } from "./time.js";
-import { REQ_COLS, getLines, requestObj } from "./views.js";
+import { currentMonth, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
+import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
+import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
 export const PRINT_TOKEN_MS = 120000; // a print token (handed to the renderer inside the URL) lives 2 minutes
 const DEFAULT_RETRY_AFTER = 10;
@@ -167,6 +169,24 @@ async function createOrGetPdf(ctx, pcuCode, month, actor, role) {
   const hit = await DB.prepare(`SELECT 1 AS x FROM pdf_files WHERE request_id = ? AND content_key = ?`).bind(reqRow.id, contentKey).first();
   if (hit) return ready();
 
+  // cache miss → R2 cost guard (§6b): Class A cap, then the bytes cap (prune everything prunable first, re-check)
+  let usage = await readUsage(DB);
+  if (usage.class_a >= usage.limits.r2_max_class_a) {
+    throw err("PDF_QUOTA", MSG_QUOTA, { detail: `class_a ${usage.class_a} ≥ ${usage.limits.r2_max_class_a}`, usage: quotaUsage(usage) });
+  }
+  if (usage.bytes_total + PDF_RESERVE_BYTES > usage.limits.r2_max_bytes) {
+    await prunePdfFiles(env, DB, { reason: "quota", actor, role });
+    usage = await readUsage(DB);
+    if (usage.bytes_total + PDF_RESERVE_BYTES > usage.limits.r2_max_bytes) {
+      throw err("PDF_QUOTA", MSG_QUOTA, {
+        detail: `bytes ${usage.bytes_total} + ${PDF_RESERVE_BYTES} > ${usage.limits.r2_max_bytes}`, usage: quotaUsage(usage),
+      });
+    }
+  }
+
+  // every renderer attempt is counted (Cloudflare bills the browser time of 429s / failures too); the dev mock counts as well
+  await DB.batch(renderStmts(DB));
+
   // dev-only switches (mock mode, header X-Dev-PDF) to exercise the 429 / error branches without Cloudflare
   if (mock && request.headers.get("x-dev-pdf") === "pending") return { status: "pending", retry_after: 2 };
   if (mock && request.headers.get("x-dev-pdf") === "fail") throw err("PDF_FAILED", MSG_FAILED, { detail: "dev: simulated renderer failure" });
@@ -188,10 +208,57 @@ async function createOrGetPdf(ctx, pcuCode, month, actor, role) {
     throw err("PDF_FAILED", MSG_FAILED, { detail: "storage error: " + String(e && e.message).slice(0, 200) });
   }
   await DB.batch([
-    DB.prepare(`INSERT OR IGNORE INTO pdf_files (request_id, content_key, r2_key, created_at) VALUES (?,?,?,?)`).bind(reqRow.id, contentKey, r2Key, nowIso()),
+    DB.prepare(`INSERT OR IGNORE INTO pdf_files (request_id, content_key, r2_key, created_at, bytes) VALUES (?,?,?,?,?)`)
+      .bind(reqRow.id, contentKey, r2Key, nowIso(), bytes.length),
+    bumpStmt(DB, "r2_class_a"), // the put above
     auditStmt(DB, actor, role, "pdf_create", pcuRow.code, month, `${contentKey.slice(0, 12)} ${bytes.length}B${mock ? " (mock)" : ""}`),
   ]);
+  // retention for this PCU — after the row exists, so the new file counts as the newest version. Never fails the download.
+  try {
+    await prunePdfFiles(env, DB, { pcu: pcuRow.code, reason: "create", actor, role });
+  } catch (e) {
+    console.error("pdf prune after create", e && e.stack ? e.stack : e);
+  }
   return ready();
+}
+
+// ---- retention (2b-R) ---------------------------------------------------------------------------------------------------------
+export const PDF_RULE = { keep_latest: 2, keep_other: 1, months: 12 };
+
+// latest = currentMonth() (honours X-Dev-Month in dev; same source as adminRequests.current_month).
+// Per (pcu, request month), newest first: month < latest−11 → delete all · month ≥ latest → keep 2 · else keep 1.
+// Deletes the R2 object (by stored r2_key; R2 ignores missing keys) and the pdf_files row. Audit `pdf_prune` only when ≥ 1 file went.
+// opts: {pcu?, reason: "create"|"backup"|"admin"|"quota", actor?, role?}  →  {deleted:[r2_key], bytes}
+export async function prunePdfFiles(env, DB, opts = {}) {
+  const pcu = opts.pcu || null;
+  const reason = opts.reason || "admin";
+  if (!env.FILES) return { deleted: [], bytes: 0 }; // nothing can be stored without the binding; never orphan objects
+  const latest = currentMonth();
+  const oldest = monthMinus(latest, PDF_RULE.months - 1);
+  const sql = `SELECT pf.request_id, pf.content_key, pf.r2_key, pf.bytes, r.pcu, r.month
+               FROM pdf_files pf JOIN requests r ON r.id = pf.request_id ${pcu ? "WHERE r.pcu = ?" : ""}
+               ORDER BY r.pcu, r.month, pf.created_at DESC, pf.rowid DESC`;
+  const { results } = await (pcu ? DB.prepare(sql).bind(pcu) : DB.prepare(sql)).all();
+
+  const victims = [];
+  let group = null, idx = 0;
+  for (const row of results) {
+    const g = row.pcu + "|" + row.month;
+    if (g !== group) { group = g; idx = 0; }
+    const keep = row.month < oldest ? 0 : row.month >= latest ? PDF_RULE.keep_latest : PDF_RULE.keep_other;
+    if (idx >= keep) victims.push(row);
+    idx++;
+  }
+  if (!victims.length) return { deleted: [], bytes: 0 };
+
+  const keys = victims.map((v) => v.r2_key || pdfR2Key(v.pcu, v.month, v.content_key));
+  for (let i = 0; i < keys.length; i += 1000) await env.FILES.delete(keys.slice(i, i + 1000)); // delete is free (not counted)
+  const bytes = victims.reduce((a, v) => a + (Number(v.bytes) || 0), 0);
+  const stmts = victims.map((v) => DB.prepare(`DELETE FROM pdf_files WHERE request_id = ? AND content_key = ?`).bind(v.request_id, v.content_key));
+  stmts.push(auditStmt(DB, opts.actor || "system", opts.role || "system", "pdf_prune", pcu || "", latest,
+    `${victims.length} files / ${bytes} bytes / pcu=${pcu || "all"} / reason=${reason}`));
+  await batchChunked(DB, stmts);
+  return { deleted: keys, bytes };
 }
 
 // PCU token → the PCU's own request.
@@ -233,6 +300,28 @@ export async function devPrintToken(ctx, p) {
   if (!isSent(bundle.reqRow)) throw err("NOT_FOUND", MSG_NOT_SENT);
   const ck = await contentKeyOf(bundle);
   return { token: await makePrintToken(ctx.env, bundle.pcuRow.code, p.month, ck), content_key: ck };
+}
+
+// dev only (router checks DEV_FAKE_GOOGLE): move a request to another month (tests back-date a sent request for the 12-month window).
+// Moves the requests row (id + month) and re-points request_lines / issue_status / pdf_files; R2 objects stay where they are
+// (pdf_files.r2_key is kept as stored — the prune deletes by r2_key).
+export async function devSetRequestMonth(ctx, p) {
+  const { DB } = ctx;
+  if (!isMonth(p.month) || !isMonth(p.new_month)) throw err("BAD_REQUEST", "เดือนไม่ถูกต้อง");
+  const pcu = String(p.pcu || "");
+  const oldId = requestId(pcu, p.month), newId = requestId(pcu, p.new_month);
+  if (!(await DB.prepare(`SELECT 1 AS x FROM requests WHERE id = ?`).bind(oldId).first())) throw err("NOT_FOUND", "ไม่พบใบเบิก " + oldId);
+  if (oldId === newId) return { id: newId };
+  if (await DB.prepare(`SELECT 1 AS x FROM requests WHERE id = ? OR (pcu = ? AND month = ?)`).bind(newId, pcu, p.new_month).first()) {
+    throw err("CONFLICT", "มีใบเบิกของเดือนปลายทางอยู่แล้ว");
+  }
+  await DB.batch([
+    DB.prepare(`UPDATE requests SET id = ?, month = ? WHERE id = ?`).bind(newId, p.new_month, oldId),
+    DB.prepare(`UPDATE request_lines SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
+    DB.prepare(`UPDATE issue_status SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
+    DB.prepare(`UPDATE pdf_files SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
+  ]);
+  return { id: newId };
 }
 
 // ---- download helper (functions/api/pdf/[id].js) -------------------------------------------------------------------------

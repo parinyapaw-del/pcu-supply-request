@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT{items:[{code,total,limit_month,limit_year,used_fy}]}` · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT{items:[{code,total,limit_month,limit_year,used_fy}]}` · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - Fiscal year (พ.ศ.): `fy(month) = CE_year + (month >= 10 ? 1 : 0) + 543` → `2026-10` … `2027-09` = FY2570.
@@ -141,7 +141,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
 | `adminLockRound` | `month, locked:0\|1` | `{round}` |
 | `adminSetLimitMode` | `mode:"off"\|"warn"\|"enforce"` | `{config}` |
-| `adminSetConfig` | `key, value` — keys: `stock_required`(0/1) `budget_op` `budget_pp` `budget_total` (number ≥ 0) `deadline_day`(int 1–31 \| null) | `{config}` |
+| `adminSetConfig` | `key, value` — keys: `stock_required`(0/1) `budget_op` `budget_pp` `budget_total` (number ≥ 0) `deadline_day`(int 1–31 \| null) · 2b-R R2 caps `r2_max_bytes` `r2_max_class_a` `r2_max_class_b` (int ≥ 1, numeric string ok \| `null`/`""` = default; else `BAD_REQUEST`) | `{config}` (effective caps included) |
 | `adminSetLimit` | `pcu, code, limit_month, limit_year` (int ≥ 0 \| null) | `{limit}` (source `admin`) |
 | `adminResetLimit` | `pcu, code` | `{limit\|null}` recomputed per FORMAT.md rule from `plans[fy_current]` / `stats[fy_current-1]` (row removed if nothing) |
 | `adminLimitsUpload` | `rows:[{pcu_code,item_code,item_name?,limit_month,limit_year,note?}], fy?, mode?:"merge"\|"replace", dry_run?:bool` | `{errors:[{row,pcu_code,item_code,error}], warnings:[...], changes:[{pcu,item_code,old:[m,y]\|null,new:[m,y]\|null}], added, updated, deleted, applied:bool}` — rules of `limit_upload_format.md` §2/§3 (`CLEAR` in merge mode; blank = untouched in merge). Valid rows are applied unless `dry_run`. Row number = index+2 unless row has `row`. A pair duplicated in the file gets one `errors` entry per row (rows that already carry another error are not listed twice). |
@@ -156,14 +156,16 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminUsersRemove` | `email` | `{users}` · refuses to remove the last admin (`CONFLICT`) |
 | `adminImportSeed` | `seed` (FORMAT.md JSON; every top-level key except `format`/`fy` is optional ⇒ may be sent in chunks), `set_current_fy?:bool` | `{imported:{pcus, form:"inserted"\|"same"\|"skipped_differs"\|"none", plans, actual_rows, prices_prev, stats, limits_inserted, limits_kept_admin, config_set:[key]}, warnings:[...]}` — idempotent, rules in FORMAT.md |
 | `adminClearTrial` | `confirm:"ล้างข้อมูล"` | `{deleted_requests, deleted_lines, deleted_issue_status, deleted_pdf_files}` — only those tables (+R2 PDFs listed in `pdf_files`) |
-| `adminBackupNow` | – | `{key, size, deleted:[old keys]}` (same as the cron endpoint) |
+| `adminBackupNow` | – | `{key, size, deleted:[old keys], pdf_pruned:[r2 keys]}` (same as the cron endpoint, §7) |
+| `adminPdfFiles` (admin only) | `pcu?` (filter) | `{files:[{pcu, pcu_name, month, content_key, created_at, bytes\|null, url}] (newest first), total_files, total_bytes, rule, usage}` — §6b.1 |
+| `adminPdfPrune` (admin only) | – | `{deleted:[r2_key], bytes}` — runs the retention rule for all PCUs now (§6b.1; audit `pdf_prune` reason=admin when ≥ 1 file). Confirm dialog = UI's job |
 | `adminAuditLog` | `limit?` (default 100, max 500), `before?` (audit id → older rows) | `{entries:[{id,ts,actor,role,action,pcu,month,detail}], next_before:id\|null}` |
 | `adminFormGet` | `id` | `{form:{id,fy,created_at,created_by,note,steps}}` of any version (steps incl. closed pages) · `NOT_FOUND` — §5.2 |
 | `adminFormSave` | `base_version_id:int, note?:string(≤200), form:{steps:[...]}` | `{saved:true, form, versions, diff}` or `{saved:false, same:true, form, versions}` — new form version, §5.2 |
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
-| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request |
+| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month}`, `devSetRequestMonth{pcu,month,new_month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month). None of the dev actions is counted in `usage_counters` |
 | header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
 | header `X-Dev-Month: YYYY-MM` | – | only honoured when `DEV_FAKE_GOOGLE==="1"` (POST /api and the export): overrides "the current Bangkok month" so tests do not depend on the real date |
 
@@ -173,7 +175,8 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
 ```
 {
   me: {email|"backup", role, units:[...]}, server_time, current_month,
-  config: { limit_mode, stock_required, deadline_day, fy_current, budget_op, budget_pp, budget_total },
+  config: { limit_mode, stock_required, deadline_day, fy_current, budget_op, budget_pp, budget_total,
+            r2_max_bytes, r2_max_class_a, r2_max_class_b },              // R2 caps = effective values (defaults applied), §6b.1
   pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool} ],
   form: {id,fy,created_at,note,steps}, form_versions: [ {id,fy,created_at,created_by,note} ],     // form = latest of fy_current (incl. closed pages, §5.2)
   plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
@@ -332,18 +335,70 @@ else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<p
 `GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>` (token may also be `Authorization: Bearer`): a PCU token must own the request (`token.pcu ==
 request.pcu`) else 403; admin / dispenser any. HTTP 401 (no/invalid token) · 403 · 400 (malformed `k`) · 404 JSON (no request, no `pdf_files` row or R2 object).
 200 streams the R2 object: `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="request.pdf"; filename*=UTF-8''<encoded filename>`,
-`Cache-Control: private, max-age=0`. Older versions stay downloadable by their own `k`. `adminClearTrial` deletes every `pdf_files` row and its R2 object.
+`Cache-Control: private, max-age=0`. Older versions stay downloadable by their own `k` until the retention rule (§6b.1) prunes them (then 404).
+`adminClearTrial` deletes every `pdf_files` row and its R2 object. 2b-R: each `FILES.get` here counts one R2 Class B op (also when the object turns out
+missing; requests without a `pdf_files` row never touch R2); when this month's Class B count ≥ `r2_max_class_b` → **HTTP 429** JSON
+`{ok:false,error:{code:"PDF_QUOTA",message,detail,usage}}` before touching R2 (not counted).
+
+### 6b.1 Retention, R2 cost guard, usage counters (2b-R, decided 2026-10-07 — `functions/_lib/pdf.js` `prunePdfFiles`, `functions/_lib/usage.js`)
+**Retention** — `latest` = `currentMonth()` (Bangkok month; honours `X-Dev-Month` in dev; = `adminRequests.current_month`). A *version* = a distinct
+`content_key` of the same request. Per (pcu, `requests.month`), rows ordered `created_at DESC`: month `< latest − 11` → delete all (12-month window
+counted by round month, not file date) · month `≥ latest` → keep newest **2** (a future month counts as latest) · otherwise keep newest **1**.
+Delete = `FILES.delete(r2_key)` (stored key; R2 ignores missing keys) + `DELETE FROM pdf_files`. Without the `FILES` binding nothing is pruned.
+Returns `{deleted:[r2_key], bytes}`; audit `pdf_prune` (pcu = the pcu or "", month = latest) only when ≥ 1 file went, detail
+`"<n> files / <m> bytes / pcu=<X|all> / reason=<create|backup|admin|quota>"`. Called: after each stored PDF (that PCU, inline, after its row is
+written so the new file counts; a prune error never fails the request) · by `runBackup` (all PCUs, §7) · by `adminPdfPrune` · by the bytes-cap check.
+A pruned `content_key` requested again is simply rendered again (cache miss).
+
+**Cost guard** — R2 is the only billable product (Workers Free: Browser Rendering is hard-capped by Cloudflare, 10 min/day, no app limit). Caps
+(`adminSetConfig`, int ≥ 1 or `null` = default; ≈ 10 % of the R2 free tier):
+
+| config key | default | compared with |
+|---|---|---|
+| `r2_max_bytes` | `1000000000` | `pdf_bytes` (Σ `pdf_files.bytes`, null = 0) + `backup_bytes` (`config.r2_backup_bytes`) |
+| `r2_max_class_a` | `100000` | `usage_counters(<UTC month>, r2_class_a)` |
+| `r2_max_class_b` | `1000000` | `usage_counters(<UTC month>, r2_class_b)` |
+
+`requestPdf`/`adminRequestPdf` order: request sent? → content key → `pdf_files` hit ⇒ `ready` (no quota check, no R2 call) → **quota**: `class_a ≥
+r2_max_class_a` ⇒ `PDF_QUOTA`; `bytes_total + 1000000 > r2_max_bytes` ⇒ prune all PCUs (reason=quota), recompute, still over ⇒ `PDF_QUOTA` → count
+the render attempt → render → `FILES.put` → `pdf_files` row (with `bytes`) + Class A count + audit `pdf_create` (one batch) → prune (that PCU, reason=create).
+`PDF_QUOTA` = `{code:"PDF_QUOTA", message:"ที่เก็บไฟล์ PDF ถึงเพดานที่ตั้งไว้ — กดปุ่ม พิมพ์ แล้วเลือก Save as PDF แทน และแจ้งผู้ดูแลระบบ", detail,
+usage:{bytes, class_a, class_b, limits:{r2_max_bytes, r2_max_class_a, r2_max_class_b}}}`. Backups are never blocked (but counted).
+
+**Counters** — `usage_counters(period, metric, n)`, one `INSERT … ON CONFLICT DO UPDATE SET n = n + excluded.n` per event. `period` = UTC month
+`"YYYY-MM"` (R2 billing month) or UTC day `"YYYY-MM-DD"` (renders only; real UTC clock, *not* `X-Dev-Month`).
+- `r2_class_a` (month): every `FILES.put` (PDF, backup) + every `FILES.list` page in `runBackup`.
+- `r2_class_b` (month): every `FILES.get` in `GET /api/pdf/:id`.
+- `pdf_render` (day **and** month): every renderer attempt after the quota check — real Browser Rendering calls incl. 429/errors, the dev mock and its
+  `X-Dev-PDF` simulated branches. `FILES.delete` (free) and the dev actions are not counted.
+
+`adminPdfFiles{pcu?}` data:
+```
+{ files: [ {pcu, pcu_name, month, content_key, created_at, bytes|null, url:"/api/pdf/<request_id>?k=<content_key>"} ],   // newest first
+  total_files, total_bytes,                                        // of the listed files, null bytes = 0
+  rule: { latest_month, keep_latest: 2, keep_other: 1, months: 12 },
+  usage: { period:"YYYY-MM", class_a, class_b, renders_month, renders_today,
+           pdf_bytes, backup_bytes, backup_files,                  // backup_* from config (0 before the first backup); pdf_bytes = all PCUs
+           bytes_total,                                            // pdf_bytes + backup_bytes
+           limits: { r2_max_bytes, r2_max_class_a, r2_max_class_b },        // effective
+           free_tier: { bytes: 10000000000, class_a: 1000000, class_b: 10000000 } } }
+```
+Works without the `FILES` binding (lists D1 rows; empty in practice).
 
 ## 7. `POST /api/cron/backup` (header `X-Backup-Key == env.BACKUP_KEY`)
 Dumps every table to R2 `backup/YYYY-MM-DD.json` (Bangkok date) = `{exported_at, schema_version, tables:{name:[rows]}}`, deletes `backup/*` older than 90 days.
-HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted}}`. Called nightly by `.github/workflows/backup.yml`
+2b-R: counts Class A (1 put + 1 per list page), stores `config.r2_backup_bytes` / `config.r2_backup_files` = Σ size / count of the `backup/` objects
+it listed that survived the prune, then runs the PDF retention for all PCUs (§6b.1, reason=backup, actor `system`). Never blocked by the R2 caps.
+`X-Dev-Month` is honoured in dev (as on `POST /api`).
+HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migration v1)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
 config(key PK, value)                     -- value = JSON text (e.g. "0", "\"warn\"", "null"); secrets: backup_pw_hash/salt, backup_version, backup_fail, backup_locked_until
+                                          -- 2b-R: r2_max_bytes / r2_max_class_a / r2_max_class_b (null = default), r2_backup_bytes / r2_backup_files (written by runBackup)
 schema_version(v)
 users(email PK, role 'admin'|'dispenser', units JSON, added_at, added_by)
 pcus(code PK, name, print_name, "group", pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom)
@@ -361,10 +416,14 @@ plans(fy, pcu, item_code, plan_op, plan_pp)                 PK(fy,pcu,item_code)
 actual_prev(fy, month, pcu, item_code, op, pp)              PK(fy,month,pcu,item_code)
 prices_prev(fy, item_code, price)                           PK(fy,item_code)
 stats(fy, pcu, item_code, median_m, p90_m, annual_qty)      PK(fy,pcu,item_code)
-pdf_files(request_id, content_key, r2_key, created_at)      PK(request_id,content_key)
+pdf_files(request_id, content_key, r2_key, created_at, bytes)   PK(request_id,content_key)   -- bytes: v2, nullable (rows from before v2 = null)
+usage_counters(period, metric, n)                           PK(period,metric)   -- v2; period "YYYY-MM" | "YYYY-MM-DD" (UTC); metric r2_class_a|r2_class_b|pdf_render
 audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
 ```
 - Migrations run automatically at the start of each request when `schema_version` is behind (cached per isolate). They must be idempotent.
+  v1 = one batch. **v2** (2b-R) = `ALTER TABLE pdf_files ADD COLUMN bytes INTEGER` + `CREATE TABLE IF NOT EXISTS usage_counters …`, run one statement
+  at a time; a "duplicate column" error (a racing isolate already added it) is swallowed and `schema_version` 2 is still recorded.
+  `usage_counters` is in `TABLES` (backups, `devReset`).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 
@@ -391,7 +450,7 @@ npm test                                # node tools/test_api.mjs   → http://l
 fixture (`seed/seed_2570.json` if present, else a synthetic seed built from `public/data/form2569.json`). Two-terminal flow: terminal 1 `npm run dev`, terminal 2 `npm test`
 (**this wipes the dev database**; use `API_BASE` against a throw-away instance if you have data you want to keep).
 
-`--r2 FILES` gives the local server the `FILES` R2 binding (backups, PDFs) even though `[[r2_buckets]]` is commented out in `wrangler.toml`
-(until the account has R2); wrangler accepts the flag together with `wrangler.toml` (verified wrangler 4.x). The test runner passes it too.
+`--r2 FILES` gives the local server the `FILES` R2 binding (backups, PDFs); `[[r2_buckets]]` in `wrangler.toml` is live since 2026-10-07 (bucket
+`pcu-supply-files`, lifecycle rules pdf/ 400 d · backup/ 100 d) but `--local` never touches the real bucket — the flag keeps working with it (verified wrangler 4.x). The test runner passes it too.
 Without it `devPutBackup`, the backup tests and every PDF action fail (`PDF_UNAVAILABLE`). To keep your own data when testing, run the suite on another port:
 `API_BASE=http://localhost:8790 npm test` (it starts and stops a throw-away server with `--persist-to .wrangler/test-state`).

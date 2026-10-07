@@ -1,8 +1,10 @@
 // Tab 9 — ระบบ (phase 2.md §5.11): backup password, seed import, stock_required switch, clear trial data,
 // backup now, audit log. Admin only.
 import {
-  el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, downloadJson, formatBangkokDateTime
+  el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, downloadJson, formatBangkokDateTime, monthLong
 } from "./util.js";
+import { getAdminToken } from "../api.js";
+import { startPdfDownload } from "../pdf_client.js";
 
 const CHUNK_BYTES = 800 * 1024;
 
@@ -164,6 +166,149 @@ export function renderTab9(container, ctx) {
   opCard.appendChild(clrMsg);
   container.appendChild(opCard);
 
+  // ---- stored PDF files + R2 usage (2b-R: adminPdfFiles / adminPdfPrune / adminSetConfig r2_max_*) -----------------
+  const pdfCard = el("div", { class: "admin-card", id: "t9-pdf-card" });
+  pdfCard.appendChild(el("h2", {}, "ไฟล์ PDF ที่เก็บไว้"));
+  const pdfBar = el("div", { class: "admin-toolbar" });
+  const pdfReload = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t9-pdf-reload" }, "โหลดใหม่");
+  const pdfPrune = el("button", { type: "button", class: "btn btn-danger btn-sm", id: "t9-pdf-prune" }, "ตัดไฟล์เก่าตอนนี้");
+  pdfBar.appendChild(pdfReload); pdfBar.appendChild(pdfPrune);
+  pdfCard.appendChild(pdfBar);
+  const pdfHost = el("div", { id: "t9-pdf-host" });
+  pdfCard.appendChild(pdfHost);
+  container.appendChild(pdfCard);
+
+  const R2_DEFAULTS = { r2_max_bytes: 1000000000, r2_max_class_a: 100000, r2_max_class_b: 1000000 };
+  const fmtMB = (n) => ((Number(n) || 0) / 1e6).toFixed(1);
+  const fmtInt = (n) => (Number(n) || 0).toLocaleString("en-US");
+  const pdfState = { files: [], seq: 0, loading: false };
+
+  function usageRow(id, label, used, cap, free, fmt) {
+    const pctCap = cap > 0 ? (used / cap) * 100 : 0;
+    const pctFree = free > 0 ? (used / free) * 100 : 0;
+    const cls = pctCap >= 100 ? " over" : (pctCap >= 70 ? " warn" : "");
+    const width = Math.max(0, Math.min(100, pctCap));
+    return `<div class="t9-pdf-usage-row" id="${id}">
+      <div class="t9-pdf-usage-label"><span>${escapeHtml(label)}</span><span class="t9-pdf-usage-text">${escapeHtml(fmt(used))} / ${escapeHtml(fmt(cap))} (${pctFree.toFixed(2)} % ของ free tier)</span></div>
+      <div class="t9-pdf-bar"><div class="t9-pdf-bar-fill${cls}" id="${id}-fill" style="width:${width.toFixed(1)}%"></div></div></div>`;
+  }
+
+  function drawPdf(res) {
+    const files = Array.isArray(res.files) ? res.files : [];
+    const u = res.usage || {};
+    const lim = u.limits || {};
+    const free = u.free_tier || { bytes: 10000000000, class_a: 1000000, class_b: 10000000 };
+    const rule = res.rule || {};
+    pdfState.files = files;
+
+    const ruleLine = `เก็บ: เดือนล่าสุด${rule.latest_month ? ` (${monthLong(rule.latest_month)})` : ""} ${rule.keep_latest ?? 2} เวอร์ชัน · เดือนอื่น ${rule.keep_other ?? 1} เวอร์ชัน · ลบไฟล์เก่ากว่า ${rule.months ?? 12} เดือน`;
+    const capBytes = lim.r2_max_bytes || R2_DEFAULTS.r2_max_bytes;
+    const capA = lim.r2_max_class_a || R2_DEFAULTS.r2_max_class_a;
+    const capB = lim.r2_max_class_b || R2_DEFAULTS.r2_max_class_b;
+
+    const rows = files.map((f, i) => `<tr><td class="left">${escapeHtml(f.pcu_name || f.pcu || "")}${f.pcu_name && f.pcu ? ` <span class="muted small">${escapeHtml(f.pcu)}</span>` : ""}</td>
+      <td class="left">${escapeHtml(f.month ? monthLong(f.month) : "")}</td>
+      <td class="left small">${escapeHtml(f.created_at ? formatBangkokDateTime(f.created_at) : "")}</td>
+      <td class="num">${f.bytes === null || f.bytes === undefined ? "–" : escapeHtml((f.bytes / 1024).toFixed(1))}</td>
+      <td class="left small"><code>${escapeHtml(String(f.content_key || "").slice(0, 8))}</code></td>
+      <td class="left"><button type="button" class="btn btn-secondary btn-sm" data-act="open" data-idx="${i}">เปิด</button></td></tr>`).join("");
+
+    pdfHost.innerHTML = `<p class="admin-note" id="t9-pdf-summary">ไฟล์ ${fmtInt(res.total_files ?? files.length)} · ขนาดรวม ${fmtMB(res.total_bytes)} MB · ${escapeHtml(ruleLine)}</p>
+      <h3>การใช้ R2 เดือนนี้ (UTC)${u.period ? ` — ${escapeHtml(u.period)}` : ""}</h3>
+      <div id="t9-pdf-usage">
+        ${usageRow("t9-pdf-use-bytes", "พื้นที่ (PDF + backup)", u.bytes_total ?? ((u.pdf_bytes || 0) + (u.backup_bytes || 0)), capBytes, free.bytes, (n) => `${fmtMB(n)} MB`)}
+        ${usageRow("t9-pdf-use-a", "Class A (เขียน/list)", u.class_a || 0, capA, free.class_a, fmtInt)}
+        ${usageRow("t9-pdf-use-b", "Class B (ดาวน์โหลด)", u.class_b || 0, capB, free.class_b, fmtInt)}
+      </div>
+      <p class="admin-note" id="t9-pdf-renders">สร้าง PDF วันนี้ ${fmtInt(u.renders_today)} ครั้ง · เดือนนี้ ${fmtInt(u.renders_month)} ครั้ง (Browser Rendering free = 10 นาที/วัน, Cloudflare ตัดเอง ไม่คิดเงิน)</p>
+      <div id="t9-pdf-caps"></div>
+      <hr>
+      ${files.length
+        ? tableScroll(`<table class="admin-table" id="t9-pdf-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">เดือน</th><th class="left">สร้างเมื่อ</th><th class="num">ขนาด (KB)</th><th class="left">เวอร์ชัน</th><th class="left">ลิงก์</th></tr></thead><tbody>${rows}</tbody></table>`, "tall")
+        : '<p class="muted" id="t9-pdf-empty">ยังไม่มีไฟล์ PDF บน server</p>'}`;
+
+    pdfHost.querySelectorAll('[data-act="open"]').forEach((btn) => btn.addEventListener("click", () => {
+      const f = pdfState.files[Number(btn.dataset.idx)];
+      if (!f || !f.url) return;
+      const token = getAdminToken();
+      if (!token) { toast("ไม่พบ token ผู้ดูแล — เข้าสู่ระบบใหม่", "err"); return; }
+      startPdfDownload(f.url, token);
+    }));
+
+    // cap form: blank = default (sent as null); only changed keys are sent
+    const capDefs = [
+      ["r2_max_bytes", "พื้นที่สูงสุด (bytes)", capBytes],
+      ["r2_max_class_a", "Class A สูงสุด/เดือน", capA],
+      ["r2_max_class_b", "Class B สูงสุด/เดือน", capB]
+    ];
+    const inputs = {};
+    const capBar = el("div", { class: "admin-toolbar" });
+    capDefs.forEach(([key, label, cur]) => {
+      const inp = el("input", { type: "number", min: 1, step: 1, inputmode: "numeric", id: `t9-pdf-cap-${key}`, placeholder: `ค่าตั้งต้น ${fmtInt(R2_DEFAULTS[key])}`, value: String(cur) });
+      inputs[key] = inp;
+      capBar.appendChild(el("label", {}, [label, inp]));
+    });
+    const capSave = el("button", { type: "button", class: "btn btn-primary btn-sm", id: "t9-pdf-caps-save" }, "บันทึกเพดาน");
+    capBar.appendChild(capSave);
+    const capMsg = el("p", { class: "admin-note", id: "t9-pdf-caps-msg" }, "เว้นว่าง = ค่าตั้งต้น (10 % ของ free tier) · เพดานเป็นตัวกันไม่ให้เกิดค่าใช้จ่าย R2");
+    capSave.addEventListener("click", async () => {
+      capMsg.className = "admin-err-text";
+      const todo = [];
+      for (const [key, , cur] of capDefs) {
+        const raw = inputs[key].value.trim();
+        let want;
+        if (raw === "") want = null;
+        else {
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 1) { capMsg.textContent = "เพดานต้องเป็นจำนวนเต็ม ≥ 1 (หรือเว้นว่าง = ค่าตั้งต้น)"; return; }
+          want = n;
+        }
+        if ((want === null ? R2_DEFAULTS[key] : want) !== cur) todo.push([key, want]);
+      }
+      if (!todo.length) { capMsg.className = "admin-note"; capMsg.textContent = "ไม่มีค่าที่เปลี่ยน"; return; }
+      capSave.disabled = true;
+      try {
+        for (const [key, value] of todo) {
+          const r = await ctx.adminCall("adminSetConfig", { key, value });
+          if (r && r.config && b() && b().config) Object.assign(b().config, r.config);
+        }
+        toast("บันทึกเพดานแล้ว");
+        await loadPdf();
+      } catch (err) { capMsg.textContent = errMessage(err); } finally { capSave.disabled = false; }
+    });
+    const capHost = pdfHost.querySelector("#t9-pdf-caps");
+    capHost.appendChild(el("h3", {}, "เพดานการใช้ R2"));
+    capHost.appendChild(capBar);
+    capHost.appendChild(capMsg);
+  }
+
+  async function loadPdf() {
+    const my = ++pdfState.seq;
+    pdfReload.disabled = true;
+    try {
+      const res = await ctx.adminCall("adminPdfFiles", {});
+      if (my !== pdfState.seq) return;
+      drawPdf(res || {});
+    } catch (err) {
+      if (my !== pdfState.seq) return;
+      pdfState.files = [];
+      pdfHost.innerHTML = `<p class="admin-err-text" id="t9-pdf-err">${escapeHtml(errMessage(err))}</p>`;
+    } finally { if (my === pdfState.seq) pdfReload.disabled = false; }
+  }
+  pdfReload.addEventListener("click", () => loadPdf());
+  pdfPrune.addEventListener("click", async () => {
+    const ok = await confirmDialog("ตัดไฟล์ PDF เก่าตามกฎที่เก็บไว้ตอนนี้?\nไฟล์ที่เกินกฎจะถูกลบออกจาก server (สร้างใหม่ได้เมื่อกดดาวน์โหลดอีกครั้ง)", { title: "ตัดไฟล์เก่า", okText: "ตัดไฟล์", danger: true });
+    if (!ok) return;
+    pdfPrune.disabled = true;
+    try {
+      const r = await ctx.adminCall("adminPdfPrune", {});
+      toast(`ลบ ${(r.deleted || []).length} ไฟล์ (${fmtMB(r.bytes)} MB)`);
+      await loadPdf();
+    } catch (err) {
+      pdfHost.innerHTML = `<p class="admin-err-text" id="t9-pdf-err">${escapeHtml(errMessage(err))}</p>`;
+    } finally { pdfPrune.disabled = false; }
+  });
+
   // ---- audit log -----------------------------------------------------------------------------------------------
   const auCard = el("div", { class: "admin-card", id: "t9-audit-card" });
   auCard.appendChild(el("h2", {}, "Audit log"));
@@ -203,6 +348,7 @@ export function renderTab9(container, ctx) {
   auMore.addEventListener("click", () => loadAudit(true));
   auDl.addEventListener("click", () => downloadJson({ exported_at: new Date().toISOString(), count: au.entries.length, entries: au.entries }, `audit_log_${new Date().toISOString().slice(0, 10)}.json`));
   loadAudit(false);
+  loadPdf();
 
-  return { onShow() { stCb.checked = !!b().config.stock_required; loadAudit(false); } };
+  return { onShow() { stCb.checked = !!b().config.stock_required; loadPdf(); loadAudit(false); } };
 }
