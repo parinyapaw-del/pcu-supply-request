@@ -56,7 +56,7 @@
 :root.print-compact {
   --print-scale: 0.58;
   --sheet-h: 576pt;
-  --page-pad-v: 0.35in;
+  --page-pad-v: 0.7in; /* iPhone preview showed the title hugging the top edge at 0.35in (2026-10-07); 50 + 576 + 7 = 633pt */
   --page-pad-h: 0.6in;
 }
 
