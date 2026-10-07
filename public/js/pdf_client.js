@@ -47,6 +47,12 @@ export function startPdfDownload(url, token) {
   setTimeout(() => a.remove(), 1000);
 }
 
+/** Opens the PDF in THIS tab for printing (inline, not a download): no popup blocker on iOS, and the Back button returns to
+ *  the app because the tokens live in localStorage. The server answers `Content-Disposition: inline` for `inline=1`. */
+export function openPdfInline(url, token) {
+  location.assign(url + "&token=" + encodeURIComponent(token) + "&inline=1");
+}
+
 export const PDF_FALLBACK_HINT = "กดปุ่ม พิมพ์ แล้วเลือก Save as PDF แทน";
 /** Error text + the print → Save as PDF hint (unless the server message already carries it). `esc` = html escaper. */
 export function pdfErrorHtml(message, esc) {

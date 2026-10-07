@@ -1,16 +1,20 @@
 // A4 print sheet — reproduces the original xlsx layout (spec §4, phase 2 spec §4.4).
-// One <table> (13 cols, A..M) per form step, each step = one A4 page (fixed scale --print-scale, so every page uses the
+// One <table> (13 cols, A..M) per form step, each step = one A4 page (fixed scale --print-scale 0.78, so every page uses the
 // same font size; the worst case 24 items + 2 section rows fits). ALL steps of the form are rendered, numbered "< n >" by
 // step order; the toolbar's checkboxes choose which pages PRINT (unchecked = display:none under @media print).
-// Every length is a multiple of --pu (1 xlsx point, relative to the page width — see css/print.css header) so Safari,
-// Chrome and Firefox paginate identically; fitPrintPages() is the safety net for a sheet that still ends up too tall.
+// Every length is a multiple of --pu (1 xlsx point at the fixed scale — see css/print.css header); fitPrintPages() is the
+// safety net for a sheet that still ends up too tall.
+// Print paths (one engine, Blink, for every platform — see printMode()): Chromium desktop prints straight from the browser
+// ("direct"); every other browser opens the server PDF (requestPdf → Browser Rendering) and prints that file ("pdf").
+// Browser print in a non-Chromium browser (browserPrintFallback) is only the fallback when the PDF cannot be produced, and
+// is the only place the compact (0.58) layout is switched on, so the on-screen preview always shows the real 0.78 sheet.
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
-import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog, formForRequest } from "./common.js";
+import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog, confirmDialog, formForRequest } from "./common.js";
 import { trySend } from "./send.js";
-import { requestPdfReady, startPdfDownload, pdfErrorHtml } from "../pdf_client.js";
+import { requestPdfReady, startPdfDownload, openPdfInline, pdfErrorHtml } from "../pdf_client.js";
 
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
 
@@ -34,15 +38,23 @@ function blankRequestFor(pcu, month) {
 
 const PREVIEW_KEY = "pcuSupply2:formPreview";
 
-/** Touch devices (phones/tablets) print through iOS Safari / Android print services whose page box is smaller than the
- *  paper (printer margins + iOS's fixed header/footer band): css/print.css shrinks the sheet for them (`.print-compact`). */
-function markCompactPrint() {
-  const touch = (navigator.maxTouchPoints || 0) > 0 || "ontouchstart" in window;
-  document.documentElement.classList.toggle("print-compact", touch);
+/** How this browser prints: "direct" = a desktop Chromium browser (Chrome/Edge on Windows/Mac/Linux) prints the page itself
+ *  with Blink at the real 0.78 layout; "pdf" = everything else (Safari, iOS, Android, Firefox — no userAgentData or a mobile /
+ *  non-Chromium one) prints the server-rendered PDF so the same Blink engine produces the paper. */
+export function printMode() {
+  const uad = typeof navigator !== "undefined" ? navigator.userAgentData : null;
+  return uad && uad.mobile === false && uad.brands.some((b) => /chromium/i.test(b.brand)) ? "direct" : "pdf";
+}
+
+/** Browser print without the PDF: switches the compact (0.58) layout on for every non-"direct" browser — its page box is
+ *  shorter than A4 (iOS printable rect + header/footer band, see css/print.css) — then opens the print dialog. The compact
+ *  class is added only here, never at page load, so the preview on screen is always the real layout. */
+function browserPrintFallback() {
+  document.documentElement.classList.toggle("print-compact", printMode() !== "direct");
+  window.print();
 }
 
 export async function renderPrint(container, app, params) {
-  markCompactPrint();
   const asAdmin = params && params.get("as") === "admin";
   const isPreview = asAdmin && params.get("preview") === "1";
   let month, pcu, form, hidden, request;
@@ -134,10 +146,12 @@ export async function renderPrint(container, app, params) {
     );
     const pdfBtn = document.getElementById("btn-do-pdf");
     if (pdfBtn) pdfBtn.style.display = "none"; // no PDF for an unsaved draft form
-    document.getElementById("btn-do-print").addEventListener("click", () => window.print());
+    document.getElementById("btn-do-print").addEventListener("click", browserPrintFallback); // no PDF for an unsaved form
     document.getElementById("btn-print-back").addEventListener("click", () => window.close());
     return;
   }
+
+  const PDF_MODE_NOTE = " · อุปกรณ์นี้พิมพ์ผ่านไฟล์ PDF (ครบทุกหน้า): กดพิมพ์ → เปิดไฟล์ → สั่งพิมพ์จากไฟล์";
 
   function needsSend() {
     return editable && (!(request.status === "submitted" || request.status === "issued") || !!request.edited_after_submit);
@@ -148,6 +162,7 @@ export async function renderPrint(container, app, params) {
     if (asAdmin) el.textContent = request.status === "not_started" ? "ยังไม่มีใบเบิก (ดูในฐานะผู้ดูแล)" : `สถานะ: ${statusText(request)} (ดูในฐานะผู้ดูแล)`;
     else if (request.status === "not_started" || request.status === "draft") el.textContent = editable ? "ยังไม่ได้ส่งใบเบิก — กดปุ่ม พิมพ์ จะส่งใบเบิกแล้วพิมพ์" : "ไม่ได้ส่งใบเบิกในรอบนี้";
     else el.textContent = `สถานะ: ${statusText(request)}${needsSend() ? " — กดปุ่ม พิมพ์ จะส่งใหม่ก่อนพิมพ์" : ""}`;
+    if (printMode() === "pdf") el.textContent += PDF_MODE_NOTE;
   }
 
   function renderPages() {
@@ -172,28 +187,59 @@ export async function renderPrint(container, app, params) {
   );
 
   const printBtn = document.getElementById("btn-do-print");
+  const pdfBtn = document.getElementById("btn-do-pdf");
+  const pdfParams = () => asAdmin ? ["adminRequestPdf", { pcu: pcu.code, month }] : ["requestPdf", { month }];
+  const tokenNow = () => asAdmin ? getAdminToken() : getPcuToken();
+
   printBtn.addEventListener("click", async () => {
     if (!controls.querySelector(".print-step-chk:checked")) {
       await alertDialog("เลือกหน้าที่จะพิมพ์", "<p>เลือกอย่างน้อย 1 หน้า</p>");
       return;
     }
-    if (needsSend()) {
-      printBtn.disabled = true;
-      let ok = false;
-      try {
-        ok = await trySend(app, month);
-      } finally {
-        printBtn.disabled = false;
+    const mode = printMode();
+    printBtn.disabled = true;
+    if (mode === "pdf") pdfBtn.disabled = true;
+    try {
+      if (needsSend()) {
+        if (!(await trySend(app, month))) return;
+        request = requestOf(app, month) || request;
+        renderPages();
       }
-      if (!ok) return;
-      request = requestOf(app, month) || request;
-      renderPages();
+      if (mode === "direct") {
+        // desktop Chromium: Blink prints this page itself at the real 0.78 layout (no compact class)
+        printBtn.disabled = false;
+        window.print();
+        return;
+      }
+      // every other browser: print the server PDF (same Blink engine); the file opens in this tab, then the user prints it
+      const statusEl = document.getElementById("print-status");
+      const token = tokenNow();
+      const [action, params] = pdfParams();
+      let ready;
+      try {
+        statusEl.textContent = "กำลังสร้าง PDF…";
+        ready = await requestPdfReady(action, params, token, { onWait: (n) => { statusEl.textContent = `กำลังสร้าง PDF… (รอ ${n} วิ)`; } });
+      } catch (e) {
+        renderStatus();
+        const msg = (e && e.message) || "สร้าง PDF ไม่สำเร็จ";
+        const useBrowser = await confirmDialog(
+          "สร้าง PDF ไม่สำเร็จ",
+          `<p>${esc(msg)}</p><p class="muted">พิมพ์ผ่าน browser แทนได้ แต่ตัวอักษรบนกระดาษจะเล็กลงกว่าไฟล์ PDF</p>`,
+          "พิมพ์ผ่าน browser แทน",
+          "ยกเลิก"
+        );
+        if (useBrowser) browserPrintFallback();
+        return;
+      }
+      renderStatus();
+      openPdfInline(ready.url, token);
+    } finally {
+      printBtn.disabled = false;
+      pdfBtn.disabled = false;
     }
-    window.print();
   });
 
   // PDF = always all pages, rendered on the server from the same sheet (print.html). Sends the request first when needed.
-  const pdfBtn = document.getElementById("btn-do-pdf");
   pdfBtn.addEventListener("click", async () => {
     const statusEl = document.getElementById("print-status");
     pdfBtn.disabled = true;
@@ -204,8 +250,8 @@ export async function renderPrint(container, app, params) {
         request = requestOf(app, month) || request;
         renderPages();
       }
-      const token = asAdmin ? getAdminToken() : getPcuToken();
-      const [action, params] = asAdmin ? ["adminRequestPdf", { pcu: pcu.code, month }] : ["requestPdf", { month }];
+      const token = tokenNow();
+      const [action, params] = pdfParams();
       statusEl.textContent = "กำลังสร้าง PDF…";
       const r = await requestPdfReady(action, params, token, { onWait: (n) => { statusEl.textContent = `กำลังสร้าง PDF… (รอ ${n} วิ)`; } });
       startPdfDownload(r.url, token);
