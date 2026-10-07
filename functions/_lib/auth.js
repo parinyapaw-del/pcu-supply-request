@@ -85,7 +85,7 @@ export async function requirePcu(env, DB, token) {
   if (!token) throw err("AUTH_REQUIRED", "กรุณาเข้าสู่ระบบ");
   const payload = await verifyToken(env, token);
   if (payload.t !== "pcu") throw err("FORBIDDEN", "ไม่มีสิทธิ์เข้าถึง");
-  const row = await DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_version FROM pcus WHERE code = ?`).bind(payload.pcu).first();
+  const row = await DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_version, pin_custom FROM pcus WHERE code = ?`).bind(payload.pcu).first();
   if (!row) throw err("AUTH_EXPIRED", "ไม่พบ รพ.สต. นี้ กรุณาเข้าสู่ระบบใหม่");
   if (Number(payload.v) !== Number(row.pin_version || 1)) throw err("AUTH_EXPIRED", "PIN ถูกเปลี่ยน กรุณาเข้าสู่ระบบใหม่");
   return row;

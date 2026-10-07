@@ -20,6 +20,7 @@ const PUBLIC = {
 };
 const PCU = {
   pcuBootstrap: pcu.pcuBootstrap,
+  pcuChangePin: pcu.pcuChangePin,
   pcuGetMonth: pcu.pcuGetMonth,
   saveLines: pcu.saveLines,
   setHidden: pcu.setHidden,

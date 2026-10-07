@@ -26,6 +26,14 @@ export async function login(pcu, pin) {
   return data;
 }
 
+// pcuChangePin returns { token, exp } — a fresh token carrying the new pin_version; replace the stored one so
+// this device stays logged in (other devices' tokens become AUTH_EXPIRED).
+export async function changePin(oldPin, newPin) {
+  const data = await call("pcuChangePin", { old_pin: oldPin, new_pin: newPin }, { token: getPcuToken() });
+  setPcuToken(data.token, data.exp);
+  return data;
+}
+
 export function logout() {
   clearPcuToken();
 }

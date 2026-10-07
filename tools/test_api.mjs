@@ -283,6 +283,39 @@ async function main() {
   ok((await api("pcuLogin", { pcu: "PCU07", pin: "54321" })).ok, "new PIN accepted");
   eq((await mustOk("adminBootstrap", {}, ADM)).pcus.find((p) => p.code === "PCU07").pin_custom, true, "adminBootstrap: pin_custom true after adminSetPin");
 
+  // 2k — pcuChangePin (PCU07's PIN is 54321 here and must be 54321 again at the end; other PCUs keep 12345)
+  eq(l1.data.bootstrap.pcu.pin_custom, false, "pcuLogin bootstrap: pcu.pin_custom false on default PIN");
+  const l7c = await mustOk("pcuLogin", { pcu: "PCU07", pin: "54321" });
+  eq(l7c.bootstrap.pcu.pin_custom, true, "pcuLogin bootstrap: pcu.pin_custom true after adminSetPin");
+  const T7 = l7c.token;
+  expectErr(await api("pcuChangePin", { old_pin: "54321", new_pin: "67890" }), "AUTH_REQUIRED", "pcuChangePin without token");
+  expectErr(await api("pcuChangePin", { old_pin: "54321", new_pin: "67890" }, ADM), "FORBIDDEN", "pcuChangePin with admin token");
+  expectErr(await api("pcuChangePin", { old_pin: "54321", new_pin: "123" }, T7), "BAD_REQUEST", "pcuChangePin rejects 3-digit new PIN");
+  const same = await api("pcuChangePin", { old_pin: "54321", new_pin: "54321" }, T7);
+  expectErr(same, "BAD_REQUEST", "pcuChangePin rejects new = old");
+  ok(!same.ok && /ต่างจาก/.test(same.error.message), "pcuChangePin new = old message says ต่างจาก");
+  expectErr(await api("pcuChangePin", { old_pin: "54321", new_pin: 12345 }, T7), "BAD_REQUEST", "pcuChangePin rejects numeric new_pin");
+  const wc = await api("pcuChangePin", { old_pin: "00000", new_pin: "67890" }, T7);
+  expectErr(wc, "BAD_PIN", "pcuChangePin wrong old PIN"); eq(wc.error && wc.error.remaining, 4, "pcuChangePin BAD_PIN remaining = 4");
+  const ch = await mustOk("pcuChangePin", { old_pin: "54321", new_pin: "67890" }, T7);
+  ok(ch.token && ch.exp && ch.token !== T7, "pcuChangePin ok → new token + exp");
+  expectErr(await api("pcuBootstrap", {}, T7), "AUTH_EXPIRED", "old PCU07 token invalid after pcuChangePin");
+  const chb = await api("pcuBootstrap", {}, ch.token);
+  ok(chb.ok && chb.data.pcu.code === "PCU07", "token returned by pcuChangePin works on pcuBootstrap");
+  eq(chb.data && chb.data.pcu.pin_custom, true, "pcuBootstrap: pcu.pin_custom true");
+  expectErr(await api("pcuLogin", { pcu: "PCU07", pin: "54321" }), "BAD_PIN", "old PIN rejected after pcuChangePin");
+  ok((await api("pcuLogin", { pcu: "PCU07", pin: "67890" })).ok, "new PIN accepted after pcuChangePin");
+  const back = await api("pcuChangePin", { old_pin: "67890", new_pin: "54321" }, ch.token);
+  ok(back.ok && back.data.token, "pcuChangePin back to 54321 with the new token");
+  const T7b = back.data && back.data.token;
+  let lc;
+  for (let i = 0; i < 5; i++) lc = await api("pcuChangePin", { old_pin: "11111", new_pin: "22222" }, T7b);
+  ok(!lc.ok && lc.error.code === "PIN_LOCKED" && lc.error.until, "5th wrong old PIN on pcuChangePin → PIN_LOCKED with until");
+  expectErr(await api("pcuLogin", { pcu: "PCU07", pin: "54321" }), "PIN_LOCKED", "pcuLogin locked by pcuChangePin failures (shared counter)");
+  ok((await api("adminUnlockPin", { pcu: "PCU07" }, ADM)).ok, "adminUnlockPin PCU07");
+  ok((await api("pcuLogin", { pcu: "PCU07", pin: "54321" })).ok, "pcuLogin PCU07 54321 after unlock");
+  eq((await mustOk("adminBootstrap", {}, ADM)).pcus.find((p) => p.code === "PCU07").pin_custom, true, "adminBootstrap: pin_custom true after pcuChangePin");
+
   // ------------------------------------------------------------------------------------------------------------------------
   section("token scoping");
   expectErr(await api("saveLines", { month: CUR, lines: {} }), "AUTH_REQUIRED", "PCU action without token");
@@ -777,7 +810,9 @@ async function main() {
     ok(a1.entries.length > 20, "audit log has entries");
     ok(a1.entries[0].id > a1.entries[a1.entries.length - 1].id, "newest first");
     const acts = new Set(a1.entries.map((e) => e.action));
-    for (const a of ["submit", "adminSetPin", "adminLockRound", "adminNote", "adminSetConfig", "import_seed", "adminUsersAdd", "adminLimitsUpload", "adminSetLimit"]) ok(acts.has(a), `audit has "${a}"`);
+    for (const a of ["submit", "adminSetPin", "pcuChangePin", "adminLockRound", "adminNote", "adminSetConfig", "import_seed", "adminUsersAdd", "adminLimitsUpload", "adminSetLimit"]) ok(acts.has(a), `audit has "${a}"`);
+    const cpa = a1.entries.find((e) => e.action === "pcuChangePin" && e.detail === "ok");
+    ok(cpa && cpa.actor === "PCU07" && cpa.role === "pcu", "audit pcuChangePin: actor PCU07, role pcu");
     ok(a1.entries.every((e) => e.ts && "actor" in e && "role" in e), "entries carry ts/actor/role");
     const page = await mustOk("adminAuditLog", { limit: 5 }, ADM2);
     eq(page.entries.length, 5, "limit respected");

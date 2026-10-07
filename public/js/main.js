@@ -6,6 +6,7 @@ import * as store from "./store.js";
 import { renderLogin } from "./pages/login.js";
 import { renderHome } from "./pages/home.js";
 import { renderHidden } from "./pages/hidden.js";
+import { renderChangePin } from "./pages/pin.js";
 import { renderFill } from "./pages/fill.js";
 import { renderPrint } from "./pages/print.js";
 import { renderIssue } from "./pages/issue.js";
@@ -153,6 +154,8 @@ async function route() {
       await renderHome(container, app);
     } else if (path === "hidden") {
       await renderHidden(container, app);
+    } else if (path === "pin") {
+      await renderChangePin(container, app);
     } else if (path === "fill") {
       const stepCode = segments[1] || "";
       app.monthKey = params.get("month") || app.boot.rounds[0].month;

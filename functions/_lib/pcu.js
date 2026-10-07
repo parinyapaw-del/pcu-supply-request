@@ -4,7 +4,7 @@ import {
   auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, loadForm, publicConfig,
 } from "./db.js";
 import {
-  PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, pcuPublic,
+  PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
 } from "./auth.js";
 import { currentMonth, currentRound, isMonth, monthFy, nextMonth, nowIso } from "./time.js";
 import {
@@ -12,6 +12,7 @@ import {
 } from "./views.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
+const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
 
 // ---- public ------------------------------------------------------------------------------------------------------
 export async function pcuList(ctx) {
@@ -23,30 +24,73 @@ export async function pcuLogin(ctx, p) {
   const { DB, env } = ctx;
   const code = String(p.pcu || "");
   const pin = String(p.pin || "");
-  if (!code || !new RegExp(`^[0-9]{${PIN_LENGTH}}$`).test(pin)) throw err("BAD_REQUEST", "กรอก รพ.สต. และ PIN 5 หลัก");
+  if (!code || !PIN_RE.test(pin)) throw err("BAD_REQUEST", "กรอก รพ.สต. และ PIN 5 หลัก");
   const row = await DB.prepare(
-    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until FROM pcus WHERE code = ?`
+    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom FROM pcus WHERE code = ?`
   ).bind(code).first();
   if (!row) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้");
 
   const now = Date.now();
-  let fail = Number(row.pin_fail) || 0;
-  if (row.pin_locked_until) {
-    const until = Date.parse(row.pin_locked_until);
-    if (!Number.isNaN(until) && until > now) throw err("PIN_LOCKED", "รพ.สต. นี้ถูกล็อกชั่วคราว", { until: row.pin_locked_until });
-    fail = 0; // lock expired → fresh attempt window
-    await DB.prepare(`UPDATE pcus SET pin_fail = 0, pin_locked_until = NULL WHERE code = ?`).bind(code).run();
-  }
+  const fail = await checkPinLock(DB, row, now);
 
-  const hash = await hashSecret(pin, row.pin_salt || "");
-  if (constantTimeEq(hash, row.pin_hash || "")) {
+  if (await pinMatches(pin, row)) {
     if (fail) await DB.prepare(`UPDATE pcus SET pin_fail = 0, pin_locked_until = NULL WHERE code = ?`).bind(code).run();
     const tok = await makePcuToken(env, row.code, Number(row.pin_version) || 1);
     await DB.batch([auditStmt(DB, row.code, "pcu", "pcuLogin", row.code, "", "ok")]);
     const bootstrap = await buildPcuBootstrap(ctx, row);
     return { token: tok.token, exp: tok.exp, pcu: pcuPublic(row), bootstrap };
   }
+  await recordPinFailure(DB, code, "pcuLogin", fail, now, "PIN ไม่ถูกต้อง");
+}
 
+// 2k: a logged-in PCU changes its own PIN. Wrong old PIN shares pcuLogin's fail counter / lock; on success this device gets a
+// fresh token carrying the new pin_version, every other token of this PCU becomes AUTH_EXPIRED (same as adminSetPin).
+export async function pcuChangePin(ctx, p) {
+  const { DB, env } = ctx;
+  const code = ctx.pcu.code;
+  const oldPin = p.old_pin, newPin = p.new_pin;
+  if (!isStr(oldPin) || !isStr(newPin) || !PIN_RE.test(oldPin) || !PIN_RE.test(newPin)) {
+    throw err("BAD_REQUEST", "กรอก PIN เดิมและ PIN ใหม่ให้ครบ 5 หลัก");
+  }
+  if (newPin === oldPin) throw err("BAD_REQUEST", "PIN ใหม่ต้องต่างจาก PIN เดิม");
+  const row = await DB.prepare(`SELECT code, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until FROM pcus WHERE code = ?`)
+    .bind(code).first();
+  if (!row) throw err("AUTH_EXPIRED", "ไม่พบ รพ.สต. นี้ กรุณาเข้าสู่ระบบใหม่");
+
+  const now = Date.now();
+  const fail = await checkPinLock(DB, row, now);
+  if (!(await pinMatches(oldPin, row))) await recordPinFailure(DB, code, "pcuChangePin", fail, now, "PIN เดิมไม่ถูกต้อง");
+
+  const salt = newSalt();
+  const res = await DB.batch([
+    DB.prepare(
+      `UPDATE pcus SET pin_hash = ?, pin_salt = ?, pin_version = COALESCE(pin_version,1) + 1, pin_fail = 0, pin_locked_until = NULL, pin_custom = 1 WHERE code = ? RETURNING pin_version`
+    ).bind(await hashSecret(newPin, salt), salt, code),
+    auditStmt(DB, code, "pcu", "pcuChangePin", code, "", "ok"),
+  ]);
+  const ret = res[0] && res[0].results && res[0].results[0];
+  const version = Number(ret && ret.pin_version) || (Number(row.pin_version) || 1) + 1;
+  const tok = await makePcuToken(env, code, version);
+  return { token: tok.token, exp: tok.exp };
+}
+
+// ---- PIN helpers (shared by pcuLogin / pcuChangePin) ----------------------------------------------------------------
+const pinMatches = async (pin, row) => constantTimeEq(await hashSecret(pin, row.pin_salt || ""), row.pin_hash || "");
+
+// Throws PIN_LOCKED while a lock is active; clears an expired lock. Returns the failure count to continue from.
+async function checkPinLock(DB, row, now) {
+  let fail = Number(row.pin_fail) || 0;
+  if (row.pin_locked_until) {
+    const until = Date.parse(row.pin_locked_until);
+    if (!Number.isNaN(until) && until > now) throw err("PIN_LOCKED", "รพ.สต. นี้ถูกล็อกชั่วคราว", { until: row.pin_locked_until });
+    fail = 0; // lock expired → fresh attempt window
+    await DB.prepare(`UPDATE pcus SET pin_fail = 0, pin_locked_until = NULL WHERE code = ?`).bind(row.code).run();
+  }
+  return fail;
+}
+
+// Counts one wrong PIN for `code` (audited under `action`) and always throws: BAD_PIN{remaining}, or PIN_LOCKED{until} on the 5th.
+async function recordPinFailure(DB, code, action, fail, now, badMsg) {
   // atomic increment so concurrent wrong attempts cannot dodge the lock
   const upd = await DB.prepare(`UPDATE pcus SET pin_fail = COALESCE(pin_fail,0) + 1 WHERE code = ? RETURNING pin_fail`).bind(code).first();
   const nf = Number(upd && upd.pin_fail) || fail + 1;
@@ -54,12 +98,12 @@ export async function pcuLogin(ctx, p) {
     const until = new Date(now + PIN_LOCK_MIN * 60000).toISOString();
     await DB.batch([
       DB.prepare(`UPDATE pcus SET pin_locked_until = ? WHERE code = ?`).bind(until, code),
-      auditStmt(DB, code, "pcu", "pcuLogin", code, "", "locked"),
+      auditStmt(DB, code, "pcu", action, code, "", "locked"),
     ]);
     throw err("PIN_LOCKED", "ใส่ PIN ผิดครบ 5 ครั้ง ถูกล็อกชั่วคราว 5 นาที", { until });
   }
-  await DB.batch([auditStmt(DB, code, "pcu", "pcuLogin", code, "", `bad_pin fail=${nf}`)]);
-  throw err("BAD_PIN", "PIN ไม่ถูกต้อง", { remaining: PIN_MAX_FAIL - nf });
+  await DB.batch([auditStmt(DB, code, "pcu", action, code, "", `bad_pin fail=${nf}`)]);
+  throw err("BAD_PIN", badMsg, { remaining: PIN_MAX_FAIL - nf });
 }
 
 // ---- bootstrap -----------------------------------------------------------------------------------------------------
@@ -124,7 +168,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
 
   return {
     server_time: nowIso(), current_month: cal, current_round: cur,
-    pcu: pcuPublic(pcuRow),
+    pcu: { ...pcuPublic(pcuRow), pin_custom: !!pcuRow.pin_custom },
     config: cfg,
     form_version_id: form ? form.id : null,
     form: formPublic(form, PCU_FORM),

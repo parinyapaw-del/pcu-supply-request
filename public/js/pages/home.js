@@ -103,7 +103,12 @@ export async function renderHome(container, app) {
     .join("");
   const older = app.boot.older_months || [];
 
+  const pinWarnHtml = app.boot.pcu.pin_custom === false
+    ? `<div class="notice-bar notice-bar-warn" role="status"><span>ยังใช้ PIN ตั้งต้น — แนะนำให้เปลี่ยน PIN ของ รพ.สต. เพื่อความปลอดภัย</span><a href="#/pin" class="btn btn-sm btn-secondary">เปลี่ยน PIN</a></div>`
+    : "";
+
   box.innerHTML = `
+    ${pinWarnHtml}
     ${noticesHtml(app)}
     <h2>สวัสดี ${esc(app.boot.pcu.name)}</h2>
     <p class="muted">เลือกรอบที่จะกรอกหรือพิมพ์ · ปีงบประมาณ ${esc(app.boot.config.fy_current)}</p>
@@ -117,7 +122,7 @@ export async function renderHome(container, app) {
           <button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="print">ดู/พิมพ์</button></span></div>`).join("")}
       </div>
     </details>` : ""}
-    <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a></p>
+    <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a> · <a href="#/pin">เปลี่ยน PIN</a></p>
   `;
 
   container.innerHTML = "";

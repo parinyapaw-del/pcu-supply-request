@@ -30,7 +30,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 
 ## 2. Tokens
 `base64url(JSON payload) + "." + base64url(HMAC-SHA256(payload, env.TOKEN_SECRET))` (same format as 1.5; `exp` is epoch **ms**).
-- PCU: `{t:"pcu", pcu, v:<pcus.pin_version>, exp}` — 7 days. Valid only while `v == pcus.pin_version` (admin PIN change invalidates).
+- PCU: `{t:"pcu", pcu, v:<pcus.pin_version>, exp}` — 7 days. Valid only while `v == pcus.pin_version` (a PIN change invalidates — `adminSetPin`, or the PCU's own `pcuChangePin` (2k), which bumps `pin_version` the same way so every other token of that PCU → `AUTH_EXPIRED` "PIN ถูกเปลี่ยน กรุณาเข้าสู่ระบบใหม่"; only the token returned by `pcuChangePin` carries the new `v`).
   A PCU action always operates on `token.pcu` (never a request param).
 - Staff: `{t:"admin"|"dispenser", sub:<email>|"backup", v:<backup_version if backup else 0>, exp}` — 12 hours.
   The role is **re-read from the `users` table on every call** (token `t` is only informative); removed user → `FORBIDDEN`.
@@ -59,6 +59,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 |---|---|---|
 | `pcuList` (public) | – | `{pcus:[{code,name,print_name,group}]}` |
 | `pcuLogin` (public) | `pcu, pin` | `{token, exp, pcu:{code,name,print_name,group}, bootstrap:<pcuBootstrap>}` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` · `NOT_FOUND` |
+| `pcuChangePin` (2k) | `old_pin, new_pin` (strings, 5 digits each) | `{token, exp}` — new PCU token (new `pin_version`) for this device; the client must replace its stored token. Success = new salt, `pin_version++`, clears fail/lock, `pin_custom=1`, audit `pcuChangePin` "ok" (actor = PCU code, role `pcu`) · `BAD_REQUEST` "กรอก PIN เดิมและ PIN ใหม่ให้ครบ 5 หลัก" (either not `^[0-9]{5}$` / not a string) · `BAD_REQUEST` "PIN ใหม่ต้องต่างจาก PIN เดิม" (`new_pin === old_pin`, before any DB access) · `BAD_PIN{remaining}` "PIN เดิมไม่ถูกต้อง" · `PIN_LOCKED{until}` — wrong old PIN shares `pcuLogin`'s counter/lock (`pin_fail`, `pin_locked_until`; 5 failures → 5-min lock; audit `bad_pin fail=<n>` / `locked`) |
 | `pcuBootstrap` | – | see §4.1 |
 | `pcuGetMonth` | `month` (`> currentRound` → `BAD_REQUEST` "เดือนนี้ยังไม่ถึง") | one `byMonth` entry (§4.1) + `round` + `unlocks` — for "older months" · + `form` (the request's bound version, PCU-stripped) **only when** it differs from the latest of `fy_current` (2d) |
 | `saveLines` | `month, lines:{code:{stock,op,pp,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...] }` |
@@ -89,7 +90,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 {
   server_time, current_month,                // current_month = calMonth (kept for compatibility)
   current_round,                             // 2j: nextMonth(calMonth) — the round open for keying (= rounds[0].month)
-  pcu: {code,name,print_name,group},
+  pcu: {code,name,print_name,group,pin_custom},  // 2k: pin_custom bool — false while the PCU still uses the default PIN
   config: { limit_mode:"off"|"warn"|"enforce", stock_required:0|1, deadline_day:int|null, fy_current:2570, trial_month:"YYYY-MM"|null },
   form_version_id: 12,
   form: { id, fy, created_at, note, steps:[ {code,order,sheet,page_no,title,subject,to,dispense_unit,active?,rows:[
