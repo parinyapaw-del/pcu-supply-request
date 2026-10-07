@@ -52,6 +52,8 @@ const ADMIN = {
   adminLimitsUpload: admin.adminLimitsUpload,
   adminUnlockLimit: admin.adminUnlockLimit,
   adminRemoveUnlock: admin.adminRemoveUnlock,
+  adminPcuAdd: admin.adminPcuAdd,
+  adminPcuEdit: admin.adminPcuEdit,
   adminSetPin: admin.adminSetPin,
   adminUnlockPin: admin.adminUnlockPin,
   adminSetHidden: admin.adminSetHidden,

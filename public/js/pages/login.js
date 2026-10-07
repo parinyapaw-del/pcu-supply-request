@@ -3,6 +3,7 @@ import { ApiError } from "../api.js";
 import * as auth from "../auth.js";
 import * as store from "../store.js";
 import { formatBangkokHHMM } from "../format.js";
+import { isTrialPcu } from "../admin/util.js";
 
 function esc(str) {
   return String(str == null ? "" : str)
@@ -48,6 +49,9 @@ export async function renderLogin(container, app, onLoggedIn) {
     box.querySelector("#btn-retry-pcus").addEventListener("click", () => renderLogin(container, app, onLoggedIn));
     return;
   }
+
+  // 2n: trial-group PCUs go last (stable sort on a copy) so pcuList[0] stays a real PCU
+  pcuList = [...pcuList].sort((a, b) => (isTrialPcu(a) ? 1 : 0) - (isTrialPcu(b) ? 1 : 0));
 
   const selected = pcuList.some((p) => p.code === savedPcu) ? savedPcu : pcuList[0].code;
 

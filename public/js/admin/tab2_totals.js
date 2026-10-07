@@ -2,7 +2,7 @@
 // Lines come from adminGetRequest per request (cached in requests.js, ≤ 15 calls per month).
 // A dispenser only receives lines of its own units from the API, so the same code shows their slice.
 import { formatInt, formatMoney } from "../format.js";
-import { el, escapeHtml, tableScroll, monthLong, formatBangkokTimeSec, errMessage, toast } from "./util.js";
+import { el, escapeHtml, tableScroll, monthLong, formatBangkokTimeSec, errMessage, toast, isTrialPcu, realPcus } from "./util.js";
 import { buildCatalog, addForm, aggregateRequests, itemOrPlaceholder } from "./compute.js";
 import { loadMonth } from "./requests.js";
 
@@ -70,8 +70,12 @@ export function renderTab2(container, ctx) {
       });
       if (my !== ts.seq) return;
       const cat = buildCatalog(state.bootstrap.form);
-      data.entries.forEach((e) => { if (e.form) addForm(cat, e.form); });
-      ts.data = { ...data, cat, agg: aggregateRequests(cat, data.entries) };
+      // 2n: trial-group PCUs are not counted (entries / requests / per-PCU breakdown)
+      const trial = new Set(state.bootstrap.pcus.filter(isTrialPcu).map((p) => p.code));
+      const entries = data.entries.filter((e) => !trial.has(e.pcu));
+      const requests = data.requests.filter((r) => !trial.has(r.pcu));
+      entries.forEach((e) => { if (e.form) addForm(cat, e.form); });
+      ts.data = { ...data, entries, requests, cat, agg: aggregateRequests(cat, entries) };
       draw();
     } catch (err) {
       if (my !== ts.seq) return;
@@ -107,7 +111,7 @@ export function renderTab2(container, ctx) {
   function draw() {
     if (!ts.data) return;
     const { cat, agg, entries, requests } = ts.data;
-    const pcus = state.bootstrap.pcus;
+    const pcus = realPcus(state.bootstrap.pcus);
     const nUsable = entries.length;
     info.textContent = `ขอเบิก ${monthLong(ts.month)} — ใบที่ส่งแล้ว/จ่ายแล้ว ${nUsable}/${pcus.length} แห่ง · ยอดขอรวม ${formatMoney(agg.baht)} บาท (OP ${formatMoney(agg.bahtOp)} · PP ${formatMoney(agg.bahtPp)}) · โหลดเมื่อ ${formatBangkokTimeSec()}`
       + (state.isAdmin ? "" : " · แสดงเฉพาะรายการของหน่วยที่ท่านรับผิดชอบ");

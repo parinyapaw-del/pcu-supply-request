@@ -2066,6 +2066,96 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  // Runs LAST: it adds a 16th PCU, and many earlier cases count 15.
+  section("PCU manage (2n): adminPcuAdd / adminPcuEdit + group ทดลอง");
+  {
+    const DSPN = "pcu.manage.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSPN, role: "dispenser", units: ["LAB"] }, ADM2);
+    const DN = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSPN })).token;
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "x" }, DN), "FORBIDDEN", "dispenser adminPcuAdd");
+    expectErr(await api("adminPcuEdit", { code: "PCU01", name: "x" }, DN), "FORBIDDEN", "dispenser adminPcuEdit");
+    ok((await api("adminUsersRemove", { email: DSPN }, ADM2)).ok, "temporary dispenser removed again");
+    const T1x = (await mustOk("pcuLogin", { pcu: "PCU01", pin: "12345" })).token;
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "x" }, T1x), "FORBIDDEN", "PCU token adminPcuAdd");
+
+    // validation
+    expectErr(await api("adminPcuAdd", { code: "P", name: "x" }, ADM2), "BAD_REQUEST", "add: code too short (P)");
+    expectErr(await api("adminPcuAdd", { code: "ab c", name: "x" }, ADM2), "BAD_REQUEST", "add: code with a space (ab c)");
+    expectErr(await api("adminPcuAdd", { code: "PCU0000000000", name: "x" }, ADM2), "BAD_REQUEST", "add: code longer than 12");
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "x", group: "xx" }, ADM2), "BAD_REQUEST", "add: unknown group");
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "   " }, ADM2), "BAD_REQUEST", "add: blank name");
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "ก".repeat(61) }, ADM2), "BAD_REQUEST", "add: name > 60 chars");
+    expectErr(await api("adminPcuAdd", { code: "PCU00", name: "x", print_name: "ก".repeat(81) }, ADM2), "BAD_REQUEST", "add: print_name > 80 chars");
+    expectErr(await api("adminPcuAdd", { code: "PCU01", name: "ซ้ำ" }, ADM2), "CONFLICT", "add: duplicate PCU01");
+    expectErr(await api("adminPcuAdd", { code: "pcu01", name: "ซ้ำ" }, ADM2), "CONFLICT", "add: duplicate after uppercasing (pcu01)");
+    eq((await mustOk("pcuList")).pcus.length, 15, "rejected adds changed nothing (15 PCUs)");
+
+    // add PCU00 (lower-case code → stored upper-case, print_name blank → = name)
+    const ad = await mustOk("adminPcuAdd", { code: " pcu00 ", name: " ทดลอง ", print_name: "", group: "ทดลอง" }, ADM2);
+    eq(ad.pcu, { code: "PCU00", name: "ทดลอง", print_name: "ทดลอง", group: "ทดลอง" }, "adminPcuAdd → {pcu} (code upper-cased, trimmed, print_name = name)");
+    const pl = (await mustOk("pcuList")).pcus;
+    const p00 = pl.find((x) => x.code === "PCU00");
+    eq(pl.length, 16, "pcuList has 16 PCUs");
+    eq(p00, { code: "PCU00", name: "ทดลอง", print_name: "ทดลอง", group: "ทดลอง" }, "pcuList: PCU00 group ทดลอง, print_name = name");
+    const l00 = await mustOk("pcuLogin", { pcu: "PCU00", pin: "12345" });
+    ok(l00.token && l00.pcu.code === "PCU00" && l00.bootstrap.pcu.pin_custom === false, "pcuLogin PCU00 with the default PIN 12345 (pin_custom false)");
+    const b00 = (await mustOk("adminBootstrap", {}, ADM2)).pcus.find((x) => x.code === "PCU00");
+    eq([b00.pin_custom, b00.login_count, b00.pin_fail, b00.pin_locked_until], [false, 1, 0, null], "adminBootstrap PCU00: pin_custom false, login_count 1");
+
+    // edit
+    const e1 = await mustOk("adminPcuEdit", { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง" }, ADM2);
+    eq(e1.pcu, { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง", group: "ทดลอง" }, "adminPcuEdit name + print_name → {pcu}");
+    eq((await mustOk("pcuList")).pcus.find((x) => x.code === "PCU00"), e1.pcu, "pcuList reflects the edit");
+    expectErr(await api("adminPcuEdit", { code: "PCU99", name: "x" }, ADM2), "NOT_FOUND", "edit unknown PCU99");
+    expectErr(await api("adminPcuEdit", { code: "PCU00" }, ADM2), "BAD_REQUEST", "edit without any field");
+    expectErr(await api("adminPcuEdit", { code: "PCU00", name: "ทดลองระบบ" }, ADM2), "BAD_REQUEST", "edit with no actual change");
+    expectErr(await api("adminPcuEdit", { code: "PCU00", group: "xx" }, ADM2), "BAD_REQUEST", "edit: unknown group");
+    expectErr(await api("adminPcuEdit", { code: "PCU00", name: "" }, ADM2), "BAD_REQUEST", "edit: blank name");
+    eq((await mustOk("adminPcuEdit", { code: "PCU00", group: "พิเศษ" }, ADM2)).pcu.group, "พิเศษ", "edit group → พิเศษ");
+    eq((await mustOk("adminPcuEdit", { code: "pcu00", group: "ทดลอง" }, ADM2)).pcu, e1.pcu, "edit group back → ทดลอง (lower-case code accepted)");
+    const b00b = (await mustOk("adminBootstrap", {}, ADM2)).pcus.find((x) => x.code === "PCU00");
+    eq([b00b.pin_custom, b00b.login_count], [false, 1], "edit never touches pin_* / login_*");
+    ok((await mustOk("pcuLogin", { pcu: "PCU00", pin: "12345" })).token, "PCU00 still logs in with 12345 after edits");
+
+    // export: a sent PCU00 request in CUR is excluded from all 3 sheets
+    const T00 = (await mustOk("pcuLogin", { pcu: "PCU00", pin: "12345" })).token;
+    const s00 = await api("saveLines", { month: CUR, lines: { [A.code]: { op: 3, pp: 1 } }, send: true }, T00);
+    ok(s00.ok && ["submitted", "issued"].includes(s00.data.request.status), "PCU00 sends a request in CUR" + (s00.ok ? "" : ` (${s00.error && s00.error.code}: ${s00.error && s00.error.message})`));
+    const x00 = await get(`/api/export.xlsx?month=${CUR}`, { authorization: "Bearer " + ADM2 });
+    eq(x00.status, 200, "export with PCU00 present → 200");
+    const wb00 = XLSX.read(Buffer.from(await x00.arrayBuffer()), { type: "buffer" });
+    const e1s = XLSX.utils.sheet_to_json(wb00.Sheets["รายบรรทัด"], { header: 1 });
+    ok(e1s.length > 1 && !e1s.slice(1).some((r) => r[1] === "PCU00"), "export sheet 1: no PCU00 rows (other rows still there)");
+    const e2s = XLSX.utils.sheet_to_json(wb00.Sheets["รพ.สต. × รายการ"], { header: 1 });
+    ok(!e2s[1].includes("ทดลองระบบ"), "export sheet 2: header has no ทดลองระบบ column");
+    eq(e2s[1].length, 3 + 15 + 1, "export sheet 2: still 15 PCU columns + total (trial excluded)");
+    const e3s = XLSX.utils.sheet_to_json(wb00.Sheets["สรุปเงินต่อ รพ.สต."], { header: 1 });
+    const data3 = e3s.slice(2, -1);
+    ok(!data3.some((r) => r[0] === "PCU00"), "export sheet 3: no PCU00 row");
+    eq(data3.length, 15, "export sheet 3: still 15 PCU rows (trial excluded)");
+    const reqs00 = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests;
+    const realBaht = reqs00.filter((x) => x.pcu !== "PCU00" && (x.status === "submitted" || x.status === "issued")).reduce((a, x) => a + x.progress.baht, 0);
+    ok(near(e3s[e3s.length - 1][7], realBaht, 0.05), `export sheet 3 requested total = Σ real PCUs only (${realBaht})`);
+    ok(reqs00.some((x) => x.pcu === "PCU00" && x.status === "submitted"), "adminRequests still lists the PCU00 request (frontend tags it)");
+
+    // audit + seed export
+    const aud = (await mustOk("adminAuditLog", { limit: 100 }, ADM2)).entries;
+    const aAdd = aud.find((x) => x.action === "adminPcuAdd" && x.pcu === "PCU00");
+    ok(aAdd && aAdd.detail === "ทดลอง" && aAdd.actor === ADMIN_EMAIL, "audit adminPcuAdd (pcu PCU00, detail = name)");
+    const aEd = aud.find((x) => x.action === "adminPcuEdit" && x.pcu === "PCU00" && /name/.test(x.detail));
+    eq(aEd && JSON.parse(aEd.detail), { name: ["ทดลอง", "ทดลองระบบ"], print_name: ["ทดลอง", "รพ.สต.ทดลอง"] }, "audit adminPcuEdit detail = JSON {field:[old,new]} (changed keys only)");
+    const exs = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq([exs.pcus.length, exs.pcus.find((x) => x.code === "PCU00")], [16, { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง", group: "ทดลอง" }],
+      "adminExportSeed: pcus has PCU00 group ทดลอง (16)");
+
+    // defaults on a second PCU (added after the count checks above)
+    const gd = await mustOk("adminPcuAdd", { code: "PCU98", name: "ปกติ" }, ADM2);
+    eq(gd.pcu, { code: "PCU98", name: "ปกติ", print_name: "ปกติ", group: "ทั่วไป" }, "add without group / print_name → ทั่วไป, print_name = name");
+    eq((await mustOk("adminPcuEdit", { code: "PCU98", name: "ปกติ2", print_name: "" }, ADM2)).pcu.print_name, "ปกติ2", "edit print_name \"\" → = (new) name");
+    eq((await mustOk("adminPcuEdit", { code: "PCU98", name: "ปกติ3" }, ADM2)).pcu.print_name, "ปกติ2", "edit name only leaves print_name untouched");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }
 

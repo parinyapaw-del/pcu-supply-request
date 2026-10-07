@@ -10,6 +10,9 @@ export const BACKUP_MAX_FAIL = 5;
 export const BACKUP_LOCK_MIN = 15;
 export const UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
 export const DEFAULT_PIN = "12345";
+// pcus."group" values (2n). TRIAL_GROUP = sandbox PCUs (e.g. PCU00) — excluded from totals / budget / Excel export.
+export const PCU_GROUPS = ["ทั่วไป", "พิเศษ", "ทดลอง"];
+export const TRIAL_GROUP = "ทดลอง";
 
 // ---- encoding ----------------------------------------------------------------------------------------
 const enc = new TextEncoder();

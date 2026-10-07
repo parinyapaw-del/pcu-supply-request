@@ -1,7 +1,7 @@
 // Tab 4 — ปีก่อน (phase 2.md §5.6, read-only; merges the 1.5 heatmap + plan-vs-actual tabs).
 // Data: adminBootstrap.prev[fy] = {months, actual, plans, prices}. Money = qty x prices_prev (that year's prices).
 import { formatInt, formatMoney } from "../format.js";
-import { el, escapeHtml, tableScroll, monthShort, heatColor, fmtPct } from "./util.js";
+import { el, escapeHtml, tableScroll, monthShort, heatColor, fmtPct, realPcus } from "./util.js";
 import { prevHeatmap, prevPlanVsActual } from "./compute.js";
 
 export function renderTab4(container, ctx) {
@@ -28,7 +28,7 @@ export function renderTab4(container, ctx) {
 
   function drawHeat() {
     const entry = prev[ts.fy];
-    const pcus = state.bootstrap.pcus;
+    const pcus = realPcus(state.bootstrap.pcus);
     const { matrix, max } = prevHeatmap(entry, pcus);
     const months = entry.months;
     const colTotals = months.map((m, i) => pcus.reduce((s, p) => s + matrix[p.code][i], 0));
@@ -54,7 +54,7 @@ export function renderTab4(container, ctx) {
 
   function drawPlan() {
     const entry = prev[ts.fy];
-    const pcus = state.bootstrap.pcus;
+    const pcus = realPcus(state.bootstrap.pcus);
     planHost.innerHTML = "";
     const card = el("div", { class: "admin-card" });
     card.appendChild(el("h2", {}, `แผน ${String(ts.fy).slice(-2)} vs เบิกจริง ${String(ts.fy).slice(-2)} — ต่อรายการ`));

@@ -5,7 +5,7 @@ import { requestPdfReady, startPdfDownload } from "../pdf_client.js";
 import { DISPENSE_UNITS } from "./compute.js";
 import {
   el, escapeHtml, tableScroll, formatBangkokDateTime, formatBangkokTimeSec, formatDateThai, monthLong,
-  confirmDialog, formDialog, toast, errMessage
+  confirmDialog, formDialog, toast, errMessage, isTrialPcu, realPcus, pcuTag
 } from "./util.js";
 
 const AUTO_REFRESH_MS = 30000;
@@ -234,19 +234,23 @@ export function renderTab1(container, ctx) {
         if (req && req.admin_note) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="clear-note" data-pcu="${pcu.code}">ล้างโน้ต</button>`);
       }
       return `<tr data-pcu="${pcu.code}">
-        <td class="left"><strong>${pcu.code}</strong> ${escapeHtml(pcu.name)}${pcu.group === "พิเศษ" ? ' <span class="pcu-group-tag">(พิเศษ)</span>' : ""}</td>
+        <td class="left"><strong>${pcu.code}</strong> ${escapeHtml(pcu.name)}${pcuTag(pcu)}</td>
         <td class="left status-cell">${statusCell(req)}${noteHtml}</td>
         <td class="num">${showBaht ? formatMoney(baht) : "–"}</td>
         <td class="left actions-cell">${actions.join(" ")}</td>
       </tr>`;
     }).join("");
 
-    const submitted = Object.values(reqs).filter((r) => r.status === "submitted" || r.status === "issued");
+    const trialCodes = new Set(state.bootstrap.pcus.filter(isTrialPcu).map((p) => p.code));
+    const submittedAll = Object.values(reqs).filter((r) => r.status === "submitted" || r.status === "issued");
+    const submitted = submittedAll.filter((r) => !trialCodes.has(r.pcu));
+    const trialSubmitted = submittedAll.length - submitted.length;
     const issuedN = submitted.filter((r) => r.status === "issued").length;
     const totalBaht = submitted.reduce((s, r) => s + ((r.progress && r.progress.baht) || 0), 0);
     const curRound = currentRound();
     const trialBadge = curRound && curRound.trial ? ' <span class="badge badge-warn badge-trial" id="t1-summary-trial">ทดลอง</span>' : "";
-    const summary = `${trialBadge}ส่งแล้ว ${submitted.length}/${state.bootstrap.pcus.length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`;
+    const summary = `${trialBadge}ส่งแล้ว ${submitted.length}/${realPcus(state.bootstrap.pcus).length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`
+      + (trialSubmitted ? ` · ทดลอง ${trialSubmitted} แห่ง (ไม่นับ)` : "");
 
     tableHost.innerHTML = `<p class="admin-note" id="t1-summary">${summary}</p>` + tableScroll(`<table class="admin-table" id="t1-tbl">
       <thead><tr><th class="left">รพ.สต.</th><th class="left">สถานะ</th><th class="num">บาท</th><th class="left">การดำเนินการ</th></tr></thead>

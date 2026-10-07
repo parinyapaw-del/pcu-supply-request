@@ -2,7 +2,7 @@
 // the new year (adminBootstrap.plan_totals) beside the budget, and a per-PCU plan vs requested table.
 // 2c: "จ่ายจริง" = Σ issued_op/issued_pp × price (price_snapshot ?? form price) of submitted/issued requests (compute.js aggregateIssued).
 import { formatMoney, fiscalYearOf } from "../format.js";
-import { el, escapeHtml, tableScroll, monthLong, toast, errMessage, fmtPct } from "./util.js";
+import { el, escapeHtml, tableScroll, monthLong, toast, errMessage, fmtPct, isTrialPcu, realPcus } from "./util.js";
 import { buildCatalog, addForm, aggregateRequests, aggregateIssued, planBahtByPcu } from "./compute.js";
 import { loadMonth } from "./requests.js";
 
@@ -49,6 +49,7 @@ export function renderTab3(container, ctx) {
       const cat = buildCatalog(b.form);
       const perMonth = [];
       const perPcu = {};
+      const trial = new Set(b.pcus.filter(isTrialPcu).map((p) => p.code)); // 2n: trial PCUs are not counted
       for (let i = 0; i < months.length; i++) {
         const m = months[i];
         const p = host.querySelector("#t3-prog");
@@ -56,7 +57,8 @@ export function renderTab3(container, ctx) {
         const data = await loadMonth(ctx, m);
         if (my !== seq) return;
         let op = 0, pp = 0, iop = 0, ipp = 0, unrecorded = 0;
-        data.entries.forEach((e) => {
+        const entries = data.entries.filter((e) => !trial.has(e.pcu));
+        entries.forEach((e) => {
           if (e.form) addForm(cat, e.form);
           const a = aggregateRequests(cat, [e]);
           const iss = aggregateIssued(cat, [e]);
@@ -65,7 +67,7 @@ export function renderTab3(container, ctx) {
           const t = perPcu[e.pcu] || (perPcu[e.pcu] = { op: 0, pp: 0, iop: 0, ipp: 0 });
           t.op += a.bahtOp; t.pp += a.bahtPp; t.iop += iss.op; t.ipp += iss.pp;
         });
-        perMonth.push({ month: m, n: data.entries.length, op, pp, total: op + pp, iop, ipp, issued: iop + ipp, unrecorded });
+        perMonth.push({ month: m, n: entries.length, op, pp, total: op + pp, iop, ipp, issued: iop + ipp, unrecorded });
       }
       if (my !== seq) return;
       draw({ fy, months: perMonth, perPcu, cat });
@@ -156,7 +158,7 @@ export function renderTab3(container, ctx) {
     // ---- per PCU -----------------------------------------------------------------------------------
     const planBy = planBahtByPcu(b.plans, cat);
     let tPlan = 0, tOp = 0, tPp = 0, tIss = 0;
-    const pcuRows = b.pcus.map((p) => {
+    const pcuRows = realPcus(b.pcus).map((p) => {
       const pl = planBy[p.code] || { op: 0, pp: 0, total: 0 };
       const rq = perPcu[p.code] || { op: 0, pp: 0, iop: 0, ipp: 0 };
       const rt = rq.op + rq.pp;

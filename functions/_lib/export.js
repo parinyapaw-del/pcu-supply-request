@@ -2,6 +2,7 @@
 import * as XLSX from "xlsx";
 import { err } from "./http.js";
 import { formForFy, loadForm } from "./db.js";
+import { TRIAL_GROUP } from "./auth.js";
 import { bangkokDateTime, fyMonths, monthFy } from "./time.js";
 
 const STATUS_TH = { draft: "กำลังกรอก", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
@@ -19,15 +20,18 @@ export async function buildExport(DB, { month, fy }) {
   const ph = months.map(() => "?").join(",");
 
   const [pcuRes, reqRes, lineRes, planRes, scopeForm] = await Promise.all([
-    DB.prepare(`SELECT code, name FROM pcus ORDER BY code`).all(),
+    DB.prepare(`SELECT code, name, "group" AS grp FROM pcus ORDER BY code`).all(),
     DB.prepare(`SELECT id, pcu, month, status, form_version_id, submitted_at FROM requests WHERE month IN (${ph}) ORDER BY month, pcu`).bind(...months).all(),
     DB.prepare(`SELECT request_id, item_code, op, pp, price_snapshot, issued_total, issued_op, issued_pp, issue_reason, issue_note
                   FROM request_lines WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(scopeFy).all(),
     formForFy(DB, scopeFy),
   ]);
-  const pcus = pcuRes.results;
+  // 2n: group "ทดลอง" PCUs (sandbox, e.g. PCU00) are left out of every sheet — rows, columns and totals
+  const trial = new Set(pcuRes.results.filter((p) => p.grp === TRIAL_GROUP).map((p) => p.code));
+  const pcus = pcuRes.results.filter((p) => !trial.has(p.code));
   const pcuName = new Map(pcus.map((p) => [p.code, p.name]));
+  const requests = reqRes.results.filter((r) => !trial.has(r.pcu));
   const linesBy = new Map();
   for (const l of lineRes.results) { if (!linesBy.has(l.request_id)) linesBy.set(l.request_id, []); linesBy.get(l.request_id).push(l); }
 
@@ -43,7 +47,7 @@ export async function buildExport(DB, { month, fy }) {
     "จ่ายจริง OP", "จ่ายจริง PP", "จ่ายจริงรวม", "เหตุผล", "สถานะ", "เวลาส่ง (เวลาไทย)", "form version"];
   const rows1 = [head1];
   const reqAgg = []; // submitted/issued per request for sheets 2/3
-  for (const r of reqRes.results) {
+  for (const r of requests) {
     const form = await formOf(r);
     const order = new Map(); // code -> sort key
     if (form) { let i = 0; for (const s of form.steps) for (const row of s.rows) if (row.type === "item") order.set(row.code, i++); }

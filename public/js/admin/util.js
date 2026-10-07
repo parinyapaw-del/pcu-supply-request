@@ -29,6 +29,17 @@ export function tableScroll(tableHtml, extraClass = "") {
   return `<div class="table-scroll ${extraClass}">${tableHtml}</div>`;
 }
 
+// ---- PCU group helpers (2n): group "ทดลอง" = trial PCU, excluded from totals/budget/exports/warnings ----
+export const TRIAL_GROUP = "ทดลอง";
+export function isTrialPcu(p) { return !!p && p.group === TRIAL_GROUP; }
+export function realPcus(pcus) { return (pcus || []).filter((p) => !isTrialPcu(p)); }
+// ' <span class="pcu-group-tag">(พิเศษ)</span>' / (ทดลอง) / "" — appended after the PCU name in tables
+export function pcuTag(p) {
+  if (!p) return "";
+  if (p.group === "พิเศษ" || p.group === TRIAL_GROUP) return ` <span class="pcu-group-tag">(${p.group})</span>`;
+  return "";
+}
+
 // ---- time / date formatting ---------------------------------------------------------------------
 // ISO timestamp -> "06/10/2569 15:38" in Asia/Bangkok (Buddhist-era year).
 export function formatBangkokDateTime(iso) {

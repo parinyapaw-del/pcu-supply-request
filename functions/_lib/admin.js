@@ -5,7 +5,7 @@ import {
   formForFy, latestForm, loadForm, priceMap, publicConfig, TABLES,
 } from "./db.js";
 import {
-  BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, PIN_LENGTH, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
+  BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, DEFAULT_PIN, PCU_GROUPS, PIN_LENGTH, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
   verifyGoogleIdToken,
 } from "./auth.js";
 import {
@@ -643,6 +643,62 @@ export async function adminRemoveUnlock(ctx, p) {
   ]);
   if (!res[0].meta.changes) throw err("NOT_FOUND", "ไม่พบรายการที่ปลดล็อก");
   return { ok: true };
+}
+
+// ---- PCU add / edit (2n) --------------------------------------------------------------------------------------------------------------------
+const PCU_CODE_RE = /^[A-Z0-9][A-Z0-9_-]{1,11}$/;
+function pcuName(v) {
+  const name = String(v ?? "").trim();
+  if (!name || name.length > 60) throw err("BAD_REQUEST", "ชื่อ รพ.สต. ต้องยาว 1–60 ตัวอักษร");
+  return name;
+}
+function pcuPrintName(v, name) {
+  const pn = String(v ?? "").trim();
+  if (pn.length > 80) throw err("BAD_REQUEST", "ชื่อในใบพิมพ์ยาวได้ไม่เกิน 80 ตัวอักษร");
+  return pn || name;
+}
+function pcuGroup(v) {
+  const g = v === undefined || v === null ? "" : String(v).trim();
+  if (!g) return PCU_GROUPS[0];
+  if (!PCU_GROUPS.includes(g)) throw err("BAD_REQUEST", "กลุ่มต้องเป็น " + PCU_GROUPS.join(" / "));
+  return g;
+}
+
+export async function adminPcuAdd(ctx, p) {
+  const { DB, who } = ctx;
+  const code = String(p.code ?? "").trim().toUpperCase();
+  if (!PCU_CODE_RE.test(code)) throw err("BAD_REQUEST", "รหัส รพ.สต. ต้องเป็น A-Z / 0-9 / _ / - ยาว 2–12 ตัว");
+  const name = pcuName(p.name);
+  const print_name = pcuPrintName(p.print_name, name);
+  const group = pcuGroup(p.group);
+  if (await DB.prepare(`SELECT 1 FROM pcus WHERE code = ?`).bind(code).first()) throw err("CONFLICT", "มีรหัสนี้แล้ว");
+  const salt = newSalt();
+  // same INSERT shape as adminImportSeed: PIN 12345, pin_version 1, pin_custom 0 (login_count defaults to 0)
+  await DB.batch([
+    DB.prepare(`INSERT INTO pcus (code,name,print_name,"group",pin_hash,pin_salt,pin_version,pin_fail,pin_custom,login_count) VALUES (?,?,?,?,?,?,1,0,0,0)`)
+      .bind(code, name, print_name, group, await hashSecret(DEFAULT_PIN, salt), salt),
+    auditStmt(DB, who.email, who.role, "adminPcuAdd", code, "", name),
+  ]);
+  return { pcu: { code, name, print_name, group } };
+}
+
+export async function adminPcuEdit(ctx, p) {
+  const { DB, who } = ctx;
+  const code = String(p.code ?? "").trim().toUpperCase();
+  const row = await assertPcu(DB, code);
+  const cur = { code: row.code, name: row.name, print_name: row.print_name || row.name, group: row.grp ?? null };
+  const next = { ...cur };
+  if (p.name !== undefined) next.name = pcuName(p.name);
+  if (p.print_name !== undefined) next.print_name = pcuPrintName(p.print_name, next.name);
+  if (p.group !== undefined) next.group = pcuGroup(p.group);
+  const diff = {};
+  for (const k of ["name", "print_name", "group"]) if (next[k] !== cur[k]) diff[k] = [cur[k], next[k]];
+  if (!Object.keys(diff).length) throw err("BAD_REQUEST", "ไม่มีข้อมูลที่เปลี่ยน");
+  await DB.batch([
+    DB.prepare(`UPDATE pcus SET name = ?, print_name = ?, "group" = ? WHERE code = ?`).bind(next.name, next.print_name, next.group, code),
+    auditStmt(DB, who.email, who.role, "adminPcuEdit", code, "", JSON.stringify(diff)),
+  ]);
+  return { pcu: next };
 }
 
 // ---- PIN / hidden --------------------------------------------------------------------------------------------------------------------------

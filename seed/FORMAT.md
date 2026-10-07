@@ -42,7 +42,7 @@
 ## การนำเข้า (backend action `adminImportSeed`, idempotent — รันซ้ำได้)
 | ส่วน | กฎ |
 |---|---|
-| `pcus` | upsert code/name/print_name/group · **ไม่แตะ** pin_hash/pin_salt/pin_version/pin_fail/pin_locked_until ที่มีอยู่ · แห่งใหม่ได้ PIN ตั้งต้น `12345` |
+| `pcus` | upsert code/name/print_name/group · **ไม่แตะ** pin_hash/pin_salt/pin_version/pin_fail/pin_locked_until ที่มีอยู่ · แห่งใหม่ได้ PIN ตั้งต้น `12345` · group ที่ใช้ได้: `"ทั่วไป"` \| `"พิเศษ"` \| `"ทดลอง"` (2n) — แห่งกลุ่ม `"ทดลอง"` (เช่น PCU00) **ไม่ถูกนับ** ใน Excel export / ยอดรวม / งบ · admin เพิ่ม/แก้ชื่อเองได้ที่แท็บ 7 (`adminPcuAdd` / `adminPcuEdit`) |
 | `form` | ถ้ายังไม่มี `form_versions` ของ fy นี้ → insert version แรก · ถ้ามีแล้วและ data เท่ากัน (hash) → ข้าม · ถ้ามีแล้วและต่าง → **ไม่ทับ** รายงานว่าข้าม (admin ใช้ form editor แทน) |
 | `plans`, `actual_prev`, `prices_prev`, `stats` | replace ทั้ง fy ที่อยู่ในไฟล์ (ลบของ fy นั้นแล้วใส่ใหม่) |
 | `limits` | insert เฉพาะคู่ที่ยังไม่มีแถว หรือแถวเดิม `source != 'admin'` · แถวที่ admin แก้แล้วคงไว้ · แถวที่เหมือนของเดิมทุกค่า (เดือน/ปี/source) ไม่เขียนซ้ำและไม่นับใน `limits_inserted` |

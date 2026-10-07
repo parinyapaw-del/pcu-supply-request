@@ -163,6 +163,8 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminLimitsUpload` | `rows:[{pcu_code,item_code,item_name?,limit_month,limit_year,note?}], fy?, mode?:"merge"\|"replace", dry_run?:bool` | `{errors:[{row,pcu_code,item_code,error}], warnings:[...], changes:[{pcu,item_code,old:[m,y]\|null,new:[m,y]\|null}], added, updated, deleted, applied:bool}` — rules of `limit_upload_format.md` §2/§3 (`CLEAR` in merge mode; blank = untouched in merge). Valid rows are applied unless `dry_run`. Row number = index+2 unless row has `row`. A pair duplicated in the file gets one `errors` entry per row (rows that already carry another error are not listed twice). |
 | `adminUnlockLimit` | `pcu, item_code, month, reason` (reason required) | `{unlock}` |
 | `adminRemoveUnlock` | `pcu, item_code, month` | `{ok:true}` |
+| `adminPcuAdd` (2n, admin only) | `code, name, print_name?, group?` — code trim+uppercase, `^[A-Z0-9][A-Z0-9_-]{1,11}$` · name trim 1–60 · print_name trim ≤ 80, blank → = name · group blank/absent → `"ทั่วไป"`, else one of `PCU_GROUPS` (§5.1); else `BAD_REQUEST` · code exists → `CONFLICT` "มีรหัสนี้แล้ว" | `{pcu:{code,name,print_name,group}}` — same INSERT as `adminImportSeed` (PIN `12345`, new salt, `pin_version 1`, `pin_custom 0`, `login_count 0`) + audit `adminPcuAdd` (pcu = code, detail = name), one batch |
+| `adminPcuEdit` (2n, admin only) | `code, name?, print_name?, group?` — only keys sent are changed (`print_name:""` = set to name); same validation as add · code is the PK and cannot change | `{pcu}` · `NOT_FOUND` · nothing actually changes → `BAD_REQUEST` · never touches `pin_*` / `login_*` · audit `adminPcuEdit` detail = JSON `{name?:[old,new], print_name?:[old,new], group?:[old,new]}` |
 | `adminSetPin` | `pcu, pin` (5 digits) | `{ok:true}` (new salt, `pin_version++`, clears fail/lock, `pin_custom=1`) |
 | `adminUnlockPin` | `pcu` | `{ok:true}` |
 | `adminSetHidden` | `pcu, codes` (full replacement) | `{hidden}` |
@@ -194,6 +196,10 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   config: { limit_mode, stock_required, deadline_day, fy_current, trial_month, budget_op, budget_pp, budget_total,
             r2_max_bytes, r2_max_class_a, r2_max_class_b },              // R2 caps = effective values (defaults applied), §6b.1
   pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool, login_count:int, last_login_at:iso|null} ],   // login_* = successful pcuLogin only (2m)
+                                                                       // group ∈ "ทั่วไป" | "พิเศษ" | "ทดลอง" (2n, auth.js PCU_GROUPS; legacy rows may be null).
+                                                                       // "ทดลอง" (TRIAL_GROUP) = sandbox PCU for outsiders/admin trials (e.g. PCU00): still listed, can log in and
+                                                                       // submit, still shown in status/issue tables with a tag — but NOT counted in totals, budget, Excel export,
+                                                                       // default-PIN / never-logged-in warnings or the "ส่งแล้ว n/N" counter (frontend filters; export filters server-side)
   form: {id,fy,created_at,note,steps}, form_versions: [ {id,fy,created_at,created_by,note} ],     // form = latest of fy_current (incl. closed pages, §5.2)
   plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
   plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
@@ -326,6 +332,7 @@ Three sheets (Thai headers): **รายบรรทัด** (one row per line w
 OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version; all statuses) ·
 **รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (Σ `issued_total`); submitted/issued only) ·
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
+2n: PCUs in group `"ทดลอง"` are excluded from all three sheets (no rows in sheet 1/3, no column in sheet 2, not in any total).
 
 ## 6b. PDF (phase 2b) — `requestPdf` · `adminRequestPdf` · `printData` · `GET /api/pdf/:id`
 Result of `requestPdf{month, doc_date?, supply_month?}` (PCU token, always `token.pcu`) and `adminRequestPdf{pcu, month, doc_date?, supply_month?}` (admin or dispenser):
