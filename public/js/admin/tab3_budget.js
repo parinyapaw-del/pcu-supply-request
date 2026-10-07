@@ -31,11 +31,17 @@ export function renderTab3(container, ctx) {
 
   async function load() {
     const my = ++seq;
+    if (!ctx.isCurrentFy()) {
+      host.innerHTML = "";
+      host.appendChild(ctx.fyNotice("แท็บ งบ (งบเครือข่าย / แผน / ขอสะสม)"));
+      host.appendChild(el("p", { class: "admin-note" }, `ยอดเบิกจริงปีงบ ${ctx.fySelected()} ที่นำเข้าจาก Excel ดูที่แท็บ "ปีก่อน"`));
+      return;
+    }
     host.innerHTML = '<div class="admin-loading-block"><div class="admin-spinner"></div><span id="t3-prog">กำลังคำนวณยอดขอสะสม...</span></div>';
     try {
       await ctx.refreshBootstrap();
       const b = state.bootstrap;
-      const fy = b.config.fy_current;
+      const fy = ctx.fySelected();
       const monthSet = new Set((b.months || []).filter((m) => fiscalYearOf(m) === fy));
       if (fiscalYearOf(b.current_month) === fy) monthSet.add(b.current_month);
       const months = Array.from(monthSet).sort();

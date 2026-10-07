@@ -20,6 +20,7 @@ export function renderTab11(container, ctx) {
   const b = () => state.bootstrap;
   container.innerHTML = "";
   container.classList.add("t11-root");
+  if (!ctx.isCurrentFy()) { container.appendChild(ctx.fyNotice("แท็บ นำเข้า / เปิดปีงบใหม่")); return null; }
 
   const fyCur = () => Number(b().config.fy_current) || 0;
   const w = {

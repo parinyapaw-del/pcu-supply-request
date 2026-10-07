@@ -6,7 +6,8 @@ import { el, downloadBlob, monthLong, toast } from "./util.js";
 export function renderTab6(container, ctx) {
   const { state } = ctx;
   const cur = state.bootstrap.current_month;
-  const fy = state.bootstrap.config.fy_current;
+  const fy = ctx.fySelected();
+  const pick = ctx.defaultMonth() || cur;
   container.innerHTML = "";
 
   const card = el("div", { class: "admin-card", id: "t6-card" });
@@ -44,10 +45,10 @@ export function renderTab6(container, ctx) {
   const btnCur = el("button", { type: "button", class: "btn btn-primary", id: "t6-month-now" }, `ดาวน์โหลด Excel เดือนนี้ (${monthLong(cur)})`);
   btnCur.addEventListener("click", () => download("month=" + encodeURIComponent(cur), monthLong(cur)));
   row1.appendChild(btnCur);
-  card.appendChild(row1);
+  if (ctx.isCurrentFy()) card.appendChild(row1);
 
   const row2 = el("div", { class: "admin-toolbar" });
-  const picker = el("input", { type: "month", id: "t6-month", value: cur });
+  const picker = el("input", { type: "month", id: "t6-month", value: pick });
   const btnPick = el("button", { type: "button", class: "btn btn-secondary", id: "t6-month-pick" }, "ดาวน์โหลดเดือนที่เลือก");
   btnPick.addEventListener("click", () => {
     if (!/^\d{4}-\d{2}$/.test(picker.value)) { toast("เลือกเดือนให้ถูกต้อง", "err"); return; }

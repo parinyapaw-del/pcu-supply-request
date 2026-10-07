@@ -30,6 +30,7 @@ export function renderTab5(container, ctx) {
   const { state } = ctx;
   const b = () => state.bootstrap;
   container.innerHTML = "";
+  if (!ctx.isCurrentFy()) { container.appendChild(ctx.fyNotice("แท็บ เพดาน")); return; }
   if (!b().pcus || b().pcus.length === 0) {
     container.appendChild(el("div", { class: "notice notice-info" },
       "ยังไม่มี รพ.สต. ในระบบ — นำเข้าข้อมูลตั้งต้นที่แท็บ \"ระบบ\" ก่อน แล้วเปิดแท็บนี้ใหม่"));

@@ -57,7 +57,7 @@ export async function renderLogin(container, app, onLoggedIn) {
     <div class="field-row">
       <label class="field-label" for="pcu-select">โรงพยาบาลส่งเสริมสุขภาพตำบล</label>
       <select id="pcu-select" class="select-input">
-        ${pcuList.map((p) => `<option value="${p.code}" ${p.code === selected ? "selected" : ""}>${esc(p.code)} — ${esc(p.name)}${p.group === "พิเศษ" ? " (พิเศษ)" : ""}</option>`).join("")}
+        ${pcuList.map((p) => `<option value="${p.code}" ${p.code === selected ? "selected" : ""}>${esc(p.code)} — ${esc(p.name)}</option>`).join("")}
       </select>
     </div>
     <div class="field-row">

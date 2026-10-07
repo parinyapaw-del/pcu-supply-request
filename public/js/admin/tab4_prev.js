@@ -7,25 +7,24 @@ import { prevHeatmap, prevPlanVsActual } from "./compute.js";
 export function renderTab4(container, ctx) {
   const { state } = ctx;
   const prev = state.bootstrap.prev || {};
-  const fys = Object.keys(prev).sort().reverse();
   container.innerHTML = "";
-  if (!fys.length) {
-    container.appendChild(el("div", { class: "admin-card" }, el("p", { class: "muted" }, "ยังไม่มีข้อมูลปีก่อน — นำเข้าข้อมูลตั้งต้นในแท็บ \"ระบบ\"")));
+  // 2i: the year comes from the header's ปีงบประมาณ select (admin.js) — no per-tab picker.
+  const ts = { fy: String(ctx.fySelected()), pcu: "*", filter: "all", sort: { key: "item", dir: "asc" } };
+  if (!prev[ts.fy]) {
+    const msg = ctx.isCurrentFy()
+      ? `ปีงบ ${ts.fy} เป็นปีงบปัจจุบัน — ยอดเบิกบนเว็บดูที่แท็บ "สถานะรอบ" / "ยอดรวม" / "งบ" · ข้อมูลรายปีจะย้ายมาอยู่ที่นี่เมื่อเปิดปีงบใหม่`
+      : `ยังไม่มีข้อมูลเบิกจริงปีงบ ${ts.fy} จาก Excel — นำเข้าข้อมูลตั้งต้นในแท็บ "ระบบ"`;
+    container.appendChild(el("div", { class: "admin-card", id: "t4-empty" }, el("p", { class: "muted" }, msg)));
     return null;
   }
-  const ts = { fy: fys[0], pcu: "*", filter: "all", sort: { key: "item", dir: "asc" } };
 
   const toolbar = el("div", { class: "admin-toolbar" });
-  const fySel = el("select", { class: "select-input", id: "t4-fy", "aria-label": "ปีงบ" });
-  fys.forEach((fy) => fySel.appendChild(el("option", { value: fy }, `ปีงบ ${fy}`)));
-  toolbar.appendChild(el("label", {}, ["ปีงบ: ", fySel]));
-  toolbar.appendChild(el("span", { class: "muted small" }, "อ่านอย่างเดียว · ราคาตามปีนั้น"));
+  toolbar.appendChild(el("span", { class: "muted small", id: "t4-fy" }, `ปีงบ ${ts.fy} (จาก Excel) · อ่านอย่างเดียว · ราคาตามปีนั้น`));
   container.appendChild(toolbar);
   const heatHost = el("div", { id: "t4-heat" });
   const planHost = el("div", { id: "t4-plan" });
   container.appendChild(heatHost);
   container.appendChild(planHost);
-  fySel.addEventListener("change", () => { ts.fy = fySel.value; drawHeat(); drawPlan(); });
 
   function drawHeat() {
     const entry = prev[ts.fy];

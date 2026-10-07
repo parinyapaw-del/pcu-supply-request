@@ -168,6 +168,10 @@
 .small { font-size: 0.8rem; }
 .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
 .admin-me .badge { white-space: nowrap; }
+/* 2i: header ปีงบประมาณ select */
+.admin-fy { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text, inherit); }
+.admin-fy .select-input { padding: 4px 8px; font-size: 0.9rem; }
+.admin-fy-notice { margin-top: 6px; }
 .admin-tabbar { flex-wrap: nowrap; }
 .admin-panel { display: none; min-width: 0; }
 .admin-panel.active { display: block; }

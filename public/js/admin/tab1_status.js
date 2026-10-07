@@ -55,7 +55,7 @@ function statusCell(req) {
 export function renderTab1(container, ctx) {
   const { state } = ctx;
   const isAdmin = state.isAdmin;
-  const tabState = { month: state.bootstrap.current_month, data: null, loading: false, timer: null, visible: false };
+  const tabState = { month: ctx.defaultMonth(), data: null, loading: false, timer: null, visible: false };
 
   container.innerHTML = "";
   const toolbar = el("div", { class: "admin-toolbar" });
@@ -73,15 +73,15 @@ export function renderTab1(container, ctx) {
   container.appendChild(tableHost);
 
   function monthOptions() {
-    const months = new Set();
-    (state.bootstrap.rounds || []).forEach((r) => months.add(r.month));
-    months.add(state.bootstrap.current_month);
-    months.add(tabState.month);
+    const months = new Set(ctx.fyMonths());
+    if (tabState.month) months.add(tabState.month);
     return Array.from(months).sort().reverse();
   }
   function fillSelect() {
     select.innerHTML = "";
-    monthOptions().forEach((m) => {
+    const opts = monthOptions();
+    if (!opts.length) { select.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
+    opts.forEach((m) => {
       const label = monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : "");
       select.appendChild(el("option", { value: m, selected: m === tabState.month }, label));
     });
@@ -109,8 +109,17 @@ export function renderTab1(container, ctx) {
     }
   }
 
+  function drawEmptyFy() {
+    header.innerHTML = "";
+    header.appendChild(el("h2", {}, `ปีงบ ${ctx.fySelected()}`));
+    header.appendChild(el("p", { class: "muted" }, `ยังไม่มีรอบหรือใบเบิกบนเว็บในปีงบ ${ctx.fySelected()} — ข้อมูลเบิกจริงที่นำเข้าจาก Excel ดูที่แท็บ "ปีก่อน"`));
+    tableHost.innerHTML = "";
+    stamp.textContent = "";
+  }
+
   async function load(showSpinner) {
     if (tabState.loading) return;
+    if (!tabState.month) { tabState.data = null; drawEmptyFy(); return; }
     tabState.loading = true;
     if (showSpinner && !tabState.data) tableHost.innerHTML = '<div class="admin-loading-block"><div class="admin-spinner"></div>กำลังโหลด...</div>';
     try {

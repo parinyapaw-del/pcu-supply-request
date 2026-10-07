@@ -38,6 +38,7 @@ export function renderTab10(container, ctx) {
   const b = () => state.bootstrap;
   container.innerHTML = "";
   container.classList.add("t10-root");
+  if (!ctx.isCurrentFy()) { container.appendChild(ctx.fyNotice("แท็บ แบบฟอร์ม")); return null; }
 
   if (!b().form || !Array.isArray(b().form.steps)) {
     container.appendChild(el("div", { class: "notice notice-info" },

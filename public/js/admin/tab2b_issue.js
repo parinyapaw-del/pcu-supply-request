@@ -182,7 +182,7 @@ export function renderTab2b(container, ctx) {
   const me = state.me || { units: [] };
   const myUnits = state.isAdmin ? DISPENSE_UNITS : (me.units || []);
   const ts = {
-    mode: "sheet", month: state.bootstrap.current_month,
+    mode: "sheet", month: ctx.defaultMonth(),
     pcu: (state.bootstrap.pcus[0] || {}).code || "", itemCode: "", filter: "",
     sheet: null, item: null, editor: null, expired: null, seq: 0, visible: false
   };
@@ -218,12 +218,13 @@ export function renderTab2b(container, ctx) {
   container.appendChild(host);
 
   function months() {
-    const set = new Set((state.bootstrap.rounds || []).map((r) => r.month));
-    set.add(state.bootstrap.current_month); set.add(ts.month);
+    const set = new Set(ctx.fyMonths());
+    if (ts.month) set.add(ts.month);
     return Array.from(set).sort().reverse();
   }
   function fillMonths() {
     monthSel.innerHTML = "";
+    if (!months().length) { monthSel.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
     months().forEach((m) => monthSel.appendChild(el("option", { value: m, selected: m === ts.month }, monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : ""))));
   }
 
@@ -268,6 +269,11 @@ export function renderTab2b(container, ctx) {
   }
 
   function load() {
+    if (!ts.month) {
+      ts.editor = null;
+      host.innerHTML = `<p class="admin-note">ยังไม่มีรอบหรือใบเบิกบนเว็บในปีงบ ${escapeHtml(String(ctx.fySelected()))}</p>`;
+      return;
+    }
     ts.expired = windowExpired(ts.month) ? EXPIRED_MSG : null;
     ts.editor = null;
     if (ts.mode === "sheet") loadSheet(); else loadItem();

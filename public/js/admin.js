@@ -4,6 +4,7 @@
 import { call, ApiError, getAdminToken, clearAdminToken } from "./api.js";
 import { mountLogin } from "./admin/login.js";
 import { el, escapeHtml, toast } from "./admin/util.js";
+import { fiscalYearOf } from "./format.js";
 import { buildCatalog } from "./admin/compute.js";
 import { clearRequestCache } from "./admin/requests.js";
 import { renderTab1 } from "./admin/tab1_status.js";
@@ -38,11 +39,66 @@ const TABS = [
   { id: "tab9", hash: "system", label: "ระบบ", render: renderTab9 }
 ];
 
-const state = { bootstrap: null, cat: null, me: null, isAdmin: false };
+const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }; // fy = ปีงบที่เลือกดู (2i)
 const panels = {}; // tabId -> { section, rendered, lifecycle }
 let activeTabId = null;
 
-const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS };
+const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS, fyCurrent, fySelected, isCurrentFy, fyMonths, defaultMonth, fyNotice };
+
+// ---- fiscal-year scope (2i) ----------------------------------------------------------------------------
+// The header's "ปีงบประมาณ" select scopes the data tabs: month pickers only offer months of the chosen year,
+// "ปีก่อน" shows that year's Excel-derived data, and the tabs bound to the current year (งบ, เพดาน, แบบฟอร์ม,
+// นำเข้า) show a notice when another year is chosen. Frontend-only — the API is unchanged.
+function fyCurrent() {
+  const b = state.bootstrap;
+  return Number(b.config && b.config.fy_current) || fiscalYearOf(b.current_month);
+}
+function fyList() {
+  const b = state.bootstrap;
+  const set = new Set([fyCurrent()]);
+  Object.keys(b.prev || {}).forEach((f) => set.add(Number(f)));
+  (b.form_versions || []).forEach((v) => set.add(Number(v.fy)));
+  (b.rounds || []).forEach((r) => set.add(fiscalYearOf(r.month)));
+  return [...set].filter((f) => Number.isFinite(f) && f > 0).sort((a, c) => c - a);
+}
+function fySelected() { return state.fy; }
+function isCurrentFy() { return state.fy === fyCurrent(); }
+// Months of the selected year that have a round / a request, or are the current month — newest first.
+function fyMonths() {
+  const b = state.bootstrap;
+  const set = new Set((b.rounds || []).map((r) => r.month));
+  set.add(b.current_month);
+  return [...set].filter((m) => fiscalYearOf(m) === state.fy).sort().reverse();
+}
+// Month a month-based tab opens on: this month for the current year, else the newest month of that year (or null).
+function defaultMonth() {
+  const b = state.bootstrap;
+  if (fiscalYearOf(b.current_month) === state.fy) return b.current_month;
+  return fyMonths()[0] || null;
+}
+// Notice for tabs that only work on the current fiscal year.
+function fyNotice(what) {
+  return el("div", { class: "notice notice-info admin-fy-notice" },
+    `${what} ใช้กับปีงบประมาณปัจจุบัน (${fyCurrent()}) เท่านั้น — เลือก "ปีงบ ${fyCurrent()}" ที่มุมบนขวาเพื่อใช้งาน`);
+}
+function fillFySelect(sel) {
+  sel.innerHTML = "";
+  fyList().forEach((fy) => sel.appendChild(el("option", { value: String(fy), selected: fy === state.fy },
+    `ปีงบ ${fy}${fy === fyCurrent() ? " (ปัจจุบัน)" : ""}`)));
+}
+// After every bootstrap: keep the chosen year if it still exists, else fall back to the current one.
+function syncFy() {
+  if (!fyList().includes(state.fy)) state.fy = fyCurrent();
+  const sel = document.getElementById("admin-fy");
+  if (sel) fillFySelect(sel);
+}
+function setFy(fy) {
+  if (!Number.isFinite(fy) || fy === state.fy) return;
+  state.fy = fy;
+  const sel = document.getElementById("admin-fy");
+  if (sel) sel.value = String(fy);
+  markStale(Object.keys(panels));
+}
 
 function showLoading(msg) {
   root.innerHTML = "";
@@ -113,6 +169,7 @@ function applyBootstrap(data) {
   state.cat = buildCatalog(data.form);
   state.me = data.me;
   state.isAdmin = data.me.role === "admin";
+  syncFy();
 }
 
 function visibleTabs() {
@@ -123,6 +180,8 @@ function markStale(ids) {
   ids.forEach((id) => { if (panels[id]) panels[id].rendered = false; });
   if (activeTabId && ids.includes(activeTabId)) {
     const id = activeTabId;
+    const p = panels[id];
+    if (p && p.lifecycle && p.lifecycle.onHide) { try { p.lifecycle.onHide(); } catch (e) { console.error(e); } }
     activeTabId = null;
     activate(id);
   }
@@ -171,6 +230,10 @@ function renderShell() {
   header.appendChild(el("h1", {}, "หน้าผู้ดูแลระบบ — เบิกวัสดุ รพ.สต."));
   const me = state.me.email === "backup" ? "รหัสสำรอง" : state.me.email;
   const meBox = el("div", { class: "admin-me" });
+  const fySel = el("select", { class: "select-input", id: "admin-fy", "aria-label": "ปีงบประมาณที่ดู" });
+  fillFySelect(fySel);
+  fySel.addEventListener("change", () => setFy(Number(fySel.value)));
+  meBox.appendChild(el("label", { class: "admin-fy" }, ["ปีงบประมาณ: ", fySel]));
   meBox.appendChild(el("span", { id: "admin-me-label" }, `${me}`));
   meBox.appendChild(el("span", { class: "badge " + (state.isAdmin ? "badge-success" : "badge-warn"), id: "admin-role-badge" }, roleLabel(state.me)));
   const logoutBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "admin-logout" }, "ออกจากระบบ");

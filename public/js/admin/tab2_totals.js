@@ -8,7 +8,7 @@ import { loadMonth } from "./requests.js";
 
 export function renderTab2(container, ctx) {
   const { state } = ctx;
-  const ts = { month: state.bootstrap.current_month, view: "step", showZero: false, showAll: false, data: null, expanded: new Set(), seq: 0 };
+  const ts = { month: ctx.defaultMonth(), view: "step", showZero: false, showAll: false, data: null, expanded: new Set(), seq: 0 };
 
   container.innerHTML = "";
   const toolbar = el("div", { class: "admin-toolbar no-print" });
@@ -34,12 +34,13 @@ export function renderTab2(container, ctx) {
   container.appendChild(host);
 
   function months() {
-    const set = new Set((state.bootstrap.rounds || []).map((r) => r.month));
-    set.add(state.bootstrap.current_month); set.add(ts.month);
+    const set = new Set(ctx.fyMonths());
+    if (ts.month) set.add(ts.month);
     return Array.from(set).sort().reverse();
   }
   function fillSelect() {
     select.innerHTML = "";
+    if (!months().length) { select.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
     months().forEach((m) => select.appendChild(el("option", { value: m, selected: m === ts.month }, monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : ""))));
   }
   fillSelect();
@@ -56,6 +57,11 @@ export function renderTab2(container, ctx) {
 
   async function load(silent) {
     const my = ++ts.seq;
+    if (!ts.month) {
+      ts.data = null;
+      host.innerHTML = `<p class="admin-note">ยังไม่มีรอบหรือใบเบิกบนเว็บในปีงบ ${escapeHtml(String(ctx.fySelected()))}</p>`;
+      return;
+    }
     if (!silent) host.innerHTML = '<div class="admin-loading-block"><div class="admin-spinner"></div><span id="t2-prog">กำลังโหลดใบเบิก...</span></div>';
     try {
       const data = await loadMonth(ctx, ts.month, (d, n) => {
