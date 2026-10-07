@@ -346,6 +346,8 @@ button, input, select {
 .print-controls h2 { margin: 0 0 4px; }
 .print-step-checks { display: flex; gap: 8px 16px; flex-wrap: wrap; margin: 10px 0 16px; }
 .print-step-checks label { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; cursor: pointer; }
+.print-options { display: flex; gap: 8px 16px; flex-wrap: wrap; align-items: center; margin: 0 0 16px; }
+.print-options label { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; }
 .print-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
 /* ---- dialog + toast (in-page, replace native alert/confirm) ---- */

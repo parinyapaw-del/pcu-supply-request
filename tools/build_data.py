@@ -17,6 +17,8 @@ PCUS = [("PCU01", "มหาดไทย", "ทั่วไป"), ("PCU02", "ค
         ("PCU07", "ป่างิ้ว", "ทั่วไป"), ("PCU08", "โพสะ", "ทั่วไป"), ("PCU09", "หัวไผ่", "ทั่วไป"),
         ("PCU10", "บ้านยาง", "ทั่วไป"), ("PCU11", "บ้านอิฐ", "ทั่วไป"), ("PCU12", "ตลาดกรวด", "ทั่วไป"),
         ("PCU13", "บ้านรี", "ทั่วไป"), ("PCU14", "เรือนจำ", "พิเศษ"), ("PCU15", "เทศบาลเมืองฯ", "พิเศษ")]
+# 2h: full organisation name on the printed sheet for the two non-รพ.สต. units (print_name only; `name` stays short)
+PRINT_NAMES = {"PCU14": "เรือนจำจังหวัดอ่างทอง", "PCU15": "ศูนย์บริการสาธารณสุขเทศบาลเมืองอ่างทอง"}
 DEMO_LIMIT_ITEMS = {"P1-01": "9", "LAB-03": "117", "LAB-04": "118"}  # item_code -> item_key(2568)
 
 
@@ -43,7 +45,7 @@ def build_form():
                       "rows": rows})
     assert seq == 125, seq
     return {"fiscal_year": 2569, "steps": steps,
-            "pcus": [{"code": c, "name": n, "print_name": n, "group": g} for c, n, g in PCUS]}
+            "pcus": [{"code": c, "name": n, "print_name": PRINT_NAMES.get(c, n), "group": g} for c, n, g in PCUS]}
 
 
 def build_limits():

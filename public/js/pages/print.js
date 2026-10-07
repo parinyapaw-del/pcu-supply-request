@@ -11,8 +11,8 @@
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
-import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
-import { esc, requestOf, isEditable, statusText, bangkokDateParts, monthLabel, alertDialog, confirmDialog, formForRequest } from "./common.js";
+import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear, nextMonthKey } from "../format.js";
+import { esc, requestOf, isEditable, statusText, monthLabel, alertDialog, confirmDialog, formForRequest } from "./common.js";
 import { trySend } from "./send.js";
 import { requestPdfReady, startPdfDownload, openPdfInline, pdfErrorHtml } from "../pdf_client.js";
 
@@ -38,6 +38,14 @@ function blankRequestFor(pcu, month) {
 
 const PREVIEW_KEY = "pcuSupply2:formPreview";
 
+// 2h: per-print header options chosen on the print page: the sheet's "วันที่" (free date) and "ประจำเดือน" (only the month
+// after the round); null = dotted for handwriting. Not stored on the request.
+function normPrintOpts(opts) {
+  return { doc_date: (opts && opts.doc_date) || null, supply_month: (opts && opts.supply_month) || null };
+}
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const printOptsKey = (pcuCode, month) => `pcuSupply2:printOpts:${pcuCode}:${month}`;
+
 /** How this browser prints: "direct" = a desktop Chromium browser (Chrome/Edge on Windows/Mac/Linux) prints the page itself
  *  with Blink at the real 0.78 layout; "pdf" = everything else (Safari, iOS, Android, Firefox — no userAgentData or a mobile /
  *  non-Chromium one) prints the server-rendered PDF so the same Blink engine produces the paper. */
@@ -58,6 +66,7 @@ export async function renderPrint(container, app, params) {
   const asAdmin = params && params.get("as") === "admin";
   const isPreview = asAdmin && params.get("preview") === "1";
   let month, pcu, form, hidden, request;
+  let printOpts = normPrintOpts(null); // 2h: the 2d preview keeps these blank (no controls)
 
   if (isPreview) {
     // 2d form editor preview: the admin page stores the draft form in sessionStorage and opens this route.
@@ -114,6 +123,11 @@ export async function renderPrint(container, app, params) {
     <div class="print-step-checks">
       ${steps.map((step, i) => `<label><input type="checkbox" class="print-step-chk" value="${esc(step.code)}" checked> หน้า ${i + 1} · ${esc(step.sheet || step.title)}</label>`).join("")}
     </div>
+    ${isPreview ? "" : `<div class="print-options">
+      <label>ลงวันที่เอกสาร <input type="date" id="print-doc-date"></label>
+      <label>เบิกประจำเดือน <select id="print-supply-month"><option value="">เว้นว่าง (จุดไข่ปลา)</option><option value="${esc(nextMonthKey(month))}">${esc(monthLabel(nextMonthKey(month)))}</option></select></label>
+      <span class="muted">เว้นว่าง = พิมพ์เป็นจุดไข่ปลาให้เขียนเอง</span>
+    </div>`}
     <div class="print-actions">
       <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
       <button type="button" class="btn btn-secondary" id="btn-do-pdf">ดาวน์โหลด PDF</button>
@@ -132,7 +146,7 @@ export async function renderPrint(container, app, params) {
   const editable = !asAdmin && isEditable(app, month);
   if (isPreview) {
     steps.forEach((step, i) => {
-      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
       page.dataset.step = step.code;
       pagesHost.appendChild(page);
     });
@@ -169,7 +183,7 @@ export async function renderPrint(container, app, params) {
     const unchecked = new Set(Array.from(document.querySelectorAll(".print-step-chk:not(:checked)")).map((c) => c.value));
     pagesHost.innerHTML = "";
     steps.forEach((step, i) => {
-      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
       page.dataset.step = step.code;
       if (unchecked.has(step.code)) page.classList.add("print-skip");
       pagesHost.appendChild(page);
@@ -177,6 +191,31 @@ export async function renderPrint(container, app, params) {
     fitWhenReady(pagesHost);
     renderStatus();
   }
+
+  // 2h: restore the options last used for this PCU + round (a stale value is dropped), reflect them into the controls
+  const docDateInput = document.getElementById("print-doc-date");
+  const supplySelect = document.getElementById("print-supply-month");
+  const optsKey = printOptsKey(pcu.code, month);
+  try {
+    const saved = JSON.parse(localStorage.getItem(optsKey) || "null");
+    if (saved && typeof saved === "object") {
+      printOpts = normPrintOpts({
+        doc_date: typeof saved.doc_date === "string" && DATE_RE.test(saved.doc_date) ? saved.doc_date : null,
+        supply_month: saved.supply_month === nextMonthKey(month) ? saved.supply_month : null,
+      });
+    }
+  } catch (e) { /* storage unavailable or corrupt: start blank */ }
+  docDateInput.value = printOpts.doc_date || "";
+  supplySelect.value = printOpts.supply_month || "";
+
+  function onPrintOptsChange() {
+    printOpts = normPrintOpts({ doc_date: docDateInput.value, supply_month: supplySelect.value });
+    try { localStorage.setItem(optsKey, JSON.stringify(printOpts)); } catch (e) { /* storage unavailable */ }
+    renderPages();
+  }
+  docDateInput.addEventListener("change", onPrintOptsChange);
+  supplySelect.addEventListener("change", onPrintOptsChange);
+
   renderPages();
 
   controls.querySelectorAll(".print-step-chk").forEach((chk) =>
@@ -188,7 +227,13 @@ export async function renderPrint(container, app, params) {
 
   const printBtn = document.getElementById("btn-do-print");
   const pdfBtn = document.getElementById("btn-do-pdf");
-  const pdfParams = () => asAdmin ? ["adminRequestPdf", { pcu: pcu.code, month }] : ["requestPdf", { month }];
+  // 2h: read printOpts at call time so a click always uses the options currently on screen
+  const pdfParams = () => {
+    const p = asAdmin ? { pcu: pcu.code, month } : { month };
+    if (printOpts.doc_date) p.doc_date = printOpts.doc_date;
+    if (printOpts.supply_month) p.supply_month = printOpts.supply_month;
+    return [asAdmin ? "adminRequestPdf" : "requestPdf", p];
+  };
   const tokenNow = () => asAdmin ? getAdminToken() : getPcuToken();
 
   printBtn.addEventListener("click", async () => {
@@ -276,17 +321,19 @@ export async function renderPrint(container, app, params) {
 }
 
 /** Renders every printable step of `form` as an A4 page into `host` (the print shell used for the server-side PDF). */
-export function renderAllPages(host, form, request, pcu, hidden, month) {
+export function renderAllPages(host, form, request, pcu, hidden, month, opts = {}) {
+  const printOpts = normPrintOpts(opts);
   host.innerHTML = "";
   printableSteps(form).forEach((step, i) => {
-    const page = buildPrintPage(step, request, pcu, hidden, month, i + 1);
+    const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
     page.dataset.step = step.code;
     host.appendChild(page);
   });
   fitPrintPages(host);
 }
 
-export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber) {
+export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber, opts = {}) {
+  const printOpts = normPrintOpts(opts);
   const page = document.createElement("div");
   page.className = "print-page";
 
@@ -304,12 +351,12 @@ export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber)
   const tbody = document.createElement("tbody");
   tbody.appendChild(rowTitle(step));
   tbody.appendChild(rowReceiptNo());
-  tbody.appendChild(rowDate(request));
+  tbody.appendChild(rowDate(printOpts));
   tbody.appendChild(rowLabelValue("เรื่อง", step.subject));
   tbody.appendChild(rowLabelValue("เรียน", step.to));
   tbody.appendChild(rowBlank());
   tbody.appendChild(rowIKhaphachao(pcu));
-  tbody.appendChild(rowMonthYear(monthKey));
+  tbody.appendChild(rowMonthYear(printOpts));
   appendTableHeader(tbody);
   appendBodyRows(tbody, step, request, hidden);
   appendTotalRow(tbody, step, request, hidden);
@@ -373,12 +420,13 @@ function rowReceiptNo() {
   ], 20);
 }
 
-// "วันที่" = the day the request was last sent (Asia/Bangkok); dotted until it has been sent.
-function rowDate(request) {
+// "วันที่" = the document date picked on the print page (opts.doc_date "YYYY-MM-DD"); dotted when none is picked (2h).
+// It is no longer filled from the request's submitted_at.
+function rowDate(opts) {
   let dayVal = null, monthVal = null, yearVal = null;
-  if (request.submitted_at) {
-    const parts = bangkokDateParts(request.submitted_at);
-    dayVal = parts.day; monthVal = parts.monthName; yearVal = parts.beYear;
+  const m = DATE_RE.test(opts.doc_date || "") ? opts.doc_date.split("-").map(Number) : null; // [y, mo, d]
+  if (m) {
+    dayVal = m[2]; monthVal = THAI_MONTHS[m[1] - 1] || null; yearVal = beYear(m[0]);
   }
   const text = `วันที่ ${fillOrDots("...........", dayVal, true)} /${fillOrDots(".................", monthVal, true)}/${fillOrDots("............", yearVal, true)}`;
   return tr("row-h20", [
@@ -402,17 +450,23 @@ function rowBlank() {
 
 function rowIKhaphachao(pcu) {
   const printName = pcu ? pcu.print_name : "";
-  const text = `ข้าพเจ้า ${SIG_DOTS_LONG} ผู้มีสิทธิเบิกวัสดุของสถานพยาบาลโรงพยาบาลส่งเสริมสุขภาพตำบล ${fillOrDots("..........................", printName, true)}`;
+  // 2h: PCU14/PCU15 (group "พิเศษ") print the full print_name without the รพ.สต. prefix
+  const special = !!pcu && pcu.group === "พิเศษ";
+  const text = `ข้าพเจ้า ${SIG_DOTS_LONG} ผู้มีสิทธิเบิกวัสดุของ${special ? "" : "สถานพยาบาลโรงพยาบาลส่งเสริมสุขภาพตำบล"} ${fillOrDots("..........................", printName, true)}`;
   return tr("row-h20", [
     td("", { colspan: 1, cls: "cell-noborder" }),
     td(text, { colspan: 12, cls: "cell-noborder cell-left" }),
   ], 20);
 }
 
-function rowMonthYear(monthKey) {
-  const { year, month } = monthKeyToParts(monthKey);
-  const monthName = THAI_MONTHS[month - 1];
-  const be = beYear(year);
+// "ประจำเดือน … พ.ศ. …" = opts.supply_month ("YYYY-MM", the month after the round, 2h); both slots dotted when null.
+function rowMonthYear(opts) {
+  let monthName = null, be = null;
+  if (opts.supply_month) {
+    const { year, month } = monthKeyToParts(opts.supply_month);
+    monthName = THAI_MONTHS[month - 1] || null;
+    be = beYear(year);
+  }
   const text = `มีความประสงค์จะขอเบิกวัสดุเพื่อใช้ในงานราชการ  ประจำเดือน ${fillOrDots("........................................", monthName, true)} พ.ศ. ${fillOrDots("..........................", be, true)} ดังรายการต่อไปนี้`;
   return tr("row-h20", [td(text, { colspan: 13, cls: "cell-noborder cell-left" })], 20);
 }

@@ -5,13 +5,14 @@
 import { err, sha256Hex, stableStringify } from "./http.js";
 import { auditStmt, batchChunked, formPublic, latestForm, loadForm } from "./db.js";
 import { signToken, verifyToken } from "./auth.js";
-import { currentMonth, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
+import { currentMonth, isDate, isMonth, monthFy, monthMinus, nextMonth, nowIso } from "./time.js";
 import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
 import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
 // Bump whenever print.css / print.js change what the sheet looks like: it is part of the content key, so a changed layout is
 // rendered again instead of served from R2 (handoff 2026-10-07 §3.1). 2 = brief 2g (--print-scale 0.78, one Blink engine everywhere).
-export const LAYOUT_VERSION = 2;
+// 3 = brief 2h (header date / supply month blank unless chosen at print time; PCU14/15 sentence uses the full print_name).
+export const LAYOUT_VERSION = 3;
 export const PRINT_TOKEN_MS = 120000; // a print token (handed to the renderer inside the URL) lives 2 minutes
 const DEFAULT_RETRY_AFTER = 10;
 const RENDER_TIMEOUT_MS = 60000;
@@ -58,8 +59,20 @@ async function loadBundle(DB, pcuCode, month) {
 
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
 
-// Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION). Same content → same key → the cached PDF is reused.
-export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }) {
+// 2h print options (per print, never stored on the request): {doc_date:"YYYY-MM-DD"|null, supply_month:"YYYY-MM"|null}.
+// absent / null / "" → null · doc_date any valid date · supply_month only the month after the round · any other type fails the same
+// checks (isDate / === need a string) → BAD_REQUEST. `month` must already be valid.
+export function printOptsOf(p, month) {
+  const pick = (v) => (v === undefined || v === null || v === "" ? null : v);
+  const doc_date = pick(p && p.doc_date), supply_month = pick(p && p.supply_month);
+  if (doc_date !== null && !isDate(doc_date)) throw err("BAD_REQUEST", "วันที่เอกสารไม่ถูกต้อง");
+  if (supply_month !== null && supply_month !== nextMonth(month)) throw err("BAD_REQUEST", "เดือนที่เบิกต้องเป็นเดือนถัดจากรอบ");
+  return { doc_date, supply_month };
+}
+
+// Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION + 2h print options). Same content → same key →
+// the cached PDF is reused; each distinct option set is its own file.
+export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }, opts = {}) {
   const ls = {};
   for (const l of lines) {
     const op = Number(l.op) || 0, pp = Number(l.pp) || 0;
@@ -69,14 +82,17 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }) {
     lv: LAYOUT_VERSION,
     v: reqRow.form_version_id ?? null,
     pn: pcuRow.print_name || pcuRow.name,
-    sa: reqRow.submitted_at || null,
     hidden: [...hidden].sort(),
     lines: ls,
+    dd: opts.doc_date ?? null,
+    sm: opts.supply_month ?? null,
   }));
 }
 
-export async function makePrintToken(env, pcu, month, contentKey) {
-  return signToken(env, { t: "print", pcu, month, ck: contentKey, exp: Date.now() + PRINT_TOKEN_MS });
+export async function makePrintToken(env, pcu, month, contentKey, opts = {}) {
+  return signToken(env, {
+    t: "print", pcu, month, ck: contentKey, dd: opts.doc_date ?? null, sm: opts.supply_month ?? null, exp: Date.now() + PRINT_TOKEN_MS,
+  });
 }
 
 // ---- renderers --------------------------------------------------------------------------------------------------
@@ -157,16 +173,17 @@ export function mockPdfBytes(lines) {
 // Mock only when the dev switch is on AND no real Browser Rendering token is configured. Never in production.
 const useMock = (env) => env.DEV_FAKE_GOOGLE === "1" && !env.CF_BR_TOKEN;
 
-async function createOrGetPdf(ctx, pcuCode, month, actor, role) {
+async function createOrGetPdf(ctx, pcuCode, month, actor, role, p) {
   const { DB, env, request } = ctx;
   if (!isMonth(month)) throw err("BAD_REQUEST", "เดือน/รอบไม่ถูกต้อง: " + month);
+  const opts = printOptsOf(p, month);
   const mock = useMock(env);
   if (!env.FILES || (!mock && (!env.CF_BR_TOKEN || !env.CF_ACCOUNT_ID))) throw err("PDF_UNAVAILABLE", MSG_UNAVAILABLE);
 
   const bundle = await loadBundle(DB, pcuCode, month);
   if (!isSent(bundle.reqRow)) throw err("NOT_FOUND", MSG_NOT_SENT);
   const { pcuRow, reqRow } = bundle;
-  const contentKey = await contentKeyOf(bundle);
+  const contentKey = await contentKeyOf(bundle, opts);
   const filename = pdfFilename(pcuRow.print_name || pcuRow.name, month);
   const ready = () => ({ status: "ready", url: pdfDownloadUrl(reqRow.id, contentKey), filename, content_key: contentKey });
 
@@ -199,7 +216,7 @@ async function createOrGetPdf(ctx, pcuCode, month, actor, role) {
   if (mock) {
     bytes = mockPdfBytes([`MOCK PDF ${reqRow.id} ${contentKey}`]);
   } else {
-    const printUrl = `${new URL(request.url).origin}/print.html?k=${encodeURIComponent(await makePrintToken(env, pcuRow.code, month, contentKey))}`;
+    const printUrl = `${new URL(request.url).origin}/print.html?k=${encodeURIComponent(await makePrintToken(env, pcuRow.code, month, contentKey, opts))}`;
     const r = await renderWithBrowserRendering(env, printUrl);
     if (r.pending) return { status: "pending", retry_after: r.retryAfter };
     bytes = r.bytes;
@@ -267,14 +284,14 @@ export async function prunePdfFiles(env, DB, opts = {}) {
 
 // PCU token → the PCU's own request.
 export async function requestPdf(ctx, p) {
-  return createOrGetPdf(ctx, ctx.pcu.code, p.month, ctx.pcu.code, "pcu");
+  return createOrGetPdf(ctx, ctx.pcu.code, p.month, ctx.pcu.code, "pcu", p);
 }
 
 // admin | dispenser → any PCU's request.
 export async function adminRequestPdf(ctx, p) {
   const { who } = ctx;
   if (typeof p.pcu !== "string" || !p.pcu) throw err("BAD_REQUEST", "ต้องระบุ pcu");
-  return createOrGetPdf(ctx, p.pcu, p.month, who.email, who.role);
+  return createOrGetPdf(ctx, p.pcu, p.month, who.email, who.role, p);
 }
 
 // public — the print shell (print.html) calls this with the short-lived print token it was opened with.
@@ -285,7 +302,8 @@ export async function printData(ctx, p) {
   const bundle = await loadBundle(DB, payload.pcu, payload.month);
   if (!isSent(bundle.reqRow)) throw err("NOT_FOUND", MSG_NOT_SENT);
   // the sheet must be exactly what the content key was computed from (the PDF is cached under that key)
-  if ((await contentKeyOf(bundle)) !== payload.ck) throw err("CONFLICT", "ใบเบิกถูกแก้ไขระหว่างสร้าง PDF กรุณาลองใหม่");
+  const opts = { doc_date: payload.dd ?? null, supply_month: payload.sm ?? null };
+  if ((await contentKeyOf(bundle, opts)) !== payload.ck) throw err("CONFLICT", "ใบเบิกถูกแก้ไขระหว่างสร้าง PDF กรุณาลองใหม่");
   const { pcuRow, reqRow, lines, hidden } = bundle;
   const form = (reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null) || (await latestForm(DB, monthFy(payload.month)));
   return {
@@ -294,16 +312,19 @@ export async function printData(ctx, p) {
     form: formPublic(form),
     request: requestObj(reqRow, lines, false),
     hidden,
+    doc_date: opts.doc_date,
+    supply_month: opts.supply_month,
   };
 }
 
-// dev only (router checks DEV_FAKE_GOOGLE): a fresh print token for (pcu, month) — the tests cannot see the one the server generates.
+// dev only (router checks DEV_FAKE_GOOGLE): a fresh print token for (pcu, month[, 2h options]) — the tests cannot see the one the server generates.
 export async function devPrintToken(ctx, p) {
   if (!isMonth(p.month)) throw err("BAD_REQUEST", "เดือนไม่ถูกต้อง");
+  const opts = printOptsOf(p, p.month);
   const bundle = await loadBundle(ctx.DB, p.pcu, p.month);
   if (!isSent(bundle.reqRow)) throw err("NOT_FOUND", MSG_NOT_SENT);
-  const ck = await contentKeyOf(bundle);
-  return { token: await makePrintToken(ctx.env, bundle.pcuRow.code, p.month, ck), content_key: ck };
+  const ck = await contentKeyOf(bundle, opts);
+  return { token: await makePrintToken(ctx.env, bundle.pcuRow.code, p.month, ck, opts), content_key: ck };
 }
 
 // dev only (router checks DEV_FAKE_GOOGLE): move a request to another month (tests back-date a sent request for the 12-month window).

@@ -877,13 +877,18 @@ async function main() {
       };
       const ls = {};
       for (const l of bundle.lines) if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
-      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, sa: pd.request.submitted_at || null, hidden: [...pd.hidden].sort(), lines: ls };
+      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, hidden: [...pd.hidden].sort(), lines: ls, dd: null, sm: null };
       const keyFor = (lv) => sha256Hex(stableStringify(lv === undefined ? fields : { lv, ...fields }));
       const local = await pdfLib.contentKeyOf(bundle);
-      ok(Number.isInteger(pdfLib.LAYOUT_VERSION) && pdfLib.LAYOUT_VERSION >= 2, `pdf.js exports LAYOUT_VERSION (= ${pdfLib.LAYOUT_VERSION})`);
+      eq(pdfLib.LAYOUT_VERSION, 3, "pdf.js exports LAYOUT_VERSION = 3 (brief 2h)");
       ok(local === (await keyFor(pdfLib.LAYOUT_VERSION)) && local !== (await keyFor(pdfLib.LAYOUT_VERSION + 1)) && local !== (await keyFor(undefined)),
         "contentKeyOf hashes lv: LAYOUT_VERSION (key changes with lv; differs from the pre-2g key without lv)");
       eq(dt.content_key, local, "server content key = contentKeyOf() under node (same LAYOUT_VERSION + same fields)");
+      // 2h: print options are hashed as dd / sm (null when absent)
+      const withOpts = await pdfLib.contentKeyOf(bundle, { doc_date: "2026-12-03", supply_month: NEXT });
+      ok(withOpts === (await sha256Hex(stableStringify({ lv: pdfLib.LAYOUT_VERSION, ...fields, dd: "2026-12-03", sm: NEXT }))) && withOpts !== local,
+        "contentKeyOf hashes dd / sm (2h print options) — differs from the no-option key");
+      eq(await pdfLib.contentKeyOf(bundle, { doc_date: null, supply_month: null }), local, "contentKeyOf with null options = no-option key");
     }
     await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
     const dt2 = await mustOk("devPrintToken", { pcu: P, month: CUR });
@@ -925,6 +930,46 @@ async function main() {
     eq((await mustOk("requestPdf", { month: CUR }, TQ)).content_key, qa.content_key, "PCU gets the PDF the dispenser created (cache)");
     ok((await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.some((e) => e.action === "pdf_create" && e.actor === DSPE && e.role === "dispenser"), "audit: pdf_create by the dispenser (staff e-mail)");
     eq((await files("pdf/")).length, 3, "R2 holds 3 PDFs (PCU11 ×2, PCU13 ×1) after the pdf section");
+
+    // --- 2h print options {doc_date?, supply_month?}: per print, part of the content key + print token, returned by printData.
+    // PCU11 still holds 2 files in CUR (latest month keeps 2), so storing the option variant prunes its oldest → R2 still holds 3 for 2b-R.
+    const DD = "2026-12-03", OPT = { doc_date: DD, supply_month: NEXT }; // NEXT = month after CUR; a late sender may date it in the next month
+    const k0 = (await mustOk("devPrintToken", { pcu: P, month: CUR })).content_key; // no-option key, nothing stored
+    eq((await mustOk("devPrintToken", { pcu: P, month: CUR, doc_date: "", supply_month: null })).content_key, k0, "options \"\" / null = no options (same key)");
+    expectErr(await api("requestPdf", { month: CUR, doc_date: "2026-13-40" }, TP), "BAD_REQUEST", "requestPdf doc_date 2026-13-40");
+    ok(/วันที่เอกสารไม่ถูกต้อง/.test((await api("requestPdf", { month: CUR, doc_date: "2026-02-30" }, TP)).error.message), "bad doc_date message (Thai)");
+    expectErr(await api("requestPdf", { month: CUR, doc_date: 20261203 }, TP), "BAD_REQUEST", "requestPdf doc_date as a number");
+    const smSame = await api("requestPdf", { month: CUR, supply_month: CUR }, TP);
+    expectErr(smSame, "BAD_REQUEST", "requestPdf supply_month = the round month (not the next)");
+    ok(smSame.error && /เดือนที่เบิกต้องเป็นเดือนถัดจากรอบ/.test(smSame.error.message), "supply_month message (Thai)");
+    expectErr(await api("requestPdf", { month: CUR, supply_month: "2027-01" }, TP), "BAD_REQUEST", "requestPdf supply_month two months ahead");
+    expectErr(await api("requestPdf", { month: CUR, supply_month: ["2026-12"] }, TP), "BAD_REQUEST", "requestPdf supply_month as an array");
+    expectErr(await api("adminRequestPdf", { pcu: P, month: CUR, supply_month: PREV }, ADM2), "BAD_REQUEST", "adminRequestPdf supply_month = previous month");
+    expectErr(await api("devPrintToken", { pcu: P, month: CUR, doc_date: "2026-11" }), "BAD_REQUEST", "devPrintToken doc_date not a date");
+    eq((await files("pdf/")).length, 3, "rejected options store nothing");
+    const o1 = await mustOk("requestPdf", { month: CUR, ...OPT }, TP);
+    ok(o1.status === "ready" && /^[0-9a-f]{64}$/.test(o1.content_key) && o1.content_key !== k0, "requestPdf with {doc_date, supply_month} → ready, key ≠ the no-option key");
+    eq([o1.url, o1.filename], [`/api/pdf/${idP}?k=${o1.content_key}`, expectedName], "option PDF: same url shape, filename unchanged (round month)");
+    const curFiles = await files(`pdf/${P}/${CUR}/`);
+    ok(curFiles.includes(`pdf/${P}/${CUR}/${o1.content_key}.pdf`) && curFiles.length === 2, "option variant stored as its own R2 object (latest month keeps 2)");
+    const o2 = await mustOk("requestPdf", { month: CUR, ...OPT }, TP);
+    eq(o2.content_key, o1.content_key, "same options again → same content_key (cache hit)");
+    eq(await files(`pdf/${P}/${CUR}/`), curFiles, "same options again → no second R2 object");
+    const oa = await mustOk("adminRequestPdf", { pcu: P, month: CUR, ...OPT }, ADM2);
+    eq([oa.status, oa.content_key], ["ready", o1.content_key], "adminRequestPdf (admin) with the same options → same key");
+    ok((await mustOk("requestPdf", { month: CUR, doc_date: DD }, TP)).content_key !== o1.content_key, "doc_date alone → yet another key");
+    const ot = await mustOk("devPrintToken", { pcu: P, month: CUR, ...OPT });
+    eq(ot.content_key, o1.content_key, "devPrintToken with options carries the option content key");
+    const opd = await mustOk("printData", { k: ot.token });
+    eq([opd.doc_date, opd.supply_month, opd.month], [DD, NEXT, CUR], "printData returns doc_date + supply_month from the token");
+    const npd = await mustOk("printData", { k: (await mustOk("devPrintToken", { pcu: P, month: CUR })).token });
+    eq([npd.doc_date, npd.supply_month], [null, null], "printData with a token minted without options → both null");
+    if (TOKEN_SECRET) {
+      const mk = (o) => forgeToken({ t: "print", pcu: P, month: CUR, exp: Date.now() + 60000, ...o });
+      expectErr(await api("printData", { k: mk({ ck: o1.content_key }) }), "CONFLICT", "printData: option key in a token without dd/sm");
+      expectErr(await api("printData", { k: mk({ ck: k0, dd: DD, sm: NEXT }) }), "CONFLICT", "printData: dd/sm in a token whose ck has none");
+    } else { for (let i = 0; i < 2; i++) ok(true, "(skipped print-token forgery test: no TOKEN_SECRET readable)"); }
+    eq((await files("pdf/")).length, 3, "R2 still holds 3 PDFs after the 2h option checks (PCU11 ×2 by the 2-version rule, PCU13 ×1)");
     ok((await api("adminUsersRemove", { email: DSPE }, ADM2)).ok, "temporary dispenser removed again");
   }
 

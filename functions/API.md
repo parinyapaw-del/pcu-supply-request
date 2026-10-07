@@ -57,8 +57,8 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `saveLines` | `month, lines:{code:{stock,op,pp,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...] }` |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
-| `requestPdf` | `month` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}` |
-| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code]}` for `print.html` |
+| `requestPdf` | `month, doc_date?, supply_month?` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}`; 2h print options §6b |
+| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code], doc_date, supply_month}` for `print.html` |
 | `issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue` | – | staff actions (admin or dispenser), not PCU — §5.3 |
 
 `saveLines` rules
@@ -127,7 +127,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | action | params | data |
 |---|---|---|
 | `adminLoginGoogle` | `id_token` | `{token, exp, email, role, units}` · `FORBIDDEN` if not a user |
-| `adminRequestPdf` (admin or dispenser) | `pcu, month` | §6b — same result as `requestPdf` for that PCU's request |
+| `adminRequestPdf` (admin or dispenser) | `pcu, month, doc_date?, supply_month?` | §6b — same result as `requestPdf` for that PCU's request |
 | `adminLoginBackup` | `password` | `{token, exp, role:"admin"}` · `BAD_PASSWORD{remaining}` · `LOCKED{until}` · `NOT_FOUND` if none set |
 | `adminBootstrap` | – | §5.1 |
 | `adminRequests` | `month?` (omitted = current + previous month) | `{requests:[RequestObj without lines + pcu_name + progress + issue], rounds:[RoundInfo], server_time, current_month}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` · `issue` = IssueInfo (§4.1) or `null` when the request has no requested line (2c) |
@@ -165,7 +165,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
-| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month}`, `devSetRequestMonth{pcu,month,new_month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month). None of the dev actions is counted in `usage_counters` |
+| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month,doc_date?,supply_month?}`, `devSetRequestMonth{pcu,month,new_month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month). None of the dev actions is counted in `usage_counters` |
 | header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
 | header `X-Dev-Month: YYYY-MM` | – | only honoured when `DEV_FAKE_GOOGLE==="1"` (POST /api and the export): overrides "the current Bangkok month" so tests do not depend on the real date |
 
@@ -309,21 +309,30 @@ OP · PP · รวม · เป็นเงิน · จ่ายจริง OP
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
 
 ## 6b. PDF (phase 2b) — `requestPdf` · `adminRequestPdf` · `printData` · `GET /api/pdf/:id`
-Result of `requestPdf{month}` (PCU token, always `token.pcu`) and `adminRequestPdf{pcu,month}` (admin or dispenser):
+Result of `requestPdf{month, doc_date?, supply_month?}` (PCU token, always `token.pcu`) and `adminRequestPdf{pcu, month, doc_date?, supply_month?}` (admin or dispenser):
 - `{status:"ready", url:"/api/pdf/<request_id>?k=<content_key>", filename:"ใบเบิก_<print_name>_<เดือนไทย ปีพ.ศ.>.pdf", content_key}`
 - `{status:"pending", retry_after:<s>}` — Browser Rendering answered 429 (its `Retry-After`, default 10). The client retries, giving up after 60 s total.
 - Errors: `NOT_FOUND` (no request, or status `draft`: "ต้องส่งใบเบิกก่อนจึงจะดาวน์โหลด PDF ได้") · `PDF_UNAVAILABLE` (no `env.FILES`, or no
-  `CF_BR_TOKEN`/`CF_ACCOUNT_ID` outside dev mock) · `PDF_FAILED{detail}` (renderer error / timeout / non-PDF body / R2 error) · `BAD_REQUEST` (month / pcu).
+  `CF_BR_TOKEN`/`CF_ACCOUNT_ID` outside dev mock) · `PDF_FAILED{detail}` (renderer error / timeout / non-PDF body / R2 error) · `BAD_REQUEST` (month / pcu /
+  print options).
   The two PDF errors carry a Thai message telling the user to use พิมพ์ → Save as PDF.
 
+Print options (2h, per print — never stored; D1 unchanged): `{doc_date:"YYYY-MM-DD"|null, supply_month:"YYYY-MM"|null}`, sent as `doc_date` / `supply_month`
+next to `month` (`printOptsOf`). Absent / `null` / `""` → `null` (that header slot prints dotted). `doc_date` must pass `isDate` else `BAD_REQUEST`
+"วันที่เอกสารไม่ถูกต้อง"; `supply_month` must `=== nextMonth(month)` (round 2026-10 → only 2026-11) else `BAD_REQUEST` "เดือนที่เบิกต้องเป็นเดือนถัดจากรอบ";
+any other type → `BAD_REQUEST`. `filename` is unchanged (still the round month).
+
 Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({lv:LAYOUT_VERSION, v:form_version_id,
-pn:print_name, sa:submitted_at, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0)}))` → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
+pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), dd:doc_date|null, sm:supply_month|null}))` → each distinct option set is
+its own key / file (retention §6b.1 unchanged; `submitted_at` dropped from the key in 2h — a resend with identical content reuses the file) → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
 else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<pcu>/<month>/<content_key>.pdf")` + `pdf_files` row + audit `pdf_create`
 (actor = PCU code or staff e-mail) in one D1 batch.
-- `LAYOUT_VERSION` (exported by `pdf.js`, currently **2** = brief 2g, print scale 0.78) is bumped whenever `print.css` / `print.js` change what the sheet
+- `LAYOUT_VERSION` (exported by `pdf.js`, currently **3** = brief 2h: header วันที่ / ประจำเดือน blank unless chosen at print time, PCU14/15 sentence = full
+  `print_name`; 2 = brief 2g, print scale 0.78) is bumped whenever `print.css` / `print.js` change what the sheet
   looks like: the cache only sees the key, so without the bump an unchanged request would keep getting its old-layout PDF from R2 (2b-R §6b.1 prunes those).
-- Print token = `signToken({t:"print", pcu, month, ck:content_key, exp: now+120000})` (same HMAC format as §2). `printData` verifies it, requires type
-  `print`, recomputes the content key and answers `CONFLICT` if the request changed since the token was minted (so a PDF is never cached under a wrong key).
+- Print token = `signToken({t:"print", pcu, month, ck:content_key, dd:doc_date|null, sm:supply_month|null, exp: now+120000})` (same HMAC format as §2).
+  `printData` verifies it, requires type `print`, recomputes the content key with `{doc_date: dd ?? null, supply_month: sm ?? null}` and answers `CONFLICT` if
+  the request changed since the token was minted (so a PDF is never cached under a wrong key). It returns `doc_date`, `supply_month` (`null` when absent).
   `form` = version bound to the request (`form_version_id`), else latest of the round's fy. Lines have the PCU shape (no price/issued fields).
 - Browser Rendering call (checked 2026-10-06 against the API reference; the guide page now writes the path as `.../browser-run/pdf`):
   `POST https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/browser-rendering/pdf`, `Authorization: Bearer ${CF_BR_TOKEN}`, body
