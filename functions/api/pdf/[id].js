@@ -1,4 +1,5 @@
-// GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>  (token may also be `Authorization: Bearer`) — streams the cached PDF from R2.
+// GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>[&inline=1]  (token may also be `Authorization: Bearer`) — streams the cached PDF from R2.
+// inline=1 → Content-Disposition: inline (opened in the tab for printing, brief 2g); anything else → attachment (download).
 // A PCU token must own the request; admin / dispenser may download any. Real HTTP status codes (not called through js/api.js).
 // 2b-R: every FILES.get is counted as R2 Class B; at the r2_max_class_b cap → 429 PDF_QUOTA before touching R2.
 import { ApiError, err, errorBody, jsonResponse } from "../../_lib/http.js";
@@ -42,12 +43,13 @@ export async function onRequestGet({ request, env, params }) {
     }
     if (!obj) throw err("NOT_FOUND", "ไม่พบไฟล์ PDF — กดดาวน์โหลดใหม่อีกครั้ง");
 
+    const disposition = url.searchParams.get("inline") === "1" ? "inline" : "attachment";
     const filename = pdfFilename(found.pcuRow && (found.pcuRow.print_name || found.pcuRow.name), found.reqRow.month);
     return new Response(obj.body, {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="request.pdf"; filename*=UTF-8''${encodeFilename(filename)}`,
+        "content-disposition": `${disposition}; filename="request.pdf"; filename*=UTF-8''${encodeFilename(filename)}`,
         "cache-control": "private, max-age=0",
       },
     });

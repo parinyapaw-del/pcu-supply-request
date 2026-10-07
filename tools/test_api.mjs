@@ -812,6 +812,15 @@ async function main() {
     const cd = own.headers.get("content-disposition") || "";
     ok(/^attachment;/.test(cd) && cd.includes("filename*=UTF-8''" + encodeURIComponent(expectedName)), "content-disposition: attachment with the UTF-8 filename");
     ok(/max-age=0/.test(own.headers.get("cache-control") || "") && /private/.test(own.headers.get("cache-control") || ""), "cache-control: private, max-age=0");
+    // 2g: inline=1 → the พิมพ์ button (non-Chromium browsers) opens the PDF in the tab; same filename params, same auth
+    const inl = await get(p1.url + "&token=" + encodeURIComponent(TP) + "&inline=1");
+    const inlBody = Buffer.from(await inl.arrayBuffer());
+    ok(inl.status === 200 && inl.headers.get("content-type") === "application/pdf" && inlBody.subarray(0, 4).toString() === "%PDF", "GET pdf &inline=1 with own token → 200 application/pdf (%PDF)");
+    const icd = inl.headers.get("content-disposition") || "";
+    ok(/^inline;/.test(icd) && icd.includes(`filename="request.pdf"`) && icd.includes("filename*=UTF-8''" + encodeURIComponent(expectedName)), "content-disposition: inline with the same filename params (inline=1)");
+    ok(/^attachment;/.test((await get(p1.url + "&token=" + encodeURIComponent(TP) + "&inline=0")).headers.get("content-disposition") || ""), "inline=0 (anything but 1) → still attachment");
+    const inlOther = await get(p1.url + "&token=" + encodeURIComponent(T3b) + "&inline=1");
+    ok(inlOther.status === 403 && (await inlOther.json()).error.code === "FORBIDDEN", "GET pdf &inline=1 with another PCU's token → 403 (auth unchanged)");
     eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 200, "admin may download any PDF (Authorization: Bearer)");
     eq((await get(p1.url, { authorization: "Bearer " + DSP2 })).status, 200, "dispenser may download any PDF");
     eq((await get(`/api/pdf/${idP}?k=${"0".repeat(64)}`, { authorization: "Bearer " + ADM2 })).status, 404, "unknown content key → 404");
@@ -855,6 +864,27 @@ async function main() {
     eq([pd.request.id, pd.request.status, pd.request.lines[A.code].op, pd.request.lines[A.code].pp, pd.request.lines[B.code].op], [idP, "submitted", 6, 1, 2], "printData.request lines");
     ok(pd.request.submitted_at && !("price_snapshot" in pd.request.lines[A.code]), "printData.request has submitted_at and no price/issued fields");
     eq(pd.hidden, [], "printData.hidden");
+    // 2g: LAYOUT_VERSION is part of the content key (handoff 2026-10-07 §3.1) — a layout change must not be served old PDFs from R2.
+    // functions/_lib/pdf.js loads under plain node (only http/db/auth/time/views/usage, no Workers-only deps), so this is the real function.
+    {
+      const pdfLib = await import(new URL("../functions/_lib/pdf.js", import.meta.url));
+      const { sha256Hex, stableStringify } = await import(new URL("../functions/_lib/http.js", import.meta.url));
+      const bundle = {
+        pcuRow: { code: pd.pcu.code, name: pd.pcu.name, print_name: pd.pcu.print_name },
+        reqRow: { form_version_id: adm.form_version_id, submitted_at: pd.request.submitted_at },
+        lines: Object.entries(pd.request.lines).map(([item_code, l]) => ({ item_code, op: l.op, pp: l.pp })),
+        hidden: pd.hidden,
+      };
+      const ls = {};
+      for (const l of bundle.lines) if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
+      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, sa: pd.request.submitted_at || null, hidden: [...pd.hidden].sort(), lines: ls };
+      const keyFor = (lv) => sha256Hex(stableStringify(lv === undefined ? fields : { lv, ...fields }));
+      const local = await pdfLib.contentKeyOf(bundle);
+      ok(Number.isInteger(pdfLib.LAYOUT_VERSION) && pdfLib.LAYOUT_VERSION >= 2, `pdf.js exports LAYOUT_VERSION (= ${pdfLib.LAYOUT_VERSION})`);
+      ok(local === (await keyFor(pdfLib.LAYOUT_VERSION)) && local !== (await keyFor(pdfLib.LAYOUT_VERSION + 1)) && local !== (await keyFor(undefined)),
+        "contentKeyOf hashes lv: LAYOUT_VERSION (key changes with lv; differs from the pre-2g key without lv)");
+      eq(dt.content_key, local, "server content key = contentKeyOf() under node (same LAYOUT_VERSION + same fields)");
+    }
     await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
     const dt2 = await mustOk("devPrintToken", { pcu: P, month: CUR });
     eq((await mustOk("printData", { k: dt2.token })).hidden, [CSI.code], "printData.hidden lists the PCU's hidden items");

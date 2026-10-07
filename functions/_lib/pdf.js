@@ -9,6 +9,9 @@ import { currentMonth, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
 import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
 import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
+// Bump whenever print.css / print.js change what the sheet looks like: it is part of the content key, so a changed layout is
+// rendered again instead of served from R2 (handoff 2026-10-07 §3.1). 2 = brief 2g (--print-scale 0.78, one Blink engine everywhere).
+export const LAYOUT_VERSION = 2;
 export const PRINT_TOKEN_MS = 120000; // a print token (handed to the renderer inside the URL) lives 2 minutes
 const DEFAULT_RETRY_AFTER = 10;
 const RENDER_TIMEOUT_MS = 60000;
@@ -55,7 +58,7 @@ async function loadBundle(DB, pcuCode, month) {
 
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
 
-// Hash of everything that changes what the printed sheet shows. Same content → same key → the cached PDF is reused.
+// Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION). Same content → same key → the cached PDF is reused.
 export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }) {
   const ls = {};
   for (const l of lines) {
@@ -63,6 +66,7 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }) {
     if (op + pp > 0) ls[l.item_code] = [op, pp];
   }
   return sha256Hex(stableStringify({
+    lv: LAYOUT_VERSION,
     v: reqRow.form_version_id ?? null,
     pn: pcuRow.print_name || pcuRow.name,
     sa: reqRow.submitted_at || null,

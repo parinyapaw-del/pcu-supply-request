@@ -316,10 +316,12 @@ Result of `requestPdf{month}` (PCU token, always `token.pcu`) and `adminRequestP
   `CF_BR_TOKEN`/`CF_ACCOUNT_ID` outside dev mock) · `PDF_FAILED{detail}` (renderer error / timeout / non-PDF body / R2 error) · `BAD_REQUEST` (month / pcu).
   The two PDF errors carry a Thai message telling the user to use พิมพ์ → Save as PDF.
 
-Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({v:form_version_id, pn:print_name,
-sa:submitted_at, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0)}))` → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
+Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({lv:LAYOUT_VERSION, v:form_version_id,
+pn:print_name, sa:submitted_at, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0)}))` → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
 else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<pcu>/<month>/<content_key>.pdf")` + `pdf_files` row + audit `pdf_create`
 (actor = PCU code or staff e-mail) in one D1 batch.
+- `LAYOUT_VERSION` (exported by `pdf.js`, currently **2** = brief 2g, print scale 0.78) is bumped whenever `print.css` / `print.js` change what the sheet
+  looks like: the cache only sees the key, so without the bump an unchanged request would keep getting its old-layout PDF from R2 (2b-R §6b.1 prunes those).
 - Print token = `signToken({t:"print", pcu, month, ck:content_key, exp: now+120000})` (same HMAC format as §2). `printData` verifies it, requires type
   `print`, recomputes the content key and answers `CONFLICT` if the request changed since the token was minted (so a PDF is never cached under a wrong key).
   `form` = version bound to the request (`form_version_id`), else latest of the round's fy. Lines have the PCU shape (no price/issued fields).
@@ -332,10 +334,11 @@ else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<p
 - `print.html?k=…` (static page, no login) calls `printData`, renders every printable step (`active !== false`) with the same builder as the print route, waits for
   fonts, then adds class `print-ready` (or `print-error` + the message on failure).
 
-`GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>` (token may also be `Authorization: Bearer`): a PCU token must own the request (`token.pcu ==
+`GET /api/pdf/:id?k=<content_key>&token=<pcu|staff token>[&inline=1]` (token may also be `Authorization: Bearer`): a PCU token must own the request (`token.pcu ==
 request.pcu`) else 403; admin / dispenser any. HTTP 401 (no/invalid token) · 403 · 400 (malformed `k`) · 404 JSON (no request, no `pdf_files` row or R2 object).
 200 streams the R2 object: `Content-Type: application/pdf`, `Content-Disposition: attachment; filename="request.pdf"; filename*=UTF-8''<encoded filename>`,
-`Cache-Control: private, max-age=0`. Older versions stay downloadable by their own `k` until the retention rule (§6b.1) prunes them (then 404).
+`Cache-Control: private, max-age=0`. `inline=1` (2g: the พิมพ์ button on non-Chromium browsers opens the PDF in the same tab to print it) → same header
+with `inline` instead of `attachment` (same filename parameters); any other value or no `inline` → `attachment`. Auth, quota and counters are identical. Older versions stay downloadable by their own `k` until the retention rule (§6b.1) prunes them (then 404).
 `adminClearTrial` deletes every `pdf_files` row and its R2 object. 2b-R: each `FILES.get` here counts one R2 Class B op (also when the object turns out
 missing; requests without a `pdf_files` row never touch R2); when this month's Class B count ≥ `r2_max_class_b` → **HTTP 429** JSON
 `{ok:false,error:{code:"PDF_QUOTA",message,detail,usage}}` before touching R2 (not counted).
