@@ -6,7 +6,7 @@ import {
 import {
   PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
 } from "./auth.js";
-import { currentMonth, currentRound, isMonth, monthFy, nextMonth, nowIso } from "./time.js";
+import { currentMonth, currentRound, fyMonths, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
   getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
 } from "./views.js";
@@ -36,7 +36,11 @@ export async function pcuLogin(ctx, p) {
   if (await pinMatches(pin, row)) {
     if (fail) await DB.prepare(`UPDATE pcus SET pin_fail = 0, pin_locked_until = NULL WHERE code = ?`).bind(code).run();
     const tok = await makePcuToken(env, row.code, Number(row.pin_version) || 1);
-    await DB.batch([auditStmt(DB, row.code, "pcu", "pcuLogin", row.code, "", "ok")]);
+    await DB.batch([
+      auditStmt(DB, row.code, "pcu", "pcuLogin", row.code, "", "ok"),
+      // 2m: successful PIN logins only (wrong PIN / lock / pcuChangePin / token re-bootstrap never count)
+      DB.prepare(`UPDATE pcus SET login_count = login_count + 1, last_login_at = ? WHERE code = ?`).bind(nowIso(), row.code),
+    ]);
     const bootstrap = await buildPcuBootstrap(ctx, row);
     return { token: tok.token, exp: tok.exp, pcu: pcuPublic(row), bootstrap };
   }
@@ -115,14 +119,20 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   const cfg = publicConfig(cfgAll, monthFy(cur));
   const fy = cfg.fy_current;
   const code = pcuRow.code;
+  const nxt = nextMonth(cur);
+  // 2l: history = every round month from the first round of FY F-1 (F = monthFy(cur)) up to (excluding) prev, newest first
+  const histFrom = fyMonths(monthFy(cur) - 1)[0];
 
-  const [form, hiddenRes, limRes, planRes, roundRows, olderRes, actualRes, pricesRes, curView, prevView, noticeRes] = await Promise.all([
+  const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(code).all(),
     DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
     DB.prepare(`SELECT item_code, plan_op, plan_pp FROM plans WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
-    getRoundRows(DB, [cur, prev]),
-    DB.prepare(`SELECT month FROM requests WHERE pcu = ? AND month < ? ORDER BY month DESC`).bind(code, prev).all(),
+    getRoundRows(DB, [nxt, cur, prev]),
+    Promise.all([
+      DB.prepare(`SELECT month, status, submitted_at FROM requests WHERE pcu = ? AND month >= ? AND month < ?`).bind(code, histFrom, prev).all(),
+      DB.prepare(`SELECT month, locked FROM rounds WHERE month >= ? AND month < ?`).bind(histFrom, prev).all(),
+    ]),
     DB.prepare(`SELECT DISTINCT item_code FROM actual_prev WHERE fy = ? AND pcu = ? AND (COALESCE(op,0) > 0 OR COALESCE(pp,0) > 0)`).bind(fy - 1, code).all(),
     DB.prepare(`SELECT item_code FROM prices_prev WHERE fy = ?`).bind(fy - 1).all(),
     pcuMonthView(DB, code, cur, fy),
@@ -140,6 +150,17 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
       if (known && !known.has(c)) continue; // brand-new item: no history, not "never withdrawn"
       neverPrev.push(c);
     }
+  }
+
+  const histReq = new Map(histReqRes.results.map((r) => [r.month, r]));
+  const histLocked = new Map(histRoundRes.results.map((r) => [r.month, !!r.locked]));
+  const history = [];
+  for (let m = prevMonth(prev); m >= histFrom; m = prevMonth(m)) {
+    const r = histReq.get(m);
+    history.push({
+      month: m, fy: monthFy(m), trial: !!cfg.trial_month && m === cfg.trial_month, locked: histLocked.get(m) || false,
+      status: r ? r.status : "not_started", submitted_at: (r && r.submitted_at) || null,
+    });
   }
 
   const limits = {}, plans = {};
@@ -174,7 +195,8 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     form: formPublic(form, PCU_FORM),
     forms,
     rounds: [cur, prev].map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
-    older_months: olderRes.results.map((r) => r.month),
+    next_round: { ...roundInfo(nxt, roundRows.get(nxt), cfg.deadline_day, cfg.trial_month), opens_on: `${cur}-01` },
+    history,
     hidden: hiddenRes.results.map((r) => r.item_code),
     never_prev: neverPrev,
     limits, plans,

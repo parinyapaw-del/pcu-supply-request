@@ -19,8 +19,12 @@ export function renderTab7(container, ctx) {
   function draw() {
     const pcus = b().pcus;
     const defaults = pcus.filter((p) => !p.pin_custom);
-    warn.style.display = defaults.length ? "" : "none";
-    warn.innerHTML = defaults.length ? `<strong>ยังใช้ PIN ตั้งต้น 12345:</strong> ${defaults.length} แห่ง (${defaults.map((p) => escapeHtml(p.name)).join(", ")}) — ควรตั้ง PIN เฉพาะแห่งก่อนแจก` : "";
+    const neverIn = pcus.filter((p) => !(p.login_count > 0));
+    const warnLines = [];
+    if (defaults.length) warnLines.push(`<div><strong>ยังใช้ PIN ตั้งต้น 12345:</strong> ${defaults.length} แห่ง (${defaults.map((p) => escapeHtml(p.name)).join(", ")}) — ควรตั้ง PIN เฉพาะแห่งก่อนแจก</div>`);
+    if (neverIn.length) warnLines.push(`<div><strong>ยังไม่เคยเข้าใช้:</strong> ${neverIn.length} แห่ง (${neverIn.map((p) => escapeHtml(p.name)).join(", ")})</div>`);
+    warn.style.display = warnLines.length ? "" : "none";
+    warn.innerHTML = warnLines.join("");
     const hiddenMap = b().hidden || {};
     const rows = pcus.map((p) => {
       const nHidden = (hiddenMap[p.code] || []).length;
@@ -29,6 +33,7 @@ export function renderTab7(container, ctx) {
         <td class="left"><strong>${p.code}</strong> ${escapeHtml(p.name)}${p.group === "พิเศษ" ? ' <span class="pcu-group-tag">(พิเศษ)</span>' : ""}</td>
         <td class="left">${p.pin_custom ? '<span class="badge badge-success">ตั้ง PIN แล้ว</span>' : '<span class="badge badge-warn" title="ยังใช้ PIN ตั้งต้น 12345">ยังใช้ PIN ตั้งต้น 12345</span>'}</td>
         <td class="left">${locked ? `<span class="badge badge-danger">ล็อก ถึง ${escapeHtml(formatBangkokDateTime(p.pin_locked_until))}</span>` : (p.pin_fail > 0 ? `<span class="badge badge-warn">กรอกผิด ${p.pin_fail} ครั้ง</span>` : '<span class="muted">ปกติ</span>')}</td>
+        <td class="left">${(p.login_count || 0) > 0 ? `<strong>${p.login_count}</strong> ครั้ง · ล่าสุด ${escapeHtml(formatBangkokDateTime(p.last_login_at))}` : '<span class="badge badge-muted">ยังไม่เคยเข้า</span>'}</td>
         <td class="num">${nHidden}</td>
         <td class="left actions-cell">
           <button type="button" class="btn btn-secondary btn-sm" data-act="pin">ตั้ง PIN</button>
@@ -36,7 +41,7 @@ export function renderTab7(container, ctx) {
           <button type="button" class="btn btn-secondary btn-sm" data-act="hidden">รายการที่ซ่อน</button>
         </td></tr>`;
     }).join("");
-    host.innerHTML = tableScroll(`<table class="admin-table admin-table-wide" id="t7-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">PIN</th><th class="left">สถานะการล็อก</th><th class="num">รายการที่ซ่อน</th><th class="left">การดำเนินการ</th></tr></thead><tbody>${rows}</tbody></table>`);
+    host.innerHTML = tableScroll(`<table class="admin-table admin-table-wide" id="t7-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">PIN</th><th class="left">สถานะการล็อก</th><th class="left">เข้าใช้ (PIN)</th><th class="num">รายการที่ซ่อน</th><th class="left">การดำเนินการ</th></tr></thead><tbody>${rows}</tbody></table>`);
     host.querySelectorAll("tr[data-pcu]").forEach((tr) => {
       const code = tr.dataset.pcu;
       tr.querySelector('[data-act="pin"]').addEventListener("click", () => setPin(code));

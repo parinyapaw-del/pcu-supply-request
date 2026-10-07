@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -69,10 +69,21 @@ const V2 = [
      period TEXT NOT NULL, metric TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (period, metric))`,
 ];
 
+// Migration v3 (2m, PIN login counter shown to admin): pcus.login_count + pcus.last_login_at, backfilled from audit_log
+// (successful pcuLogin rows = action 'pcuLogin' AND detail 'ok'). The backfill is idempotent (recomputed from audit_log).
+const V3 = [
+  `ALTER TABLE pcus ADD COLUMN login_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE pcus ADD COLUMN last_login_at TEXT`,
+  `UPDATE pcus SET
+     login_count = (SELECT COUNT(*) FROM audit_log a WHERE a.action = 'pcuLogin' AND a.detail = 'ok' AND a.pcu = pcus.code),
+     last_login_at = (SELECT MAX(a.ts) FROM audit_log a WHERE a.action = 'pcuLogin' AND a.detail = 'ok' AND a.pcu = pcus.code)`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
   { v: 2, statements: V2, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 3, statements: V3, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",

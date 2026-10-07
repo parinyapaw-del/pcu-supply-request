@@ -97,7 +97,9 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
             {type:"section",title} | {type:"item",code,seq,name,unit,price,active} ]} ] },     // latest version of fy_current; steps with active:false are STRIPPED (2d)
   forms: { "11": <form, same shape, PCU-stripped> },   // 2d: for every shown (byMonth) request whose form_version_id is set and ≠ form_version_id — the version it was submitted on ({} when none)
   rounds: [ RoundInfo ],                     // [currentRound, prevRound] (§5.1 RoundInfo, incl. trial)
-  older_months: ["2026-08", ...],            // months before prevRound where this PCU has a request (newest first)
+  next_round: { ...RoundInfo, opens_on:"2026-12-01" },  // 2l: preview of nextMonth(currentRound) (not writable yet); opens_on = `${currentRound}-01`
+  history: [ {month, fy, trial, locked,      // 2l: EVERY round month m with fyMonths(F-1)[0] <= m < prevRound (F = monthFy(currentRound)), newest first,
+     status:"not_started"|"draft"|"submitted"|"issued", submitted_at|null} ],  //  ≤ 23 entries; "not_started" = no request row (replaces older_months; no lines)
   hidden: [item_code],
   never_prev: [item_code],                   // items of the form this PCU never withdrew in FY(fy_current-1) per actual_prev ([] if no history for this PCU)
   limits: { code: [limit_month|null, limit_year|null] },     // fy_current
@@ -191,7 +193,7 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   me: {email|"backup", role, units:[...]}, server_time, current_month, current_round,   // current_month = calMonth · current_round = nextMonth(calMonth) (2j)
   config: { limit_mode, stock_required, deadline_day, fy_current, trial_month, budget_op, budget_pp, budget_total,
             r2_max_bytes, r2_max_class_a, r2_max_class_b },              // R2 caps = effective values (defaults applied), §6b.1
-  pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool} ],
+  pcus: [ {code,name,print_name,group, pin_locked_until|null, pin_fail, pin_custom:bool, login_count:int, last_login_at:iso|null} ],   // login_* = successful pcuLogin only (2m)
   form: {id,fy,created_at,note,steps}, form_versions: [ {id,fy,created_at,created_by,note} ],     // form = latest of fy_current (incl. closed pages, §5.2)
   plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
   plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
@@ -423,7 +425,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -431,7 +433,8 @@ config(key PK, value)                     -- value = JSON text (e.g. "0", "\"war
                                           -- 2b-R: r2_max_bytes / r2_max_class_a / r2_max_class_b (null = default), r2_backup_bytes / r2_backup_files (written by runBackup)
 schema_version(v)
 users(email PK, role 'admin'|'dispenser', units JSON, added_at, added_by)
-pcus(code PK, name, print_name, "group", pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom)
+pcus(code PK, name, print_name, "group", pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom,
+     login_count, last_login_at)   -- v3 (2m): login_count INTEGER NOT NULL DEFAULT 0 · last_login_at TEXT (iso) — +1 per successful pcuLogin
 form_versions(id PK AUTOINCREMENT, fy, created_at, created_by, note, data JSON, data_hash)   -- data = FORMAT.md `form` object {fy,note,steps}
 rounds(month PK, fy, deadline_date, locked, locked_at, locked_by, note)
 requests(id PK 'PCU01_2026-10', pcu, month, status, form_version_id, submitter_name, last_step, created_at, updated_at,
@@ -454,6 +457,9 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   v1 = one batch. **v2** (2b-R) = `ALTER TABLE pdf_files ADD COLUMN bytes INTEGER` + `CREATE TABLE IF NOT EXISTS usage_counters …`, run one statement
   at a time; a "duplicate column" error (a racing isolate already added it) is swallowed and `schema_version` 2 is still recorded.
   `usage_counters` is in `TABLES` (backups, `devReset`).
+  **v3** (2m) = `ALTER TABLE pcus ADD COLUMN login_count …` + `ALTER TABLE pcus ADD COLUMN last_login_at TEXT` (same one-by-one / "duplicate column" rule)
+  + backfill `UPDATE pcus SET login_count = COUNT(*), last_login_at = MAX(ts)` of `audit_log` rows `action='pcuLogin' AND detail='ok'` per pcu
+  (a backfill error is not tolerated → migration fails and retries next request).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

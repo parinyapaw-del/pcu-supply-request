@@ -213,6 +213,12 @@ button, input, select {
 .fy-tag { font-size: 0.8rem; font-weight: 400; }
 .round-card-locked { background: var(--muted-bg); }
 .round-card-collapsed summary { cursor: pointer; }
+/* brief 2l: next-round preview, "not submitted" rows, fiscal-year dropdown */
+.round-card-preview { border-style: dashed; background: var(--muted-bg); }
+.round-card-preview .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.round-row-none { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; color: var(--muted); }
+.round-row-none strong { font-weight: 600; }
+.fy-select { display: inline-block; min-height: 36px; margin-left: 6px; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 2px 8px; max-width: 100%; }
 .deadline-line { margin: 6px 0; }
 .admin-note-box { background: #fff3b0; color: #4a3b00; border: 1px solid #e6c84c; border-radius: 8px; padding: 10px 12px; margin: 10px 0; overflow-wrap: anywhere; }
 @media (prefers-color-scheme: dark) { .admin-note-box { background: #4a3f12; color: #ffe9a0; border-color: #8a7220; } }
@@ -220,9 +226,6 @@ button, input, select {
 .notice-bar .btn { text-decoration: none; }
 .notice-bar-warn { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
 .pin-page .field-row { margin-bottom: 12px; }
-.older-months { margin: 8px 0 16px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
-.older-months summary { cursor: pointer; font-weight: 600; min-height: 36px; display: flex; align-items: center; }
-.older-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--line); }
 .home-links { margin-top: 20px; }
 
 /* ---- hidden-items settings page ---- */

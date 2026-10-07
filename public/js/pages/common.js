@@ -27,6 +27,15 @@ export function formatThaiDateTime(iso) {
   return BKK_DATETIME.format(d).replace(/\s*เวลา\s*/, " ");
 }
 
+const BKK_SHORT_DATE = new Intl.DateTimeFormat("th-TH", { day: "numeric", month: "short", timeZone: "Asia/Bangkok" });
+
+// "6 ต.ค." (Asia/Bangkok, no time) from an ISO string — brief 2l history rows.
+export function formatThaiShortDate(iso) {
+  const d = new Date(iso);
+  if (!iso || isNaN(d.getTime())) return "";
+  return BKK_SHORT_DATE.format(d);
+}
+
 // Calendar parts of an ISO instant in Asia/Bangkok -> { day, monthName, beYear }.
 export function bangkokDateParts(iso) {
   const d = new Date(iso);

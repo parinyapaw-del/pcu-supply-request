@@ -164,7 +164,7 @@ export async function adminBootstrap(ctx) {
   const [form, fvRes, pcuRes, reqMonths, roundRes] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT id, fy, created_at, created_by, note FROM form_versions ORDER BY id DESC`).all(),
-    DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_locked_until, pin_fail, pin_custom FROM pcus ORDER BY code`).all(),
+    DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_locked_until, pin_fail, pin_custom, login_count, last_login_at FROM pcus ORDER BY code`).all(),
     DB.prepare(`SELECT DISTINCT month FROM requests ORDER BY month DESC`).all(),
     DB.prepare(`SELECT * FROM rounds`).all(),
   ]);
@@ -185,6 +185,7 @@ export async function adminBootstrap(ctx) {
           code: r.code, name: r.name, print_name: r.print_name || r.name, group: r.grp,
           pin_locked_until: r.pin_locked_until && Date.parse(r.pin_locked_until) > nowMs ? r.pin_locked_until : null,
           pin_fail: Number(r.pin_fail) || 0, pin_custom: !!r.pin_custom,
+          login_count: Number(r.login_count) || 0, last_login_at: r.last_login_at || null, // 2m
         }
       : { code: r.code, name: r.name, print_name: r.print_name || r.name, group: r.grp }),
     form: formPublic(form),

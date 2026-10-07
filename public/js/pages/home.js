@@ -1,11 +1,18 @@
 // Home page (#/home): one card per round (current + previous month), status badge, deadline, admin note,
-// issue-notice bar + "ดูการจ่าย" (2c) and the "older months" expander (phase 2 spec §4.1).
+// issue-notice bar + "ดูการจ่าย" (2c). Brief 2l: round timeline for the whole fiscal year (preview of the next round,
+// editable cards, read-only history rows incl. "ไม่ได้ส่ง") + a fiscal-year dropdown reaching back one year.
 import { getOrderedSteps } from "../data.js";
 import {
   esc, pcuCode, requestOf, requestStatus,
   loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote,
 } from "./common.js";
 import * as sync from "../sync.js";
+import { fiscalYearOf, fiscalYearStartMonthKey, prevMonthKey } from "../format.js";
+import { formatThaiYmd, formatThaiShortDate } from "./common.js";
+
+// Brief 2l: fiscal year shown on the home page (null = the current one). Module-level; reset when boot changes.
+let selectedFy = null;
+let selectedFyBoot = null;
 
 function itemsRequested(request) {
   let n = 0;
@@ -93,15 +100,89 @@ function noticesHtml(app) {
     .join("");
 }
 
+function previewHtml(next) {
+  return `
+  <div class="round-card round-card-preview" data-month="${esc(next.month)}">
+    <div class="round-card-head">
+      <h3>${esc(roundTitle(next.month))} <span class="muted fy-tag">ปีงบ ${esc(next.fy)}</span></h3>
+      <span class="round-status"><span class="badge badge-info">รอบถัดไป</span></span>
+    </div>
+    <p class="muted deadline-line">เปิดให้กรอกตั้งแต่ ${esc(formatThaiYmd(next.opens_on))} · ส่งภายใน ${esc(formatThaiYmd(next.deadline_date))}</p>
+    <div class="round-card-actions">
+      <button type="button" class="btn btn-primary" disabled>กรอก</button>
+    </div>
+  </div>`;
+}
+
+function historyStatusBadge(h) {
+  if (h.status === "issued") return '<span class="badge badge-success">จ่ายแล้ว</span>';
+  if (h.status === "submitted") {
+    const d = h.submitted_at ? formatThaiShortDate(h.submitted_at) : "";
+    return `<span class="badge badge-success">ส่งแล้ว${d ? ` ${esc(d)}` : ""}</span>`;
+  }
+  return '<span class="badge badge-warn">กำลังกรอก</span>';
+}
+
+function historyRowHtml(h) {
+  const title = `<strong>${esc(roundTitle(h.month))}</strong>${trialBadgeHtml(h)}`;
+  if (h.status === "not_started") {
+    return `
+  <div class="round-card round-card-collapsed round-row-none" data-month="${esc(h.month)}">
+    <span>${title}</span><span class="badge badge-muted">ไม่ได้ส่ง</span>
+  </div>`;
+  }
+  return `
+  <details class="round-card round-card-collapsed" data-month="${esc(h.month)}">
+    <summary>${title} ${historyStatusBadge(h)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <div class="round-card-actions">
+      <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
+      <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์</button>
+      ${h.status === "issued" ? `<a class="btn btn-secondary" href="#/issue?month=${esc(h.month)}">ดูการจ่าย</a>` : ""}
+    </div>
+  </details>`;
+}
+
+// Cards for fiscal year V (brief 2l §4.1): preview (V===F only) -> editable rounds -> history rows (+ the trial round).
+function cardsHtml(app, V, F) {
+  const b = app.boot;
+  const parts = [];
+  if (V === F && b.next_round) parts.push(previewHtml(b.next_round));
+  (b.rounds || []).forEach((r, i) => {
+    if (V !== F && r.fy !== V) return;
+    parts.push(i > 0 && r.locked ? collapsedHtml(app, r) : cardHtml(app, r));
+  });
+  const trialMonth = prevMonthKey(fiscalYearStartMonthKey(V));
+  const shown = new Set((b.rounds || []).map((r) => r.month));
+  (b.history || [])
+    .filter((h) => (h.fy === V || (h.trial && h.month === trialMonth)) && !(V === F && shown.has(h.month)))
+    .sort((a, c) => (a.month < c.month ? 1 : a.month > c.month ? -1 : 0))
+    .forEach((h) => parts.push(historyRowHtml(h)));
+  return parts.join("");
+}
+
+function fyLineHtml(V, F, hasPrev) {
+  const select = hasPrev
+    ? ` <select class="fy-select" aria-label="เลือกปีงบประมาณ">
+        <option value="${F}"${V === F ? " selected" : ""}>ปีงบ ${F}</option>
+        <option value="${F - 1}"${V === F - 1 ? " selected" : ""}>ปีงบ ${F - 1}</option>
+      </select>`
+    : "";
+  return `เลือกรอบที่จะกรอกหรือพิมพ์ · ปีงบประมาณ ${esc(V)}${select}`;
+}
+
 export async function renderHome(container, app) {
   const box = document.createElement("div");
   box.className = "home-page";
 
-  const rounds = app.boot.rounds;
-  const cards = rounds
-    .map((r, i) => (i > 0 && r.locked ? collapsedHtml(app, r) : cardHtml(app, r)))
-    .join("");
-  const older = app.boot.older_months || [];
+  const F = fiscalYearOf(app.boot.current_round || (app.boot.rounds[0] && app.boot.rounds[0].month));
+  if (selectedFyBoot !== app.boot || (selectedFy !== F && selectedFy !== F - 1)) {
+    selectedFy = F;
+    selectedFyBoot = app.boot;
+  }
+  const trialMonth = (app.boot.config && app.boot.config.trial_month) || null;
+  const hasPrevFy = (app.boot.history || []).some(
+    (h) => h.fy === F - 1 && h.month !== trialMonth && h.status !== "not_started");
+  if (!hasPrevFy) selectedFy = F;
 
   const pinWarnHtml = app.boot.pcu.pin_custom === false
     ? `<div class="notice-bar notice-bar-warn" role="status"><span>ยังใช้ PIN ตั้งต้น — แนะนำให้เปลี่ยน PIN ของ รพ.สต. เพื่อความปลอดภัย</span><a href="#/pin" class="btn btn-sm btn-secondary">เปลี่ยน PIN</a></div>`
@@ -111,46 +192,55 @@ export async function renderHome(container, app) {
     ${pinWarnHtml}
     ${noticesHtml(app)}
     <h2>สวัสดี ${esc(app.boot.pcu.name)}</h2>
-    <p class="muted">เลือกรอบที่จะกรอกหรือพิมพ์ · ปีงบประมาณ ${esc(app.boot.config.fy_current)}</p>
-    <div class="round-cards">${cards}</div>
-    ${older.length ? `
-    <details class="older-months">
-      <summary>ดูเดือนเก่า (${older.length})</summary>
-      <div class="older-list">
-        ${older.map((m) => `<div class="older-row"><span>${esc(roundTitle(m))}</span>
-          <span><button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="summary">ดูใบเบิก</button>
-          <button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="print">ดู/พิมพ์</button></span></div>`).join("")}
-      </div>
-    </details>` : ""}
+    <p class="muted fy-line">${fyLineHtml(selectedFy, F, hasPrevFy)}</p>
+    <div class="round-cards">${cardsHtml(app, selectedFy, F)}</div>
     <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a> · <a href="#/pin">เปลี่ยน PIN</a></p>
   `;
 
   container.innerHTML = "";
   container.appendChild(box);
 
-  box.querySelectorAll("[data-fill]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      location.hash = `#/fill/${btn.dataset.step}?month=${btn.dataset.fill}`;
+  function bindCards(scope) {
+    scope.querySelectorAll("[data-fill]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        location.hash = `#/fill/${btn.dataset.step}?month=${btn.dataset.fill}`;
+      });
     });
-  });
-  box.querySelectorAll("[data-print]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      location.hash = `#/print?month=${btn.dataset.print}`;
+    scope.querySelectorAll("[data-print]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        location.hash = `#/print?month=${btn.dataset.print}`;
+      });
     });
-  });
-  box.querySelectorAll("[data-older]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await loadOlderMonth(app, btn.dataset.older);
-        location.hash = btn.dataset.go === "print"
-          ? `#/print?month=${btn.dataset.older}`
-          : `#/fill/summary?month=${btn.dataset.older}`;
-      } catch (err) {
-        btn.disabled = false;
-        if (err && String(err.code || "").startsWith("AUTH_")) throw err;
-        await alertDialog("เปิดเดือนนี้ไม่สำเร็จ", `<p>${esc(err.message || "")}</p>`);
-      }
+    scope.querySelectorAll("[data-older]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          await loadOlderMonth(app, btn.dataset.older);
+          location.hash = btn.dataset.go === "print"
+            ? `#/print?month=${btn.dataset.older}`
+            : `#/fill/summary?month=${btn.dataset.older}`;
+        } catch (err) {
+          btn.disabled = false;
+          if (err && String(err.code || "").startsWith("AUTH_")) throw err;
+          await alertDialog("เปิดเดือนนี้ไม่สำเร็จ", `<p>${esc(err.message || "")}</p>`);
+        }
+      });
     });
-  });
+  }
+
+  const cardsBox = box.querySelector(".round-cards");
+  bindCards(cardsBox);
+
+  const sel = box.querySelector(".fy-select");
+  if (sel) {
+    sel.addEventListener("change", () => {
+      selectedFy = Number(sel.value);
+      cardsBox.innerHTML = cardsHtml(app, selectedFy, F);
+      bindCards(cardsBox);
+      // Keep the <select> element (and its focus); only the label text before it changes.
+      const line = box.querySelector(".fy-line");
+      const text = line.firstChild;
+      if (text && text.nodeType === 3) text.nodeValue = `เลือกรอบที่จะกรอกหรือพิมพ์ · ปีงบประมาณ ${selectedFy} `;
+    });
+  }
 }
