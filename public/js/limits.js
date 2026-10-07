@@ -36,7 +36,7 @@ export function computeLimitInfo(limitsForPcu, usedFyForMonth, itemCode, liveOpP
 
 export function monthOverMessage(info) {
   if (!info || !info.monthOver) return "";
-  if (info.monthForbidden) return "ห้ามเบิกรายการนี้ในเดือนนี้ (เพดานรายเดือน = 0)";
+  if (info.monthForbidden) return "ห้ามเบิกรายการนี้ในรอบนี้ (เพดานรายเดือน = 0)";
   return `เกินเพดานรายเดือน: ขอ ${info.requested} · เพดาน ${info.limit_month} (เกิน ${info.monthExceedBy})`;
 }
 

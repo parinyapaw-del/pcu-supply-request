@@ -11,8 +11,8 @@
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
-import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear, nextMonthKey } from "../format.js";
-import { esc, requestOf, isEditable, statusText, monthLabel, alertDialog, confirmDialog, formForRequest } from "./common.js";
+import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
+import { esc, requestOf, isEditable, statusText, monthLabel, roundTitle, roundOf, alertDialog, confirmDialog, formForRequest } from "./common.js";
 import { trySend } from "./send.js";
 import { requestPdfReady, startPdfDownload, openPdfInline, pdfErrorHtml } from "../pdf_client.js";
 
@@ -111,13 +111,15 @@ export async function renderPrint(container, app, params) {
   }
 
   const steps = printableSteps(form);
+  const thisRound = !asAdmin && !isPreview && app.boot ? roundOf(app, month) : null;
+  const trialRound = !!(thisRound && thisRound.trial);
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
 
   const controls = document.createElement("div");
   controls.className = "print-controls no-print";
   controls.innerHTML = `
-    <h2>ใบเบิก ${esc(monthLabel(month))}${asAdmin ? ` — ${esc(pcu.print_name || pcu.name || "")}` : ""}</h2>
+    <h2>ใบเบิก ${esc(roundTitle(month))}${trialRound ? ` <span class="badge badge-trial">ทดลอง</span>` : ""}${asAdmin ? ` — ${esc(pcu.print_name || pcu.name || "")}` : ""}</h2>
     <p class="muted" id="print-status"></p>
     <p class="muted">เลือกหน้าที่จะพิมพ์ (ค่าเริ่มต้น = ครบทุกหน้า)</p>
     <div class="print-step-checks">
@@ -125,7 +127,7 @@ export async function renderPrint(container, app, params) {
     </div>
     ${isPreview ? "" : `<div class="print-options">
       <label>ลงวันที่เอกสาร <input type="date" id="print-doc-date"></label>
-      <label>เบิกประจำเดือน <select id="print-supply-month"><option value="">เว้นว่าง (จุดไข่ปลา)</option><option value="${esc(nextMonthKey(month))}">${esc(monthLabel(nextMonthKey(month)))}</option></select></label>
+      <label>เบิกประจำเดือน <select id="print-supply-month"><option value="">เว้นว่าง (จุดไข่ปลา)</option><option value="${esc(month)}">${esc(monthLabel(month))}</option></select></label>
       <span class="muted">เว้นว่าง = พิมพ์เป็นจุดไข่ปลาให้เขียนเอง</span>
     </div>`}
     <div class="print-actions">
@@ -201,7 +203,7 @@ export async function renderPrint(container, app, params) {
     if (saved && typeof saved === "object") {
       printOpts = normPrintOpts({
         doc_date: typeof saved.doc_date === "string" && DATE_RE.test(saved.doc_date) ? saved.doc_date : null,
-        supply_month: saved.supply_month === nextMonthKey(month) ? saved.supply_month : null,
+        supply_month: saved.supply_month === month ? saved.supply_month : null,
       });
     }
   } catch (e) { /* storage unavailable or corrupt: start blank */ }
@@ -459,7 +461,7 @@ function rowIKhaphachao(pcu) {
   ], 20);
 }
 
-// "ประจำเดือน … พ.ศ. …" = opts.supply_month ("YYYY-MM", the month after the round, 2h); both slots dotted when null.
+// "ประจำเดือน … พ.ศ. …" = opts.supply_month ("YYYY-MM" = the round month itself, brief 2j); both slots dotted when null.
 function rowMonthYear(opts) {
   let monthName = null, be = null;
   if (opts.supply_month) {

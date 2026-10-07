@@ -17,7 +17,12 @@ import XLSX from "xlsx";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
 const BASE = (process.env.API_BASE || "http://localhost:8788").replace(/\/$/, "");
-const CUR = "2026-11", PREV = "2026-10", NEXT = "2026-12"; // pinned "current month" (X-Dev-Month) → deterministic fiscal-year edges
+// Pinned calendar month (X-Dev-Month) → deterministic fiscal-year edges. Brief 2j: a round is named after the supply month X and is keyed
+// in X−1, so with calendar month CAL the open round is ROUND = CAL+1 and the previous (still editable) round is PREV_ROUND = CAL.
+// CUR / PREV / NEXT are ROUND months (current round, previous round, the not-yet-open round after the current one).
+const CAL = "2026-11";
+const ROUND = "2026-12", PREV_ROUND = "2026-11";
+const CUR = ROUND, PREV = PREV_ROUND, NEXT = "2027-01";
 const ADMIN_EMAIL = "parinya.paw@gmail.com";
 
 // ---- dev vars ------------------------------------------------------------------------------------------------------
@@ -51,7 +56,7 @@ function expectErr(res, code, label) {
 function section(t) { console.log("\n=== " + t + " ==="); }
 
 // ---- http ----------------------------------------------------------------------------------------------------------------
-let devMonth = CUR;
+let devMonth = CAL;
 async function api(action, params = {}, token, opts = {}) {
   const res = await fetch(BASE + "/api", {
     method: "POST",
@@ -105,7 +110,10 @@ function stopServer() {
 }
 
 // ---- fixture ---------------------------------------------------------------------------------------------------------------------
-const fyMonths = (fy) => { const out = []; let y = fy - 543 - 1, m = 10; for (let i = 0; i < 12; i++) { out.push(`${y}-${String(m).padStart(2, "0")}`); m++; if (m === 13) { m = 1; y++; } } return out; };
+// Excel / calendar months of a fiscal year (Oct … Sep — actual_prev columns) and its 12 ROUND months (Nov … Oct, brief 2j)
+const fyExcelMonths = (fy) => { const out = []; let y = fy - 543 - 1, m = 10; for (let i = 0; i < 12; i++) { out.push(`${y}-${String(m).padStart(2, "0")}`); m++; if (m === 13) { m = 1; y++; } } return out; };
+const shiftMonth = (k, d) => { const [y, m] = k.split("-").map(Number); const n = y * 12 + (m - 1) + d; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, "0")}`; };
+const fyRoundMonths = (fy) => fyExcelMonths(fy).map((m) => shiftMonth(m, 1));
 const ceil = (x) => Math.ceil(x - 1e-9);
 
 function pct(sorted, q) { // linear interpolation percentile
@@ -122,7 +130,7 @@ function buildSyntheticSeed() {
   }));
   const items = steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
   const plans70 = {}, plans69 = {}, actual = {}, stats = {}, limits = {};
-  const months69 = fyMonths(2569);
+  const months69 = fyExcelMonths(2569);
   f.pcus.forEach((p, i) => {
     plans70[p.code] = {}; plans69[p.code] = {}; actual[p.code] = {}; stats[p.code] = {}; limits[p.code] = {};
     items.forEach((it, j) => {
@@ -243,7 +251,9 @@ async function main() {
   eq(boot.stats.fy, 2569, "adminBootstrap: stats basis fy = 2569");
   ok(Object.keys(boot.limits).length > 0, "adminBootstrap: limits present");
   eq(boot.users_source, "env", "adminBootstrap: users from env while table empty");
-  ok(boot.rounds.some((r) => r.month === CUR) && boot.rounds.some((r) => r.month === PREV), "adminBootstrap: rounds include current + previous month");
+  ok(boot.rounds.some((r) => r.month === CUR) && boot.rounds.some((r) => r.month === PREV), "adminBootstrap: rounds include current + previous round");
+  eq([boot.current_month, boot.current_round], [CAL, ROUND], "adminBootstrap: current_month = calendar month, current_round = CAL+1 (2j)");
+  ok(boot.rounds.every((r) => r.trial === false) && boot.config.trial_month === null, "adminBootstrap: no trial round by default (config.trial_month null, round.trial false)");
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("PCU login / PIN lock / PIN change");
@@ -292,11 +302,13 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("PCU bootstrap shape");
   const pb = await mustOk("pcuBootstrap", {}, T1);
-  for (const k of ["server_time", "current_month", "pcu", "config", "form_version_id", "form", "rounds", "older_months", "hidden", "never_prev", "limits", "plans", "unlocks", "byMonth", "issue_notices"]) ok(k in pb, `bootstrap has "${k}"`);
-  eq(pb.current_month, CUR, "bootstrap.current_month honours X-Dev-Month");
-  eq(pb.config, { limit_mode: "warn", stock_required: 0, deadline_day: null, fy_current: 2570 }, "bootstrap.config");
-  eq(pb.rounds.map((r) => r.month), [CUR, PREV], "bootstrap.rounds = [current, previous]");
-  eq(pb.rounds[0].deadline_date, "2026-11-30", "deadline = last day of month by default");
+  for (const k of ["server_time", "current_month", "current_round", "pcu", "config", "form_version_id", "form", "rounds", "older_months", "hidden", "never_prev", "limits", "plans", "unlocks", "byMonth", "issue_notices"]) ok(k in pb, `bootstrap has "${k}"`);
+  eq(pb.current_month, CAL, "bootstrap.current_month = calendar month (honours X-Dev-Month)");
+  eq(pb.current_round, ROUND, "bootstrap.current_round = calendar month + 1 (2j)");
+  eq(pb.config, { limit_mode: "warn", stock_required: 0, deadline_day: null, fy_current: 2570, trial_month: null }, "bootstrap.config (+ trial_month null)");
+  eq(pb.rounds.map((r) => r.month), [ROUND, PREV_ROUND], "bootstrap.rounds = [currentRound, prevRound] = [CAL+1, CAL]");
+  eq(pb.rounds.map((r) => r.fy), [2570, 2570], "rounds 2026-12 / 2026-11 are both FY2570");
+  eq(pb.rounds.map((r) => r.deadline_date), ["2026-11-30", "2026-10-31"], "deadline = last day of the month BEFORE the round (submission month)");
   eq(pb.rounds[0].deadline_source, "month_end", "deadline_source month_end");
   eq(pb.form_version_id, pb.form.id, "form_version_id = form.id");
   eq(pb.form.steps.length, seed.form.steps.length, "form steps");
@@ -369,6 +381,9 @@ async function main() {
   eq(pbAfter.byMonth[PREV].request.status, "draft", "bootstrap returns previous-month request");
   const gm = await mustOk("pcuGetMonth", { month: CUR }, T1);
   ok(gm.request && "used_fy" in gm && "prev_lines" in gm && gm.round.month === CUR, "pcuGetMonth returns the month view");
+  expectErr(await api("pcuGetMonth", { month: NEXT }, T1), "BAD_REQUEST", "pcuGetMonth: a round after currentRound → BAD_REQUEST");
+  ok(/เดือนนี้ยังไม่ถึง/.test((await api("pcuGetMonth", { month: NEXT }, T1)).error.message), "pcuGetMonth future message unchanged (เดือนนี้ยังไม่ถึง)");
+  ok(/เดือนนี้ไม่เปิดให้กรอก/.test((await api("saveLines", { month: "2026-08", lines: {} }, T1)).error.message), "saveLines outside [currentRound, prevRound] message unchanged (เดือนนี้ไม่เปิดให้กรอก)");
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("hidden items + stock_required");
@@ -405,7 +420,7 @@ async function main() {
   await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
   const prevSubmit = await mustOk("saveLines", { month: PREV, lines: { [A.code]: { op: 10, pp: 5, updated_at: t(1) } }, send: true }, T3);
   eq(prevSubmit.over_limit, [], "mode off: over_limit empty and submit ok (previous month, 15 units)");
-  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].used_fy[A.code], 15, "used_fy[current] = Σ other months of the fiscal year (15)");
+  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].used_fy[A.code], 15, "used_fy[current] = Σ other rounds of the fiscal year (15) — round 2026-11 is FY2570 and counts (2j)");
   eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].prev_lines[A.code], { op: 10, pp: 5 }, "prev_lines from previous month's submitted request");
   await mustOk("adminSetLimitMode", { mode: "enforce" }, ADM);
   await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 4, pp: 2, updated_at: t(1) } } }, T3);
@@ -423,6 +438,11 @@ async function main() {
   eq((await mustOk("pcuBootstrap", {}, T3)).unlocks[CUR], { [A.code]: "โรคระบาด" }, "bootstrap.unlocks shows the reason");
   eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "limit_unlocks row bypasses enforce for that month");
   ok((await mustOk("adminBootstrap", {}, ADM)).unlocks.some((u) => u.pcu === "PCU03" && u.item_code === A.code && u.month === CUR), "adminBootstrap lists unlocks");
+  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2026-10", reason: "รอบปีงบ 2569" }, ADM);
+  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2027-10", reason: "รอบสุดท้ายปีงบ 2570" }, ADM);
+  const ulm = (await mustOk("adminBootstrap", {}, ADM)).unlocks.filter((u) => u.pcu === "PCU03").map((u) => u.month).sort();
+  eq(ulm, [CUR, "2027-10"], "adminBootstrap.unlocks = rounds of FY2570 only (2026-11 … 2027-10): 2026-10 (FY2569) excluded, 2027-10 included");
+  for (const m of ["2026-10", "2027-10"]) await mustOk("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: m }, ADM);
   ok((await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM)).ok, "adminRemoveUnlock");
   expectErr(await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM), "NOT_FOUND", "adminRemoveUnlock twice");
   expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "removing the unlock re-enables enforcement");
@@ -448,7 +468,8 @@ async function main() {
   expectErr(await api("adminSetConfig", { key: "deadline_day", value: 40 }, ADM), "BAD_REQUEST", "deadline_day out of range");
   await mustOk("adminSetConfig", { key: "deadline_day", value: 25 }, ADM);
   let pr = (await mustOk("pcuBootstrap", {}, T6)).rounds;
-  eq([pr[0].deadline_date, pr[0].deadline_source], ["2026-11-25", "config"], "config.deadline_day=25 → 25th");
+  eq([pr[0].deadline_date, pr[0].deadline_source], ["2026-11-25", "config"], "config.deadline_day=25 → 25th of the submission month (round 2026-12 → 2026-11-25)");
+  eq(pr[1].deadline_date, "2026-10-25", "config.deadline_day=25 for the previous round 2026-11 → 2026-10-25");
   await mustOk("adminSetConfig", { key: "deadline_day", value: 31 }, ADM);
   eq((await mustOk("pcuBootstrap", {}, T6)).rounds[0].deadline_date, "2026-11-30", "deadline_day 31 clamps to the month length (Nov has 30)");
   await mustOk("adminSetConfig", { key: "deadline_day", value: null }, ADM);
@@ -641,18 +662,23 @@ async function main() {
   eq((await mustOk("adminBootstrap", {}, ADM2)).config.limit_mode, "warn", "limit_mode untouched");
 
   // ------------------------------------------------------------------------------------------------------------------------
-  section("fiscal-year edge: previous month in FY2569 (form fallback)");
+  section("fiscal-year edge: previous round in FY2569 (form fallback, 2j)");
   {
     const T9 = (await mustOk("pcuLogin", { pcu: "PCU09", pin: "12345" }, undefined)).token;
-    const o = { month: "2026-10" };
+    const o = { month: "2026-10" }; // calendar Oct 2569 → open round 2026-11 (first round of FY2570), previous round 2026-10 (FY2569)
     const eb = await api("pcuBootstrap", {}, T9, o);
-    ok(eb.ok && eb.data.rounds[0].month === "2026-10" && eb.data.rounds[1].month === "2026-09", "dev month 2026-10: rounds = [2026-10, 2026-09]");
-    const e1 = await api("saveLines", { month: "2026-09", lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T9, o);
-    ok(e1.ok && e1.data.status === "submitted" && e1.data.request.form_version_id === eb.data.form_version_id, "FY2569 month falls back to the newest form version (no 2569 form exists)");
+    ok(eb.ok && eb.data.rounds[0].month === "2026-11" && eb.data.rounds[1].month === "2026-10", "calendar 2026-10: rounds = [2026-11, 2026-10]");
+    eq(eb.data.rounds.map((r) => [r.fy, r.deadline_date]), [[2570, "2026-10-31"], [2569, "2026-09-30"]], "round 2026-11 → FY2570 due 31 Oct · round 2026-10 → FY2569 due 30 Sep");
+    eq([eb.data.current_month, eb.data.current_round, eb.data.config.fy_current], ["2026-10", "2026-11", 2570], "calendar 2026-10: current_round 2026-11, fy_current fallback 2570");
+    const e1 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T9, o);
+    ok(e1.ok && e1.data.status === "submitted" && e1.data.request.form_version_id === eb.data.form_version_id, "FY2569 round (no 2569 form) binds the fy_current form (formForFy)");
+    expectErr(await api("saveLines", { month: "2026-12", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-10: round 2026-12 not open yet");
+    expectErr(await api("saveLines", { month: "2026-09", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-10: round 2026-09 (no request) not open");
     const e2 = await api("pcuBootstrap", {}, T9, o);
-    eq(e2.data.byMonth["2026-10"].used_fy, {}, "FY2570 used_fy ignores the FY2569 month (Sep 2026)");
-    eq(e2.data.byMonth["2026-10"].prev_lines[A.code], { op: 1, pp: 0 }, "…but prev_lines still reads the previous calendar month");
-    ok((await api("saveLines", { month: "2026-10", lines: {} }, T9, o)).ok, "saving in the first month of the FY works");
+    eq(e2.data.byMonth["2026-11"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-10");
+    eq(e2.data.byMonth["2026-11"].prev_lines[A.code], { op: 1, pp: 0 }, "…but prev_lines still reads the previous round");
+    ok((await api("saveLines", { month: "2026-11", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-11) works");
+    eq((await mustOk("pcuBootstrap", {}, T9)).byMonth[CUR].used_fy, {}, "calendar CAL: used_fy of round 2026-12 still excludes the FY2569 round 2026-10");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
@@ -690,6 +716,14 @@ async function main() {
     const xf = await get(`/api/export.xlsx?fy=2570`, { authorization: "Bearer " + ADM2 });
     eq(xf.status, 200, "export by fiscal year → 200");
     ok(/ปีงบ2570/.test(decodeURIComponent((xf.headers.get("content-disposition") || "").split("''")[1] || "")), "fy filename เบิกวัสดุ_ปีงบ2570.xlsx");
+    // 2j: fy= covers the 12 ROUND months of the fy (Nov … Oct) — round 2026-10 (PCU09, sent above) is FY2569, not FY2570
+    const sheetMonths = async (res) => {
+      const w = XLSX.read(Buffer.from(await res.arrayBuffer()), { type: "buffer" });
+      return [...new Set(XLSX.utils.sheet_to_json(w.Sheets[w.SheetNames[0]], { header: 1 }).slice(1).map((r) => r[0]))].sort();
+    };
+    const m70 = await sheetMonths(xf);
+    ok(m70.includes(PREV_ROUND) && m70.includes(ROUND) && m70.every((m) => m >= "2026-11" && m <= "2027-10"), `export fy=2570: months within 2026-11 … 2027-10 (${m70.join(",")})`);
+    eq(await sheetMonths(await get(`/api/export.xlsx?fy=2569`, { authorization: "Bearer " + ADM2 })), ["2026-10"], "export fy=2569: only round 2026-10 (the last round of FY2569)");
     eq((await get(`/api/export.xlsx?month=${CUR}`)).status, 401, "export without a token → 401");
     eq((await get(`/api/export.xlsx?month=${CUR}&token=${encodeURIComponent(T1)}`)).status, 403, "export with a PCU token → 403");
     eq((await get(`/api/export.xlsx`, { authorization: "Bearer " + ADM2 })).status, 400, "export without month/fy → 400");
@@ -772,7 +806,7 @@ async function main() {
     const tt = (s) => `2026-11-12T10:00:${String(s).padStart(2, "0")}.000Z`;
     const idP = `${P}_${CUR}`;
     const files = async (prefix) => (await mustOk("devListFiles", { prefix })).keys;
-    const expectedName = `ใบเบิก_${pr.print_name}_พฤศจิกายน 2569.pdf`;
+    const expectedName = `ใบเบิก_${pr.print_name}_ธันวาคม 2569.pdf`; // round CUR = 2026-12 ("ขอเบิก ธันวาคม 2569")
     const reqWith = (headers, body) => fetch(BASE + "/api", { method: "POST", headers: { "content-type": "text/plain;charset=utf-8", "x-dev-month": devMonth, ...headers }, body: JSON.stringify(body) }).then((r) => r.json());
 
     // --- guards (before anything is sent)
@@ -885,8 +919,8 @@ async function main() {
         "contentKeyOf hashes lv: LAYOUT_VERSION (key changes with lv; differs from the pre-2g key without lv)");
       eq(dt.content_key, local, "server content key = contentKeyOf() under node (same LAYOUT_VERSION + same fields)");
       // 2h: print options are hashed as dd / sm (null when absent)
-      const withOpts = await pdfLib.contentKeyOf(bundle, { doc_date: "2026-12-03", supply_month: NEXT });
-      ok(withOpts === (await sha256Hex(stableStringify({ lv: pdfLib.LAYOUT_VERSION, ...fields, dd: "2026-12-03", sm: NEXT }))) && withOpts !== local,
+      const withOpts = await pdfLib.contentKeyOf(bundle, { doc_date: "2026-12-03", supply_month: CUR });
+      ok(withOpts === (await sha256Hex(stableStringify({ lv: pdfLib.LAYOUT_VERSION, ...fields, dd: "2026-12-03", sm: CUR }))) && withOpts !== local,
         "contentKeyOf hashes dd / sm (2h print options) — differs from the no-option key");
       eq(await pdfLib.contentKeyOf(bundle, { doc_date: null, supply_month: null }), local, "contentKeyOf with null options = no-option key");
     }
@@ -933,16 +967,16 @@ async function main() {
 
     // --- 2h print options {doc_date?, supply_month?}: per print, part of the content key + print token, returned by printData.
     // PCU11 still holds 2 files in CUR (latest month keeps 2), so storing the option variant prunes its oldest → R2 still holds 3 for 2b-R.
-    const DD = "2026-12-03", OPT = { doc_date: DD, supply_month: NEXT }; // NEXT = month after CUR; a late sender may date it in the next month
+    const DD = "2026-12-03", OPT = { doc_date: DD, supply_month: CUR }; // 2j: supply_month may only be the round month itself; doc_date any date
     const k0 = (await mustOk("devPrintToken", { pcu: P, month: CUR })).content_key; // no-option key, nothing stored
     eq((await mustOk("devPrintToken", { pcu: P, month: CUR, doc_date: "", supply_month: null })).content_key, k0, "options \"\" / null = no options (same key)");
     expectErr(await api("requestPdf", { month: CUR, doc_date: "2026-13-40" }, TP), "BAD_REQUEST", "requestPdf doc_date 2026-13-40");
     ok(/วันที่เอกสารไม่ถูกต้อง/.test((await api("requestPdf", { month: CUR, doc_date: "2026-02-30" }, TP)).error.message), "bad doc_date message (Thai)");
     expectErr(await api("requestPdf", { month: CUR, doc_date: 20261203 }, TP), "BAD_REQUEST", "requestPdf doc_date as a number");
-    const smSame = await api("requestPdf", { month: CUR, supply_month: CUR }, TP);
-    expectErr(smSame, "BAD_REQUEST", "requestPdf supply_month = the round month (not the next)");
-    ok(smSame.error && /เดือนที่เบิกต้องเป็นเดือนถัดจากรอบ/.test(smSame.error.message), "supply_month message (Thai)");
-    expectErr(await api("requestPdf", { month: CUR, supply_month: "2027-01" }, TP), "BAD_REQUEST", "requestPdf supply_month two months ahead");
+    const smNext = await api("requestPdf", { month: CUR, supply_month: NEXT }, TP);
+    expectErr(smNext, "BAD_REQUEST", "requestPdf supply_month = nextMonth(round) (2j: only the round month itself)");
+    ok(smNext.error && /เดือนที่เบิกต้องเป็นเดือนของรอบ/.test(smNext.error.message), "supply_month message (Thai)");
+    expectErr(await api("requestPdf", { month: CUR, supply_month: "2027-02" }, TP), "BAD_REQUEST", "requestPdf supply_month two months ahead");
     expectErr(await api("requestPdf", { month: CUR, supply_month: ["2026-12"] }, TP), "BAD_REQUEST", "requestPdf supply_month as an array");
     expectErr(await api("adminRequestPdf", { pcu: P, month: CUR, supply_month: PREV }, ADM2), "BAD_REQUEST", "adminRequestPdf supply_month = previous month");
     expectErr(await api("devPrintToken", { pcu: P, month: CUR, doc_date: "2026-11" }), "BAD_REQUEST", "devPrintToken doc_date not a date");
@@ -961,13 +995,13 @@ async function main() {
     const ot = await mustOk("devPrintToken", { pcu: P, month: CUR, ...OPT });
     eq(ot.content_key, o1.content_key, "devPrintToken with options carries the option content key");
     const opd = await mustOk("printData", { k: ot.token });
-    eq([opd.doc_date, opd.supply_month, opd.month], [DD, NEXT, CUR], "printData returns doc_date + supply_month from the token");
+    eq([opd.doc_date, opd.supply_month, opd.month], [DD, CUR, CUR], "printData returns doc_date + supply_month (= the round month) from the token");
     const npd = await mustOk("printData", { k: (await mustOk("devPrintToken", { pcu: P, month: CUR })).token });
     eq([npd.doc_date, npd.supply_month], [null, null], "printData with a token minted without options → both null");
     if (TOKEN_SECRET) {
       const mk = (o) => forgeToken({ t: "print", pcu: P, month: CUR, exp: Date.now() + 60000, ...o });
       expectErr(await api("printData", { k: mk({ ck: o1.content_key }) }), "CONFLICT", "printData: option key in a token without dd/sm");
-      expectErr(await api("printData", { k: mk({ ck: k0, dd: DD, sm: NEXT }) }), "CONFLICT", "printData: dd/sm in a token whose ck has none");
+      expectErr(await api("printData", { k: mk({ ck: k0, dd: DD, sm: CUR }) }), "CONFLICT", "printData: dd/sm in a token whose ck has none");
     } else { for (let i = 0; i < 2; i++) ok(true, "(skipped print-token forgery test: no TOKEN_SECRET readable)"); }
     eq((await files("pdf/")).length, 3, "R2 still holds 3 PDFs after the 2h option checks (PCU11 ×2 by the 2-version rule, PCU13 ×1)");
     ok((await api("adminUsersRemove", { email: DSPE }, ADM2)).ok, "temporary dispenser removed again");
@@ -976,8 +1010,8 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("pdf retention + quota (2b-R)");
   {
-    // latest month = CUR (X-Dev-Month). Rule: latest keeps 2 versions, other months 1, months older than CUR−11 are deleted.
-    const OLD12 = "2025-11", OLD11 = "2025-12"; // CUR−12 (outside the 12-month window) · CUR−11 (last month inside it)
+    // latest month = currentRound = CUR (= CAL+1, 2j). Rule: latest keeps 2 versions, other months 1, months older than CUR−11 are deleted.
+    const OLD12 = "2025-12", OLD11 = "2026-01"; // CUR−12 (outside the 12-month window) · CUR−11 (last month inside it)
     const files = async (prefix) => (await mustOk("devListFiles", { prefix })).keys.sort();
     const keyOf = (pcu, month, ck) => `pdf/${pcu}/${month}/${ck}.pdf`;
     const tr = (s) => `2026-11-14T09:00:${String(s).padStart(2, "0")}.000Z`;
@@ -1065,7 +1099,7 @@ async function main() {
 
     // --- nightly cron: prune all PCUs + backup bytes
     await mustOk("devSetRequestMonth", { pcu: "PCU15", month: OLD11, new_month: OLD12 });
-    const cr = await fetch(BASE + "/api/cron/backup", { method: "POST", headers: { "x-backup-key": BACKUP_KEY, "x-dev-month": CUR } });
+    const cr = await fetch(BASE + "/api/cron/backup", { method: "POST", headers: { "x-backup-key": BACKUP_KEY, "x-dev-month": CAL } });
     const crj = await cr.json();
     ok(cr.status === 200 && crj.ok && Array.isArray(crj.data.pdf_pruned), "cron/backup result has pdf_pruned (array)");
     eq(crj.data.pdf_pruned, [keyOf("PCU15", PREV, x15.content_key)], "cron/backup pruned the file that fell out of the window");
@@ -1115,15 +1149,54 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("trial round (2j): trial_month + adminClearTrial{month}");
+  {
+    expectErr(await api("adminSetConfig", { key: "trial_month", value: "2026-13" }, ADM2), "BAD_REQUEST", "trial_month 2026-13");
+    expectErr(await api("adminSetConfig", { key: "trial_month", value: 202611 }, ADM2), "BAD_REQUEST", "trial_month as a number");
+    eq((await mustOk("adminSetConfig", { key: "trial_month", value: PREV }, ADM2)).config.trial_month, PREV, "adminSetConfig trial_month = previous round");
+    ok((await mustOk("adminAuditLog", { limit: 5 }, ADM2)).entries.some((e) => e.action === "adminSetConfig" && e.detail === `trial_month="${PREV}"`), "audit adminSetConfig trial_month");
+    const tpb = await mustOk("pcuBootstrap", {}, T1);
+    eq([tpb.config.trial_month, tpb.rounds.map((r) => [r.month, r.trial])], [PREV, [[CUR, false], [PREV, true]]], "pcuBootstrap: config.trial_month + rounds[].trial");
+    eq((await mustOk("pcuGetMonth", { month: PREV }, T1)).round.trial, true, "pcuGetMonth.round.trial");
+    eq((await mustOk("adminRequests", {}, ADM2)).rounds.map((r) => [r.month, r.trial]), [[CUR, false], [PREV, true]], "adminRequests.rounds[].trial");
+    const tab = await mustOk("adminBootstrap", {}, ADM2);
+    ok(tab.config.trial_month === PREV && tab.rounds.every((r) => r.trial === (r.month === PREV)), "adminBootstrap: config.trial_month + every round's trial flag");
+    await mustOk("adminUsersAdd", { email: "trial.disp@example.com", role: "dispenser", units: ["LAB"] }, ADM2);
+    const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:trial.disp@example.com" })).token;
+    eq((await mustOk("adminBootstrap", {}, DT)).config.trial_month, PREV, "dispenser adminBootstrap.config carries trial_month");
+    ok((await api("adminUsersRemove", { email: "trial.disp@example.com" }, ADM2)).ok, "temporary dispenser removed again");
+
+    // clear only the trial round
+    const reqN = async (m) => (await mustOk("adminRequests", { month: m }, ADM2)).requests.length;
+    const pdfKeys = async () => (await mustOk("devListFiles", { prefix: "pdf/" })).keys.sort();
+    const nCur = await reqN(CUR), nPrev = await reqN(PREV);
+    const keys0 = await pdfKeys();
+    const prevKeys = keys0.filter((k) => k.split("/")[2] === PREV);
+    ok(nCur > 0 && nPrev > 0 && prevKeys.length > 0, `setup: requests in both rounds (${nCur}/${nPrev}) and a PDF in the trial round (${prevKeys.length})`);
+    expectErr(await api("adminClearTrial", { confirm: "ล้างข้อมูล", month: "2026-13" }, ADM2), "BAD_REQUEST", "adminClearTrial{month} bad month");
+    expectErr(await api("adminClearTrial", { confirm: "yes", month: PREV }, ADM2), "BAD_REQUEST", "adminClearTrial{month} still needs the confirmation word");
+    const cm = await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล", month: PREV }, ADM2);
+    eq([cm.month, cm.deleted_requests, cm.deleted_pdf_files], [PREV, nPrev, prevKeys.length], "adminClearTrial{month}: response names the month, deletes exactly that round's requests + pdf rows");
+    ok(cm.deleted_lines > 0 && "deleted_issue_status" in cm, "adminClearTrial{month}: lines deleted, issue_status reported");
+    eq([await reqN(PREV), await reqN(CUR)], [0, nCur], "only the trial round is gone; the current round is untouched");
+    eq(await pdfKeys(), keys0.filter((k) => !prevKeys.includes(k)), "R2: only the trial round's PDF objects removed");
+    ok((await mustOk("adminAuditLog", { limit: 5 }, ADM2)).entries.some((e) => e.action === "adminClearTrial" && e.month === PREV && JSON.parse(e.detail).month === PREV), "audit adminClearTrial carries the month");
+    eq((await mustOk("adminSetConfig", { key: "trial_month", value: null }, ADM2)).config.trial_month, null, "adminSetConfig trial_month = null clears it");
+    eq((await mustOk("pcuBootstrap", {}, T1)).rounds.map((r) => r.trial), [false, false], "no trial flag once cleared");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   section("clear trial data");
   {
     expectErr(await api("adminClearTrial", { confirm: "yes" }, ADM2), "BAD_REQUEST", "clear trial needs the confirmation word");
     const hiddenBefore = (await mustOk("adminBootstrap", {}, ADM2)).hidden;
     const limitsBefore = Object.keys((await mustOk("adminBootstrap", {}, ADM2)).limits).length;
+    const nCurAll = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests.length;
+    const nPdfAll = (await mustOk("adminPdfFiles", {}, ADM2)).total_files;
     const c = await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2);
-    ok(c.deleted_requests >= 7 && c.deleted_lines >= 7, `adminClearTrial deletes requests + lines (${c.deleted_requests}/${c.deleted_lines})`);
+    ok(c.deleted_requests >= nCurAll && nCurAll >= 5 && c.deleted_lines >= 5 && !("month" in c), `adminClearTrial (no month) deletes every round's requests + lines (${c.deleted_requests}/${c.deleted_lines})`);
     ok("deleted_issue_status" in c && "deleted_pdf_files" in c, "adminClearTrial reports issue_status / pdf_files");
-    ok(c.deleted_pdf_files >= 4, `adminClearTrial deletes the pdf_files rows (${c.deleted_pdf_files})`);
+    ok(c.deleted_pdf_files === nPdfAll && nPdfAll >= 3, `adminClearTrial deletes the pdf_files rows (${c.deleted_pdf_files})`);
     eq((await mustOk("devListFiles", { prefix: "pdf/" })).keys, [], "adminClearTrial removed the PDF objects from R2");
     ok((await mustOk("devListFiles", { prefix: "backup/" })).keys.length > 0, "…but left the backups alone");
     eq((await mustOk("adminRequests", { month: CUR }, ADM2)).requests, [], "no requests left");
@@ -1298,17 +1371,18 @@ async function main() {
     r = await mustOk("issueDone", { pcu: "PCU05", month: CUR, unit: "พัสดุ", done: 1 }, ADM2);
     eq([r.request.status, r.issue.units_total, lineOf(r, A.code).issued_total], ["issued", 1, 1], "a request needing one unit is issued as soon as it is done (PCU05)");
 
-    // ---- dispenser time window ----
+    // ---- dispenser time window (2j: allowed while calMonth <= round month; round CUR = 2026-12 is dispensed in 2026-11 and 2026-12) ----
     const lab5 = { [LABI.code]: { issued_total: 5 } };
     const win = (action, params, tok, month) => api(action, { pcu: "PCU03", month: CUR, ...params }, tok, { month });
-    expectErr(await win("issueLines", { lines: lab5 }, DL, "2027-01"), "FORBIDDEN", "dispenser two months after the request month → FORBIDDEN");
+    expectErr(await win("issueLines", { lines: lab5 }, DL, "2027-01"), "FORBIDDEN", "dispenser in calendar 2027-01 (after the round month 2026-12) → FORBIDDEN");
     const wm = await win("issueLines", { lines: lab5 }, DL, "2027-01");
     ok(/หมดเวลา/.test(wm.error.message), "window error message says the time is over (หมดเวลา…)");
     expectErr(await win("issueDone", { unit: "LAB", done: 0 }, DL, "2027-01"), "FORBIDDEN", "undo outside the window → FORBIDDEN");
     expectErr(await win("issueAll", { unit: "LAB" }, DL, "2027-01"), "FORBIDDEN", "issueAll outside the window → FORBIDDEN");
     expectErr(await api("issueItem", { month: CUR, item_code: LABI.code, entries: { PCU03: { issued_total: 5 } } }, DL, { month: "2027-01" }), "FORBIDDEN", "issueItem outside the window → FORBIDDEN");
     ok((await win("issueLines", { lines: lab5 }, ADM2, "2027-01")).ok, "admin is not limited by the window");
-    ok((await win("issueLines", { lines: lab5 }, DL, "2026-12")).ok, "dispenser still allowed in the month after the request month");
+    ok((await win("issueLines", { lines: lab5 }, DL, "2026-12")).ok, "dispenser still allowed in calendar 2026-12 (= the round month)");
+    ok((await win("issueLines", { lines: lab5 }, DL, CAL)).ok, "dispenser allowed in calendar 2026-11 (the submission month)");
     ok((await api("adminItemIssue", { month: CUR, item_code: LABI.code }, DL, { month: "2027-01" })).ok, "reading (adminItemIssue) is never time-limited");
 
     // ---- issueItem across PCUs + adminItemIssue ----
@@ -1623,7 +1697,7 @@ async function main() {
     const itemsOfSteps = (steps) => steps.flatMap((s) => s.rows.filter((r) => r.type === "item").map((r) => ({ ...r, step: s.code })));
     const sortedObj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, sortedObj(o[k])])) : o);
     const byCode = (arr) => [...arr].sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
-    const monthsOld = fyMonths(OLD);
+    const monthsOld = fyRoundMonths(OLD); // 2j: the 12 rounds of FY2570 = 2026-11 … 2027-10 (actual_prev columns = their submission months)
     await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
     await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
 
@@ -1631,17 +1705,22 @@ async function main() {
     const T11 = (await mustOk("pcuLogin", { pcu: "PCU11", pin: "12345" })).token;
     const T12 = (await mustOk("pcuLogin", { pcu: "PCU12", pin: "12345" })).token;
     const C = seedItems.find((i) => i.step === "P3");
-    const send = async (tok, month, lines) => api("saveLines", { month, lines, send: true }, tok, { month });
-    const sent = [
-      [T11, "2026-10", { [A.code]: { op: 3, pp: 1 } }],
-      [T11, "2027-08", { [A.code]: { op: 10, pp: 0 } }],
-      [T11, "2027-09", { [A.code]: { op: 2, pp: 4 } }],
-      [T12, "2026-12", { [LABI.code]: { op: 3, pp: 0 }, [A.code]: { op: 7, pp: 1 } }],
-      [T12, "2027-03", { [A.code]: { op: 7, pp: 1 }, [C.code]: { op: 5, pp: 0 } }],
+    // keyed as the open round: calendar month = the month before the round (X-Dev-Month)
+    const send = async (tok, month, lines) => api("saveLines", { month, lines, send: true }, tok, { month: shiftMonth(month, -1) });
+    const sent = [ // round months → actual_prev column (= submission month): 2026-11 → Oct · 2027-09 → Aug · 2027-10 → Sep · 2027-01 → Dec · 2027-04 → Mar
+      [T11, "2026-11", { [A.code]: { op: 3, pp: 1 } }],
+      [T11, "2027-09", { [A.code]: { op: 10, pp: 0 } }],
+      [T11, "2027-10", { [A.code]: { op: 2, pp: 4 } }],
+      [T12, "2027-01", { [LABI.code]: { op: 3, pp: 0 }, [A.code]: { op: 7, pp: 1 } }],
+      [T12, "2027-04", { [A.code]: { op: 7, pp: 1 }, [C.code]: { op: 5, pp: 0 } }],
     ];
     let allSent = true;
     for (const [tok, month, lines] of sent) { const r = await send(tok, month, lines); if (!r.ok || r.data.status !== "submitted") { allSent = false; console.log(JSON.stringify(r)); } }
-    ok(allSent, "setup: 5 requests sent in 5 different months of FY2570 (PCU11 ×3, PCU12 ×2)");
+    ok(allSent, "setup: 5 requests sent in 5 different rounds of FY2570 (PCU11 ×3, PCU12 ×2)");
+    // 2j boundary: the round 2026-10 is FY2569 → never part of FY2570's history
+    const T10 = (await mustOk("pcuLogin", { pcu: "PCU10", pin: "12345" })).token;
+    const s10 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 9, pp: 9 } }, send: true }, T10, { month: "2026-10" });
+    ok(s10.ok && s10.data.status === "submitted", "setup: PCU10 sends the FY2569 round 2026-10 (must not be counted for FY2570)");
 
     // snapshot of what the DB holds for FY2570 (independent of the code under test): every submitted/issued line with qty
     const reqCells = {};
@@ -1651,12 +1730,13 @@ async function main() {
       for (const r of lst) {
         nReq++; reqMonths.add(m);
         const g = await mustOk("adminGetRequest", { pcu: r.pcu, month: m }, ADM2);
-        for (const [code, l] of Object.entries(g.request.lines)) if ((l.op || 0) + (l.pp || 0) > 0) reqCells[`${r.pcu}|${code}|${m}`] = [l.op || 0, l.pp || 0];
+        for (const [code, l] of Object.entries(g.request.lines)) if ((l.op || 0) + (l.pp || 0) > 0) reqCells[`${r.pcu}|${code}|${shiftMonth(m, -1)}`] = [l.op || 0, l.pp || 0]; // keyed by the Excel column
       }
     }
     ok(nReq >= 7 && Object.keys(reqCells).length >= 9, `setup: snapshot of FY2570 has ${nReq} sent requests / ${Object.keys(reqCells).length} cells (incl. PCU13/PCU14 of the 2d tests)`);
     const tm = {}; // "pcu|code" -> 12 monthly totals
-    for (const [k, [op, pp]] of Object.entries(reqCells)) { const [pcu, code, m] = k.split("|"); (tm[pcu + "|" + code] ||= new Array(12).fill(0))[monthsOld.indexOf(m)] += op + pp; }
+    for (const [k, [op, pp]] of Object.entries(reqCells)) { const [pcu, code, m] = k.split("|"); (tm[pcu + "|" + code] ||= new Array(12).fill(0))[fyExcelMonths(OLD).indexOf(m)] += op + pp; }
+    ok(!Object.keys(reqCells).some((k) => k.startsWith("PCU10|")), "setup: the FY2569 round 2026-10 is not in the FY2570 snapshot");
     const expStats = {};
     for (const [k, arr] of Object.entries(tm)) {
       const s = [...arr].sort((a, b) => a - b), ann = arr.reduce((a, b) => a + b, 0);
@@ -1746,7 +1826,7 @@ async function main() {
     ok(S.limits.will_default > 0 && S.limits.in_file === 0, "preview: limits.will_default > 0 (the file has no limits)");
     eq(S.limits.will_default, nLim, "preview: will_default = pairs of plans ∪ stats minus the skipped ones");
     eq(S.config.will_set, ["fy_current"], "preview: config.will_set = fy_current only (the other keys already have values)");
-    eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort()], "preview: rollover from_fy / requests_counted / actual_months");
+    eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort().map((m) => shiftMonth(m, -1))], "preview: rollover from_fy / requests_counted / actual_months (Excel column labels = submission months)");
     eq(S.rollover.source, { actual_prev: "db", prices_prev: "db", stats: "db" }, "preview: old-fy numbers come from the DB");
     ok(Array.isArray(pv.warnings) && pv.warnings.some((w) => /ปิดแล้ว/.test(w)), "preview: warning that dropped items are kept closed");
 
@@ -1870,8 +1950,8 @@ async function main() {
     eq([pbNew.data.limits[A.code], pbNew.data.plans[A.code]], [[6, 8], [6, 2]], "pcuBootstrap (2027-10): limits / plans of PCU11 are 2571's");
     const stepsNew = pbNew.data.form.steps;
     ok(!itemsOfSteps(stepsNew).some((i) => i.code === REM.code && i.active !== false) && itemsOfSteps(stepsNew).some((i) => i.code === NEWC), "PCU form for 2027-10: new item present, dropped item not active");
-    const pbOldMonth = await mustOk("pcuBootstrap", {}, T11); // current month 2026-11 is still FY2570, but drafts follow fy_current's latest form
-    const v11 = (await mustOk("adminGetRequest", { pcu: "PCU11", month: "2026-10" }, ADM2)).form_version_id;
+    const pbOldMonth = await mustOk("pcuBootstrap", {}, T11); // current round 2026-12 is still FY2570, but drafts follow fy_current's latest form
+    const v11 = (await mustOk("adminGetRequest", { pcu: "PCU11", month: "2026-11" }, ADM2)).form_version_id;
     ok(pbOldMonth.form.fy === NEW && v11 === boot0.form.id && pbOldMonth.forms[v11] && pbOldMonth.forms[v11].fy === OLD, "pcuBootstrap: a request sent before the rollover keeps its FY2570 form (forms[old id]); drafts use the new latest form");
     const reqAfter = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
     eq([reqAfter.request, reqAfter.form_version_id, reqAfter.form.fy], [reqBefore.request, reqBefore.form_version_id, OLD], "old requests untouched (same lines, still bound to the old form version)");
@@ -1889,6 +1969,16 @@ async function main() {
     ok(ex.fy === NEW && ex.config.fy_current === NEW && ex.form.fy === NEW && ex.actual_prev[String(OLD)] && ex.stats[String(OLD)] && ex.limits[String(NEW)], "adminExportSeed after the rollover: fy 2571 with the FY2570 history");
     const rei = await mustOk("adminImportSeed", { seed: ex }, ADM2);
     ok(rei.imported.form === "same" && rei.imported.limits_inserted === 0 && rei.imported.config_set.length === 0, "export → import is a no-op for the new year (form same, limits_inserted 0)");
+
+    // ---- 2j formForFy: a round whose fy has no form uses fy_current's latest form — not simply the newest version ----
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: OLD }, set_current_fy: true }, ADM2); // fy_current back to 2570 (newest form is 2571's)
+    const T08 = (await mustOk("pcuLogin", { pcu: "PCU08", pin: "12345" })).token;
+    const s08 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 1 } }, send: true }, T08, { month: "2026-10" });
+    ok(s08.ok && s08.data.request.form_version_id === boot0.form.id, `formForFy: round 2026-10 (fy 2569, no form) binds fy_current 2570's latest form (${boot0.form.id}), not the newest (${ap.rollover.form_version_id})`);
+    const g08 = await mustOk("adminGetRequest", { pcu: "PCU08", month: "2025-11" }, ADM2); // no request, fy 2569 → resolved form
+    eq([g08.request, g08.form_version_id], [null, boot0.form.id], "adminGetRequest of an empty FY2569 round resolves the fy_current form (formForFy)");
+    eq((await mustOk("adminGetRequest", { pcu: "PCU08", month: "2027-11" }, ADM2)).form_version_id, ap.rollover.form_version_id, "a FY2571 round resolves its own fy's form");
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: NEW }, set_current_fy: true }, ADM2);
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

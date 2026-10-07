@@ -5,7 +5,7 @@
 import { call, getPcuToken } from "../api.js";
 import { getOrderedSteps } from "../data.js";
 import { formatInt } from "../format.js";
-import { esc, monthData, monthLabel, loadOlderMonth, alertDialog, formForRequest, formatThaiDateTime, toast } from "./common.js";
+import { esc, monthData, monthLabel, roundTitle, loadOlderMonth, alertDialog, formForRequest, formatThaiDateTime, toast } from "./common.js";
 
 const UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
 const REASON = { out_of_stock: "ของหมด/รอจัดซื้อ", other: "อื่น ๆ" };
@@ -100,7 +100,7 @@ export async function renderIssue(container, app, params) {
   box.className = "issue-page";
   const acked = request && request.issued_seen_at;
   box.innerHTML = `
-    <h2>การจ่ายวัสดุ ${esc(monthLabel(month))}</h2>
+    <h2>การจ่ายวัสดุ ${esc(roundTitle(month))}</h2>
     ${issue
       ? `<p class="issue-summary" id="issue-summary">จ่ายแล้ว ${esc(issue.units_done)}/${esc(issue.units_total)} หน่วย — ครบ ${complete} · ไม่ครบ ${incomplete} รายการ</p>
          ${unitLine ? `<p class="issue-units">${unitLine}</p>` : ""}`

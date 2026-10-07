@@ -43,7 +43,8 @@ export function renderTab3(container, ctx) {
       const b = state.bootstrap;
       const fy = ctx.fySelected();
       const monthSet = new Set((b.months || []).filter((m) => fiscalYearOf(m) === fy));
-      if (fiscalYearOf(b.current_month) === fy) monthSet.add(b.current_month);
+      const round = ctx.roundMonth();
+      if (fiscalYearOf(round) === fy) monthSet.add(round);
       const months = Array.from(monthSet).sort();
       const cat = buildCatalog(b.form);
       const perMonth = [];

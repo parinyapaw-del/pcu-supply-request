@@ -1,12 +1,12 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
 import { err, assertQty, isStr } from "./http.js";
 import {
-  auditStmt, batchChunked, budgetConfig, formPublic, getConfigAll, insertStatements, latestForm, loadForm, publicConfig,
+  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, loadForm, publicConfig,
 } from "./db.js";
 import {
   PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, pcuPublic,
 } from "./auth.js";
-import { currentMonth, isMonth, monthFy, nowIso, prevMonth } from "./time.js";
+import { currentMonth, currentRound, isMonth, monthFy, nextMonth, nowIso } from "./time.js";
 import {
   getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
 } from "./views.js";
@@ -65,7 +65,8 @@ export async function pcuLogin(ctx, p) {
 // ---- bootstrap -----------------------------------------------------------------------------------------------------
 export async function buildPcuBootstrap(ctx, pcuRow) {
   const { DB } = ctx;
-  const cur = currentMonth(), prev = prevMonth(cur);
+  // 2j: cur = currentRound (open for keying), prev = prevRound = calMonth (still editable)
+  const cal = currentMonth(), cur = nextMonth(cal), prev = cal;
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
   const fy = cfg.fy_current;
@@ -122,13 +123,13 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   }
 
   return {
-    server_time: nowIso(), current_month: cur,
+    server_time: nowIso(), current_month: cal, current_round: cur,
     pcu: pcuPublic(pcuRow),
     config: cfg,
     form_version_id: form ? form.id : null,
     form: formPublic(form, PCU_FORM),
     forms,
-    rounds: [cur, prev].map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day)),
+    rounds: [cur, prev].map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
     older_months: olderRes.results.map((r) => r.month),
     hidden: hiddenRes.results.map((r) => r.item_code),
     never_prev: neverPrev,
@@ -146,11 +147,12 @@ export async function pcuBootstrap(ctx) {
 export async function pcuGetMonth(ctx, p) {
   const { DB, pcu } = ctx;
   if (!isMonth(p.month)) throw err("BAD_REQUEST", "เดือนไม่ถูกต้อง");
-  if (p.month > currentMonth()) throw err("BAD_REQUEST", "เดือนนี้ยังไม่ถึง");
-  const cfg = publicConfig(await getConfigAll(DB), monthFy(currentMonth()));
+  const round = currentRound();
+  if (p.month > round) throw err("BAD_REQUEST", "เดือนนี้ยังไม่ถึง");
+  const cfg = publicConfig(await getConfigAll(DB), monthFy(round));
   const { view, unlocks } = await pcuMonthView(DB, pcu.code, p.month, cfg.fy_current);
   const rounds = await getRoundRows(DB, [p.month]);
-  const out = { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day) };
+  const out = { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month) };
   // the bound form version, only when it differs from the latest (2d)
   const fid = view.request && view.request.form_version_id;
   if (fid) {
@@ -170,7 +172,7 @@ export async function saveLines(ctx, p) {
   const { DB, pcu } = ctx;
   const month = p.month;
   if (!isMonth(month)) throw err("BAD_REQUEST", "เดือน/รอบไม่ถูกต้อง");
-  const cur = currentMonth();
+  const cal = currentMonth(), cur = nextMonth(cal); // 2j: writable = currentRound (cur) and prevRound (cal)
   if (month > cur) throw err("BAD_REQUEST", "ยังไม่ถึงรอบเดือนนี้");
   const linesIn = p.lines && typeof p.lines === "object" && !Array.isArray(p.lines) ? p.lines : {};
   const codes = Object.keys(linesIn);
@@ -192,9 +194,9 @@ export async function saveLines(ctx, p) {
   const [reqRow, roundRow, latest] = await Promise.all([
     getRequestRow(DB, pcu.code, month),
     DB.prepare(`SELECT locked FROM rounds WHERE month = ?`).bind(month).first(),
-    latestForm(DB, fy),
+    formForFy(DB, fy, cfg.fy_current),
   ]);
-  if (!reqRow && month !== cur && month !== prevMonth(cur)) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
+  if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
   if (roundRow && roundRow.locked) throw err("CONFLICT", "รอบนี้ปิดรับแล้ว แก้ไขไม่ได้");
   if (!latest) throw err("NOT_FOUND", "ยังไม่มีแบบฟอร์มในระบบ");
   const bound = reqRow && reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null;
@@ -295,7 +297,7 @@ export async function saveLines(ctx, p) {
 export async function setHidden(ctx, p) {
   const { DB, pcu } = ctx;
   const codes = Array.isArray(p.codes) ? p.codes : [];
-  const cfg = publicConfig(await getConfigAll(DB), monthFy(currentMonth()));
+  const cfg = publicConfig(await getConfigAll(DB), monthFy(currentRound()));
   const form = await latestForm(DB, cfg.fy_current);
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];

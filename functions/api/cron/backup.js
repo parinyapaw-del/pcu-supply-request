@@ -5,7 +5,7 @@ import { runBackup } from "../../_lib/backup.js";
 import { setDevMonth } from "../../_lib/time.js";
 
 export async function onRequestPost({ request, env }) {
-  // the PDF retention inside runBackup uses currentMonth(): honour X-Dev-Month in dev like POST /api (and never keep a stale value)
+  // the PDF retention inside runBackup uses currentRound(): honour X-Dev-Month in dev like POST /api (and never keep a stale value)
   setDevMonth(env.DEV_FAKE_GOOGLE === "1" ? request.headers.get("x-dev-month") : null);
   const key = request.headers.get("x-backup-key") || "";
   if (!env.BACKUP_KEY || !constantTimeEq(key, String(env.BACKUP_KEY))) {

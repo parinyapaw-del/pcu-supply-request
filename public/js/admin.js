@@ -3,8 +3,8 @@
 // Tab modules live in js/admin/tabN_*.js; aggregation in js/admin/compute.js (functions/API.md §5).
 import { call, ApiError, getAdminToken, clearAdminToken } from "./api.js";
 import { mountLogin } from "./admin/login.js";
-import { el, escapeHtml, toast } from "./admin/util.js";
-import { fiscalYearOf } from "./format.js";
+import { el, escapeHtml, toast, monthLong } from "./admin/util.js";
+import { fiscalYearOf, nextMonthKey } from "./format.js";
 import { buildCatalog } from "./admin/compute.js";
 import { clearRequestCache } from "./admin/requests.js";
 import { renderTab1 } from "./admin/tab1_status.js";
@@ -43,7 +43,7 @@ const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }
 const panels = {}; // tabId -> { section, rendered, lifecycle }
 let activeTabId = null;
 
-const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS, fyCurrent, fySelected, isCurrentFy, fyMonths, defaultMonth, fyNotice };
+const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS, fyCurrent, fySelected, isCurrentFy, fyMonths, defaultMonth, fyNotice, roundMonth, monthLabel };
 
 // ---- fiscal-year scope (2i) ----------------------------------------------------------------------------
 // The header's "ปีงบประมาณ" select scopes the data tabs: month pickers only offer months of the chosen year,
@@ -51,7 +51,7 @@ const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS, fyCurre
 // นำเข้า) show a notice when another year is chosen. Frontend-only — the API is unchanged.
 function fyCurrent() {
   const b = state.bootstrap;
-  return Number(b.config && b.config.fy_current) || fiscalYearOf(b.current_month);
+  return Number(b.config && b.config.fy_current) || fiscalYearOf(roundMonth());
 }
 function fyList() {
   const b = state.bootstrap;
@@ -63,17 +63,26 @@ function fyList() {
 }
 function fySelected() { return state.fy; }
 function isCurrentFy() { return state.fy === fyCurrent(); }
-// Months of the selected year that have a round / a request, or are the current month — newest first.
+// The open round ("ขอเบิก X", keyed during X-1) = bootstrap.current_round; falls back to calendar month + 1 for an old API.
+function roundMonth() {
+  const b = state.bootstrap;
+  return b.current_round || nextMonthKey(b.current_month);
+}
+// Label of a round month in pickers: "ขอเบิก <เดือน>" + "(รอบปัจจุบัน)" for the open round (brief 2j §5).
+function monthLabel(m) {
+  return `ขอเบิก ${monthLong(m)}` + (m === roundMonth() ? " (รอบปัจจุบัน)" : "");
+}
+// Months of the selected year that have a round / a request, or are the open round — newest first.
 function fyMonths() {
   const b = state.bootstrap;
   const set = new Set((b.rounds || []).map((r) => r.month));
-  set.add(b.current_month);
+  set.add(roundMonth());
   return [...set].filter((m) => fiscalYearOf(m) === state.fy).sort().reverse();
 }
-// Month a month-based tab opens on: this month for the current year, else the newest month of that year (or null).
+// Month a month-based tab opens on: the open round for its year, else the newest month of the chosen year (or null).
 function defaultMonth() {
-  const b = state.bootstrap;
-  if (fiscalYearOf(b.current_month) === state.fy) return b.current_month;
+  const r = roundMonth();
+  if (fiscalYearOf(r) === state.fy) return r;
   return fyMonths()[0] || null;
 }
 // Notice for tabs that only work on the current fiscal year.

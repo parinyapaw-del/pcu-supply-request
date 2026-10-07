@@ -49,6 +49,11 @@ export function monthLabel(monthKey) {
 
 export { shortMonthKeyThai };
 
+// Brief 2j: a round is named after the month the supplies are for -> "ขอเบิก พฤศจิกายน 2569".
+export function roundTitle(monthKey) {
+  return `ขอเบิก ${monthLabel(monthKey)}`;
+}
+
 // "2570" -> "70"
 export function fyShort(fy) {
   return String(Number(fy) % 100).padStart(2, "0");
@@ -73,6 +78,35 @@ export function monthData(app, month) {
 export function unlocksOf(app, month) {
   if (app.boot.unlocks && app.boot.unlocks[month]) return app.boot.unlocks[month];
   return (app.older && app.older[month] && app.older[month].unlocks) || {};
+}
+
+// The round open for keying (boot.current_round = nextMonth(calendar month)); falls back to the newest round.
+export function currentRoundMonth(app) {
+  const b = app.boot || {};
+  return b.current_round || (b.rounds && b.rounds[0] && b.rounds[0].month) || "";
+}
+
+export function isCurrentRound(app, month) {
+  return !!month && month === currentRoundMonth(app);
+}
+
+// "ปีงบ 2570 · (รอบปัจจุบัน)" style tags + the trial badge, shared by the home card and the fill header.
+export function currentRoundTagHtml(app, month) {
+  return isCurrentRound(app, month) ? ' <span class="badge badge-info round-current-tag">รอบปัจจุบัน</span>' : "";
+}
+
+export function trialBadgeHtml(round) {
+  return round && round.trial ? ' <span class="badge badge-trial">ทดลอง</span>' : "";
+}
+
+// "กรุณาส่งภายใน …" (trial round: "กรอกภายใน …").
+export function deadlineText(round) {
+  if (!round || !round.deadline_date) return "";
+  return `${round.trial ? "กรอกภายใน" : "กรุณาส่งภายใน"} ${formatThaiYmd(round.deadline_date)}`;
+}
+
+export function trialNote(round) {
+  return `ใช้ฝึกกรอกให้ชิน ไม่ต้องส่งจริง · ข้อมูลรอบนี้อยู่ในปีงบ ${round.fy} ไม่นับในปีงบถัดไป`;
 }
 
 // Months shown on the home page as editable rounds (current + previous).

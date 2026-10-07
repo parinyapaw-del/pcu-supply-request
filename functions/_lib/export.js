@@ -1,7 +1,7 @@
 // export.js — Excel export (spec §5.8): 3 sheets built with SheetJS. See functions/API.md §6.
 import * as XLSX from "xlsx";
 import { err } from "./http.js";
-import { latestForm, loadForm } from "./db.js";
+import { formForFy, loadForm } from "./db.js";
 import { bangkokDateTime, fyMonths, monthFy } from "./time.js";
 
 const STATUS_TH = { draft: "กำลังกรอก", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
@@ -14,7 +14,7 @@ function colWidths(ws, widths) {
 }
 
 export async function buildExport(DB, { month, fy }) {
-  const months = month ? [month] : fyMonths(fy);
+  const months = month ? [month] : fyMonths(fy); // 2j: fy = its 12 ROUND months (Nov … Oct)
   const scopeFy = month ? monthFy(month) : fy;
   const ph = months.map(() => "?").join(",");
 
@@ -24,7 +24,7 @@ export async function buildExport(DB, { month, fy }) {
     DB.prepare(`SELECT request_id, item_code, op, pp, price_snapshot, issued_total, issued_op, issued_pp, issue_reason, issue_note
                   FROM request_lines WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(scopeFy).all(),
-    latestForm(DB, scopeFy),
+    formForFy(DB, scopeFy),
   ]);
   const pcus = pcuRes.results;
   const pcuName = new Map(pcus.map((p) => [p.code, p.name]));
@@ -34,7 +34,7 @@ export async function buildExport(DB, { month, fy }) {
   const formCache = new Map();
   const formOf = async (r) => {
     const k = r.form_version_id || "latest:" + monthFy(r.month);
-    if (!formCache.has(k)) formCache.set(k, r.form_version_id ? await loadForm(DB, r.form_version_id) : await latestForm(DB, monthFy(r.month)));
+    if (!formCache.has(k)) formCache.set(k, r.form_version_id ? await loadForm(DB, r.form_version_id) : await formForFy(DB, monthFy(r.month)));
     return formCache.get(k);
   };
 

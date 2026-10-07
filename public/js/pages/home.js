@@ -1,10 +1,9 @@
 // Home page (#/home): one card per round (current + previous month), status badge, deadline, admin note,
 // issue-notice bar + "ดูการจ่าย" (2c) and the "older months" expander (phase 2 spec §4.1).
 import { getOrderedSteps } from "../data.js";
-import { formatMonthKeyThai } from "../format.js";
 import {
-  esc, pcuCode, requestOf, requestStatus, formatThaiYmd, monthLabel,
-  loadOlderMonth, alertDialog, monthData,
+  esc, pcuCode, requestOf, requestStatus,
+  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote,
 } from "./common.js";
 import * as sync from "../sync.js";
 
@@ -56,11 +55,12 @@ function cardHtml(app, round) {
   return `
   <div class="round-card${locked ? " round-card-locked" : ""}" data-month="${esc(round.month)}">
     <div class="round-card-head">
-      <h3>${esc(monthLabel(round.month))} <span class="muted fy-tag">ปีงบ ${esc(round.fy)}</span></h3>
+      <h3>${round.trial ? "ทดลองกรอก — " : ""}${esc(roundTitle(round.month))} <span class="muted fy-tag">ปีงบ ${esc(round.fy)}</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, round.month)}</h3>
       <span class="round-status">${badgesHtml(st)}</span>
     </div>
     ${note ? `<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(note)}</div>` : ""}
-    <p class="muted deadline-line">${locked ? "รอบนี้ปิดรับแล้ว" : `กรุณาส่งภายใน ${esc(formatThaiYmd(round.deadline_date))}`}</p>
+    <p class="muted deadline-line">${locked ? "รอบนี้ปิดรับแล้ว" : esc(deadlineText(round))}</p>
+    ${round.trial ? `<p class="trial-note">${esc(trialNote(round))}</p>` : ""}
     ${started ? `<p>ขอเบิกแล้ว ${n} รายการ · ขั้นตอน ${prog.n}/${prog.total}${prog.label ? ` (${esc(prog.label)})` : ""}</p>` : ""}
     <div class="round-card-actions">
       ${locked
@@ -76,7 +76,7 @@ function collapsedHtml(app, round) {
   const issue = monthData(app, round.month).issue;
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(round.month)}">
-    <summary><strong>${esc(monthLabel(round.month))}</strong> <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <summary><strong>${esc(roundTitle(round.month))}</strong>${trialBadgeHtml(round)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
@@ -88,7 +88,7 @@ function collapsedHtml(app, round) {
 function noticesHtml(app) {
   const list = app.boot.issue_notices || [];
   return list
-    .map((n) => `<div class="notice-bar" role="status" data-notice="${esc(n.month)}"><span>พัสดุจ่ายของเดือน ${esc(formatMonthKeyThai(n.month))} แล้ว — ครบ ${esc(n.complete)} รายการ · ไม่ครบ ${esc(n.incomplete)} รายการ</span>
+    .map((n) => `<div class="notice-bar" role="status" data-notice="${esc(n.month)}"><span>พัสดุจ่ายของรอบ ${esc(roundTitle(n.month))} แล้ว — ครบ ${esc(n.complete)} รายการ · ไม่ครบ ${esc(n.incomplete)} รายการ</span>
       <a href="#/issue?month=${esc(n.month)}" class="btn btn-sm btn-secondary">ดูรายละเอียด</a></div>`)
     .join("");
 }
@@ -112,7 +112,7 @@ export async function renderHome(container, app) {
     <details class="older-months">
       <summary>ดูเดือนเก่า (${older.length})</summary>
       <div class="older-list">
-        ${older.map((m) => `<div class="older-row"><span>${esc(monthLabel(m))}</span>
+        ${older.map((m) => `<div class="older-row"><span>${esc(roundTitle(m))}</span>
           <span><button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="summary">ดูใบเบิก</button>
           <button type="button" class="btn btn-secondary btn-sm" data-older="${esc(m)}" data-go="print">ดู/พิมพ์</button></span></div>`).join("")}
       </div>

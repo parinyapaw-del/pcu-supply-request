@@ -1,5 +1,5 @@
 // views.js — shared read-side builders: RequestObj, RoundInfo, per-month PCU view, issue summaries, limit checks.
-import { loadForm, latestForm, priceMap } from "./db.js";
+import { formForFy, loadForm, priceMap } from "./db.js";
 import { computeDeadline, fyMonths, monthFy, prevMonth } from "./time.js";
 import { UNITS } from "./auth.js";
 
@@ -47,10 +47,12 @@ export async function getLines(DB, reqId) {
 }
 
 // ---- rounds ----------------------------------------------------------------------------------------------------------
-export function roundInfo(month, row, deadlineDay) {
+// RoundInfo of a round month. `trialMonth` = config.trial_month (2j) → `trial: month === trialMonth`.
+export function roundInfo(month, row, deadlineDay, trialMonth) {
   const d = computeDeadline(month, row, deadlineDay);
   return {
     month, fy: monthFy(month), deadline_date: d.deadline_date, deadline_source: d.deadline_source,
+    trial: !!trialMonth && month === trialMonth,
     locked: !!(row && row.locked), locked_at: (row && row.locked_at) || null, locked_by: (row && row.locked_by) || null,
     note: (row && row.note) || null,
   };
@@ -62,13 +64,14 @@ export async function getRoundRows(DB, months) {
   for (const r of results) map.set(r.month, r);
   return map;
 }
-export async function getRound(DB, month, deadlineDay) {
+export async function getRound(DB, month, deadlineDay, trialMonth) {
   const row = await DB.prepare(`SELECT * FROM rounds WHERE month = ?`).bind(month).first();
-  return roundInfo(month, row, deadlineDay);
+  return roundInfo(month, row, deadlineDay, trialMonth);
 }
 
 // ---- PCU month view -------------------------------------------------------------------------------------------------
 // Σ(op+pp) of this PCU's submitted/issued requests in the same fiscal year as `month`, excluding `month` itself.
+// FY = round FY (2j): fyMonths(monthFy(month)) = Nov … Oct round months.
 export async function usedFyFor(DB, pcu, month) {
   const ms = fyMonths(monthFy(month));
   const { results } = await DB.prepare(
@@ -94,9 +97,9 @@ export async function prevLinesFor(DB, pcu, month) {
 }
 
 // ---- issue (2c) -------------------------------------------------------------------------------------------------------
-// The form a request resolves its codes against: the bound version, else the latest of the round's fy.
+// The form a request resolves its codes against: the bound version, else formForFy (latest of the round's fy → fy_current → newest).
 export async function formOfRequest(DB, reqRow, fallbackFy) {
-  return reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : latestForm(DB, fallbackFy ?? monthFy(reqRow.month));
+  return reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : formForFy(DB, fallbackFy ?? monthFy(reqRow.month));
 }
 export const unitOfCode = (form, code) => (form && form.index.get(code) ? form.index.get(code).step.dispense_unit : null);
 export const requestedQty = (l) => (l.op || 0) + (l.pp || 0);

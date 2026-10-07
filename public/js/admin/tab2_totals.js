@@ -41,7 +41,7 @@ export function renderTab2(container, ctx) {
   function fillSelect() {
     select.innerHTML = "";
     if (!months().length) { select.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
-    months().forEach((m) => select.appendChild(el("option", { value: m, selected: m === ts.month }, monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : ""))));
+    months().forEach((m) => select.appendChild(el("option", { value: m, selected: m === ts.month }, ctx.monthLabel(m))));
   }
   fillSelect();
   select.addEventListener("change", () => { ts.month = select.value; ts.expanded.clear(); ts.data = null; load(); });
@@ -109,14 +109,14 @@ export function renderTab2(container, ctx) {
     const { cat, agg, entries, requests } = ts.data;
     const pcus = state.bootstrap.pcus;
     const nUsable = entries.length;
-    info.textContent = `${monthLong(ts.month)} — ใบที่ส่งแล้ว/จ่ายแล้ว ${nUsable}/${pcus.length} แห่ง · ยอดขอรวม ${formatMoney(agg.baht)} บาท (OP ${formatMoney(agg.bahtOp)} · PP ${formatMoney(agg.bahtPp)}) · โหลดเมื่อ ${formatBangkokTimeSec()}`
+    info.textContent = `ขอเบิก ${monthLong(ts.month)} — ใบที่ส่งแล้ว/จ่ายแล้ว ${nUsable}/${pcus.length} แห่ง · ยอดขอรวม ${formatMoney(agg.baht)} บาท (OP ${formatMoney(agg.bahtOp)} · PP ${formatMoney(agg.bahtPp)}) · โหลดเมื่อ ${formatBangkokTimeSec()}`
       + (state.isAdmin ? "" : " · แสดงเฉพาะรายการของหน่วยที่ท่านรับผิดชอบ");
     const draftCount = requests.filter((r) => r.status === "draft").length;
     if (draftCount) info.textContent += ` · แบบร่าง ${draftCount} แห่ง (ยังไม่นับ)`;
 
     const groups = groupsFor(cat, agg);
     if (!groups.length) {
-      host.innerHTML = `<div class="admin-card"><p class="muted">ยังไม่มีใบเบิกที่ส่งแล้วในเดือนนี้</p></div>`;
+      host.innerHTML = `<div class="admin-card"><p class="muted">ยังไม่มีใบเบิกที่ส่งแล้วในรอบนี้</p></div>`;
       return;
     }
     let grandOp = 0, grandPp = 0, grandBaht = 0, grandIssued = null;
@@ -145,7 +145,7 @@ export function renderTab2(container, ctx) {
     });
     body.push(`<tr class="grand-row" id="t2-grand"><td colspan="3" class="left">รวมทั้งหมด</td><td class="num">${formatInt(grandOp)}</td><td class="num">${formatInt(grandPp)}</td><td class="num">${formatInt(grandOp + grandPp)}</td><td class="num">${grandIssued === null ? "—" : formatInt(grandIssued)}</td><td class="num">${formatMoney(grandBaht)}</td></tr>`);
 
-    host.innerHTML = `<h2 class="print-title">ใบจัดของ — ${escapeHtml(monthLong(ts.month))} (${ts.view === "step" ? "ต่อหน้า" : "ต่อหน่วยจ่าย"})</h2>`
+    host.innerHTML = `<h2 class="print-title">ใบจัดของ — ขอเบิก ${escapeHtml(monthLong(ts.month))} (${ts.view === "step" ? "ต่อหน้า" : "ต่อหน่วยจ่าย"})</h2>`
       + tableScroll(`<table class="admin-table totals-table" id="t2-tbl">
         <thead><tr><th class="left">รหัส</th><th class="left">รายการ</th><th class="left">หน่วย</th><th class="num">ขอ OP</th><th class="num">ขอ PP</th><th class="num">ขอ รวม</th><th class="num" title="ยอดจ่ายจริง — บันทึกใน phase 2c">จ่ายจริง</th><th class="num">เป็นเงิน (บาท)</th></tr></thead>
         <tbody>${body.join("")}</tbody></table>`);

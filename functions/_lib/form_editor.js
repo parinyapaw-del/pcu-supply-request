@@ -5,7 +5,7 @@ import { err, isStr, sha256Hex, stableStringify } from "./http.js";
 import {
   DEFAULT_UNIT_BY_STEP, auditStmt, budgetConfig, formPublic, getConfigAll, loadForm, publicConfig,
 } from "./db.js";
-import { currentMonth, fyMonths, monthFy, nowIso } from "./time.js";
+import { currentRound, fyExcelMonths, monthFy, nowIso } from "./time.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const round2 = (x) => Math.round(x * 100) / 100;
@@ -212,7 +212,7 @@ export async function adminFormSave(ctx, p) {
 export async function adminExportSeed(ctx, p) {
   const { DB } = ctx;
   const cfgAll = await getConfigAll(DB);
-  const cfg = { ...publicConfig(cfgAll, monthFy(currentMonth())), ...budgetConfig(cfgAll) };
+  const cfg = { ...publicConfig(cfgAll, monthFy(currentRound())), ...budgetConfig(cfgAll) };
   let fy = cfg.fy_current;
   if (p.fy !== undefined && p.fy !== null) {
     fy = Number(p.fy);
@@ -250,7 +250,7 @@ export async function adminExportSeed(ctx, p) {
   for (const [f, code, price] of priceRes) (seed.prices_prev[f] ||= {})[code] = price || 0;
   seed.actual_prev = {};
   for (const [f, month, pcu, code, op, pp] of actRes) {
-    const blk = (seed.actual_prev[f] ||= { months: fyMonths(Number(f)), data: {} });
+    const blk = (seed.actual_prev[f] ||= { months: fyExcelMonths(Number(f)), data: {} }); // Excel columns Oct … Sep
     const i = blk.months.indexOf(month);
     if (i < 0) continue; // a month outside the fy's 12 cannot be represented
     const e = ((blk.data[pcu] ||= {})[code] ||= { op: new Array(12).fill(0), pp: new Array(12).fill(0) });

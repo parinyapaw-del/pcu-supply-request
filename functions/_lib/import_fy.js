@@ -6,7 +6,7 @@ import { getConfigAll, latestForm, publicConfig } from "./db.js";
 import { canonSteps } from "./form_editor.js";
 import { adminImportSeed, formRecord, validateSeed } from "./importer.js";
 import { defaultLimit } from "./admin.js";
-import { currentMonth, fyMonths, monthFy, nowIso } from "./time.js";
+import { currentRound, fyExcelMonths, fyMonths, monthFy, nowIso, prevMonth } from "./time.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const round2 = (x) => Math.round((x + 1e-9) * 100) / 100; // same rounding as tools/build_seed_2570.py r2()
@@ -114,8 +114,12 @@ function percentile(sorted, q) {
 const median = (sorted) => { const n = sorted.length, h = n >> 1; return n % 2 ? sorted[h] : (sorted[h - 1] + sorted[h]) / 2; };
 
 // {months, data:{pcu:{code:{op:[12],pp:[12]}}}} + stats {pcu:{code:[median,p90,annual]}} + counts, from submitted/issued requests of `o`
+// 2j: the requests counted are the 12 ROUND months of `o` (fyMonths, Nov … Oct); the block is written in Excel shape (months =
+// fyExcelMonths(o), Oct … Sep) — round m lands in the column of its submission month prevMonth(m) (slot i ↔ round fyMonths(o)[i]).
+// actual_months are reported in those Excel labels too (they are what the "ปีก่อน" tab will show).
 async function deriveFromRequests(DB, o) {
   const months = fyMonths(o);
+  const excel = fyExcelMonths(o);
   const idx = new Map(months.map((m, i) => [m, i]));
   const [lineRes, cntRes] = await Promise.all([
     DB.prepare(`SELECT r.month, r.pcu, l.item_code, COALESCE(l.op,0), COALESCE(l.pp,0)
@@ -144,18 +148,18 @@ async function deriveFromRequests(DB, o) {
   }
   const actualRows = Object.values(data).reduce((a, o2) => a + Object.values(o2).reduce((s, e) => s + e.op.filter((x, i) => x + e.pp[i] > 0).length, 0), 0);
   return {
-    block: { months, data }, stats,
+    block: { months: excel, data }, stats,
     actual_rows: actualRows,
     stats_rows: Object.values(stats).reduce((a, o2) => a + Object.keys(o2).length, 0),
     requests_counted: cntRes.results.reduce((a, r) => a + r.n, 0),
-    actual_months: cntRes.results.map((r) => r.month),
+    actual_months: cntRes.results.map((r) => prevMonth(r.month)),
   };
 }
 
 // ---- the shared analysis ---------------------------------------------------------------------------------------------------------
 async function currentFy(DB) {
   const cfgAll = await getConfigAll(DB);
-  return { cfgAll, fyCur: publicConfig(cfgAll, monthFy(currentMonth())).fy_current };
+  return { cfgAll, fyCur: publicConfig(cfgAll, monthFy(currentRound())).fy_current };
 }
 
 // mode of a file: "same_fy" (fy == fy_current) | "rollover" (fy == fy_current + 1) | BAD_REQUEST

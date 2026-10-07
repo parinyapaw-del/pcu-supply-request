@@ -425,3 +425,7 @@
   .t11-map-table .name-cell { min-width: 160px; }
   .t11-nav .btn { flex: 1 1 auto; }
 }
+
+/* ---- trial round badge (brief 2j) ---- */
+.badge-trial { margin-left: 8px; font-size: 0.8rem; vertical-align: middle; }
+#t9-trial-card .admin-toolbar { margin-top: 8px; }

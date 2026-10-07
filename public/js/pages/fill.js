@@ -8,11 +8,13 @@ import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, unlocksOf, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
-  requestOf, requestStatus, fyShort, monthLabel, formatThaiYmd, alertDialog, toast,
+  requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote,
+  alertDialog, toast,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
 
 let unsubStatus = null;
+const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
 
 function hiddenSet(app) {
   return new Set(app.boot.hidden || []);
@@ -125,6 +127,16 @@ export async function renderFill(container, app, stepCode, params) {
     wireStepEvents(app, month, step, stepEditable);
     markMissing(step, content, app, month);
     if (params && params.get("focus")) focusItem(params.get("focus"), params.get("field") || "stock");
+    else if (params && params.get("item")) {
+      // 4.3 item search landing: scroll to the row, focus its first editable input (stock if required, else op),
+      // then drop `item` from the hash (replaceState = no hashchange) so a reload does not re-focus.
+      focusItem(params.get("item"), stockRequired(app) ? "stock" : "op", ITEM_HIGHLIGHT_MS);
+      try {
+        params.delete("item");
+        const qs = params.toString();
+        history.replaceState(null, "", `${location.pathname}${location.search}${location.hash.split("?")[0]}${qs ? "?" + qs : ""}`);
+      } catch (e) { /* history API unavailable: harmless */ }
+    }
   }
 }
 
@@ -171,6 +183,10 @@ function renderBanners(app, month, stepLocked) {
   if (request && request.admin_note) {
     parts.push(`<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(request.admin_note)}</div>`);
   }
+  const rnd = roundOf(app, month);
+  if (rnd && rnd.trial) {
+    parts.push(`<div class="notice notice-trial" id="fill-trial-banner"><strong>ทดลองกรอก</strong> — ${esc(trialNote(rnd))}${rnd.deadline_date ? ` (${esc(deadlineText(rnd))})` : ""}</div>`);
+  }
   parts.push(formVersionBanner(app, request));
   parts.push(`<div class="fill-status" id="fill-status"></div>`);
   host.innerHTML = parts.join("");
@@ -183,7 +199,7 @@ function refreshStatusChip(app, month) {
   const session = sync.getSession(pcuCode(app), month);
   const st = requestStatus(requestOf(app, month), roundOf(app, month), session && session.conflict);
   const round = roundOf(app, month);
-  el.innerHTML = `<span class="muted">${esc(monthLabel(month))}${round ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span> <span class="badge ${st.cls}">${esc(st.label)}</span>` +
+  el.innerHTML = `<span class="muted">${esc(roundTitle(month))}${round ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, month)} <span class="badge ${st.cls}">${esc(st.label)}</span>` +
     st.extra.map((e) => ` <span class="badge ${e.cls}">${esc(e.label)}</span>`).join("");
 }
 
@@ -301,6 +317,8 @@ function renderStepForm(app, month, step, editable) {
   const box = document.createElement("div");
   box.className = "step-form";
 
+  box.appendChild(buildItemSearch(app, month, step));
+
   if (!stockRequired(app) && editable) {
     const hint = document.createElement("p");
     hint.className = "muted stock-hint";
@@ -355,6 +373,126 @@ function renderStepForm(app, month, step, editable) {
   return box;
 }
 
+// ---------------- 4.3 item search (all active items of all active pages) ----------------
+
+const SEARCH_MAX = 30;
+
+// Index over app.boot.form — the same form renderFill draws the pages from — grouped by page in wizard order.
+function searchIndex(app) {
+  const hidden = hiddenSet(app);
+  const steps = getOrderedSteps(app.boot.form).filter((s) => s.active !== false);
+  return steps.map((step, i) => ({
+    step,
+    pageNo: step.page_no != null ? step.page_no : i + 1,
+    items: getActiveItemRows(step).map((it) => ({
+      item: it,
+      hidden: hidden.has(it.code),
+      hay: `${it.code} ${it.name}`.toLowerCase(),
+    })),
+  }));
+}
+
+function searchMatches(app, query) {
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return { groups: [], total: 0 };
+  const groups = [];
+  let total = 0, shown = 0;
+  for (const g of searchIndex(app)) {
+    const hits = g.items.filter((x) => tokens.every((t) => x.hay.includes(t)));
+    total += hits.length;
+    if (!hits.length || shown >= SEARCH_MAX) continue;
+    const take = hits.slice(0, SEARCH_MAX - shown);
+    shown += take.length;
+    groups.push({ step: g.step, pageNo: g.pageNo, hits: take });
+  }
+  return { groups, total };
+}
+
+function buildItemSearch(app, month, step) {
+  const wrap = document.createElement("div");
+  wrap.className = "item-search no-print";
+  wrap.innerHTML = `
+    <input type="text" id="item-search" class="item-search-input" placeholder="ค้นหารายการ (รหัส/ชื่อ) ทุกหน้า"
+      autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"
+      role="combobox" aria-expanded="false" aria-controls="item-search-results" aria-label="ค้นหารายการ">
+    <div class="item-search-results" id="item-search-results" role="listbox" hidden></div>`;
+  const input = wrap.querySelector("#item-search");
+  const list = wrap.querySelector("#item-search-results");
+
+  const close = () => {
+    list.hidden = true;
+    list.innerHTML = "";
+    input.setAttribute("aria-expanded", "false");
+  };
+  const reset = () => { input.value = ""; close(); };
+
+  const pick = (stepCode, code) => {
+    reset();
+    if (stepCode === step.code) {
+      // already on that page: no re-render needed, just jump to the row
+      focusItem(code, stockRequired(app) ? "stock" : "op", ITEM_HIGHLIGHT_MS);
+      return;
+    }
+    sync.flush(pcuCode(app), month);
+    location.hash = `#/fill/${stepCode}?month=${month}&item=${encodeURIComponent(code)}`;
+  };
+
+  const render = () => {
+    const q = input.value.trim();
+    if (!q) { close(); return; }
+    const { groups, total } = searchMatches(app, q);
+    let html = "";
+    if (!groups.length) {
+      html = `<div class="item-search-empty muted">ไม่พบรายการที่ตรงกับ “${esc(q)}”</div>`;
+    } else {
+      groups.forEach((g) => {
+        html += `<div class="item-search-group" role="presentation">หน้า ${esc(g.pageNo)} — ${esc(stepLabel(g.step))}</div>`;
+        g.hits.forEach((h) => {
+          const it = h.item;
+          const label = `<span class="hit-code">${esc(it.code)}</span> <span class="hit-name">${esc(it.name)}</span> <span class="hit-unit">(${esc(it.unit || "")})</span>`;
+          html += h.hidden
+            // hidden (ไม่เบิก) items have no row on the page: greyed, not pickable; the tag links to the settings page
+            ? `<div class="item-search-hit is-hidden" role="option" aria-disabled="true">${label}
+                <a class="hit-tag" href="#/hidden">ซ่อนอยู่ — ตั้งค่ารายการที่ไม่เบิก</a></div>`
+            : `<button type="button" class="item-search-hit" role="option" data-step="${esc(g.step.code)}" data-code="${esc(it.code)}">${label}</button>`;
+        });
+      });
+      if (total > SEARCH_MAX) html += `<div class="item-search-more muted">แสดง ${SEARCH_MAX} จาก ${total} รายการ — พิมพ์เพิ่มเพื่อกรอง</div>`;
+    }
+    list.innerHTML = html;
+    list.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+  };
+
+  input.addEventListener("input", render);
+  input.addEventListener("focus", () => { if (input.value.trim()) render(); });
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      close();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      const first = list.querySelector("button.item-search-hit");
+      if (first) pick(first.dataset.step, first.dataset.code);
+    } else if (ev.key === "ArrowDown") {
+      const first = list.querySelector("button.item-search-hit");
+      if (first) { ev.preventDefault(); first.focus(); }
+    }
+  });
+  list.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button.item-search-hit");
+    if (btn) pick(btn.dataset.step, btn.dataset.code);
+  });
+  list.addEventListener("keydown", (ev) => {
+    const hits = Array.from(list.querySelectorAll("button.item-search-hit"));
+    const i = hits.indexOf(document.activeElement);
+    if (ev.key === "ArrowDown" && i >= 0 && i < hits.length - 1) { ev.preventDefault(); hits[i + 1].focus(); }
+    else if (ev.key === "ArrowUp" && i >= 0) { ev.preventDefault(); (hits[i - 1] || input).focus(); }
+    else if (ev.key === "Escape") { ev.preventDefault(); close(); input.focus(); }
+  });
+  return wrap;
+}
+
 async function toggleHidden(app, code, hide) {
   const cur = new Set(app.boot.hidden || []);
   if (hide) cur.add(code); else cur.delete(code);
@@ -368,7 +506,7 @@ async function toggleHidden(app, code, hide) {
 }
 
 // Q90 helper lines. Plan / used-this-FY are fy_current numbers, so they only show on rounds of fy_current
-// (never any previous-FY numbers); "เดือนก่อน" comes from the previous calendar month's submitted request.
+// (never any previous-FY numbers); "รอบก่อน" comes from the previous round's submitted request.
 function hintHtml(app, month, item) {
   const data = monthData(app, month);
   const lines = [];
@@ -379,7 +517,7 @@ function hintHtml(app, month, item) {
     lines.push(`แผนปี ${fyShort(app.boot.config.fy_current)}: ${formatInt(planTotal)} · เบิกแล้วปีนี้: ${formatInt(used)}`);
   }
   const prev = data.prev_lines && data.prev_lines[item.code];
-  if (prev) lines.push(`เดือนก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}`);
+  if (prev) lines.push(`รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}`);
   return lines.map((t) => `<div class="ghost-line">${esc(t)}</div>`).join("");
 }
 
@@ -618,7 +756,7 @@ function markMissing(step, content, app, month) {
   }
 }
 
-function focusItem(code, field) {
+function focusItem(code, field, highlightMs = 3000) {
   setTimeout(() => {
     const visibleInputs = Array.from(document.querySelectorAll(`[data-code="${code}"] input[data-field="${field}"]`))
       .filter((el) => el.offsetParent !== null);
@@ -626,7 +764,7 @@ function focusItem(code, field) {
     const rowEls = document.querySelectorAll(`[data-code="${code}"]`);
     rowEls.forEach((el) => {
       el.classList.add("row-highlight");
-      setTimeout(() => el.classList.remove("row-highlight"), 3000);
+      setTimeout(() => el.classList.remove("row-highlight"), highlightMs);
     });
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -698,7 +836,7 @@ function renderSummary(app, month, steps) {
         : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์ใบเบิก</button>`}
     </div>
     <p class="muted send-hint">${editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
-    ${round && editable && round.deadline_date ? `<p class="muted">กรุณาส่งภายใน ${esc(formatThaiYmd(round.deadline_date))}</p>` : ""}
+    ${round && editable && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}
   `;
 
   box.querySelectorAll("[data-jump]").forEach((a) => {

@@ -36,6 +36,7 @@
 - ตัวเลขจำนวน: integer ถ้าเป็นจำนวนเต็ม มิฉะนั้น float · เงิน: float 2 ตำแหน่ง · `null` = ไม่มีค่า
 - `limits` ตั้งต้น (Q81): `limit_year = plan_op+plan_pp` ปี fy (0 → null) · `limit_month = ceil(p90_m ปีก่อน)` ถ้า p90_m > 0 (source `stat69`)
   มิฉะนั้น `ceil(limit_year/12×2)` (source `plan70`) · ถ้า limit_year null และ p90 ไม่มี → ไม่มีแถว
+- `actual_prev[fy].months` คงเป็นเดือนปฏิทินตามคอลัมน์ Excel ต.ค. … ก.ย. (`fyExcelMonths`, index 0 = ต.ค.) — ไม่เลื่อนตามรอบ (2j); นิยามปีงบของ "รอบ" (ขอเบิกเดือน X = ปีงบของเดือน X−1, FY2570 = รอบ 2026-11 … 2027-10) อยู่ใน `functions/API.md` §1 · ตอนเปิดปีใหม่ที่คำนวณจาก D1 รอบ X ลงคอลัมน์เดือน X−1
 - ข้อมูลใน `actual_prev`/`plans`/`stats` เป็นข้อมูลภายใน รพ. — ไฟล์นี้อยู่ใน repo **private** เท่านั้น ไม่อยู่ใต้ `public/`
 
 ## การนำเข้า (backend action `adminImportSeed`, idempotent — รันซ้ำได้)

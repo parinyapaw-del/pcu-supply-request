@@ -1,10 +1,10 @@
 // issue.js — บันทึกจ่ายจริง (phase 2c): issueLines · issueAll · issueDone · issueItem · adminItemIssue (functions/API.md §5.3).
 // Staff = admin or dispenser (ctx.who = {email, role, units, backup}). A dispenser may only touch lines whose step.dispense_unit is one of
-// its units, and only until the end of the month after the request month. Every write rides in the same D1 batch as its audit row.
+// its units, and only while calMonth <= the round month (round m is dispensed in m−1 and m, brief 2j). Every write rides in the same D1 batch as its audit row.
 import { err, isStr } from "./http.js";
-import { auditStmt, batchChunked, latestForm } from "./db.js";
+import { auditStmt, batchChunked, formForFy } from "./db.js";
 import { UNITS } from "./auth.js";
-import { currentMonth, isMonth, monthFy, nextMonth, nowIso } from "./time.js";
+import { currentMonth, isMonth, monthFy, nowIso } from "./time.js";
 import {
   formOfRequest, getLines, getRequestRow, issueInfoFrom, neededUnits, requestObj, requestedQty, unitOfCode,
 } from "./views.js";
@@ -19,7 +19,7 @@ const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const isDispenser = (who) => who.role === "dispenser";
 
 function assertWindow(who, month) {
-  if (isDispenser(who) && currentMonth() > nextMonth(month)) throw err("FORBIDDEN", "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)");
+  if (isDispenser(who) && currentMonth() > month) throw err("FORBIDDEN", "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)");
 }
 function assertUnitAllowed(who, unit) {
   if (isDispenser(who) && !who.units.includes(unit)) throw err("FORBIDDEN", `ไม่มีสิทธิ์จ่ายรายการของหน่วย "${unit}"`);
@@ -188,11 +188,11 @@ export async function issueDone(ctx, p) {
 }
 
 // ---- per item, across PCUs ----------------------------------------------------------------------------------------------
-// Latest form of the month's fy, the item in it, and its dispense unit (BAD_REQUEST if unknown).
+// formForFy of the month's fy, the item in it, and its dispense unit (BAD_REQUEST if unknown).
 async function itemContext(DB, who, month, code) {
   assertMonth(month);
   if (!isStr(code) || !code) throw err("BAD_REQUEST", "ต้องระบุ item_code");
-  const latest = await latestForm(DB, monthFy(month));
+  const latest = await formForFy(DB, monthFy(month));
   const ent = latest && latest.index.get(code);
   if (!ent) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + code);
   assertUnitAllowed(who, ent.step.dispense_unit);

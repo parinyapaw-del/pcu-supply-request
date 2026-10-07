@@ -1,6 +1,6 @@
 // db.js — D1 schema + automatic migrations, config store, form-version cache, audit + chunked-batch helpers.
 import { err, jparse } from "./http.js";
-import { nowIso } from "./time.js";
+import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
 // Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R (below).
@@ -182,6 +182,7 @@ export function publicConfig(cfg, fallbackFy) {
     stock_required: Number(cfg.stock_required) === 1 ? 1 : 0,
     deadline_day: dd,
     fy_current: fy,
+    trial_month: isMonth(cfg.trial_month) ? cfg.trial_month : null, // 2j: the practice round ("YYYY-MM") or null
   };
 }
 export function budgetConfig(cfg) {
@@ -233,6 +234,25 @@ export async function loadForm(DB, id) {
 export async function latestForm(DB, fy) {
   let row = await DB.prepare(`SELECT id FROM form_versions WHERE fy = ? ORDER BY id DESC LIMIT 1`).bind(fy).first();
   if (!row) row = await DB.prepare(`SELECT id FROM form_versions ORDER BY id DESC LIMIT 1`).first();
+  return row ? loadForm(DB, row.id) : null;
+}
+
+// 2j: the form a ROUND month resolves against when nothing is bound — latest version of the round's fy, else of fy_current
+// (`fyCurrent`; read from config when omitted), else the newest version of any fy. null when no versions exist at all.
+// (The trial round 2026-10 is fy 2569, which has no form version → it uses the fy_current form.)
+export async function formForFy(DB, fy, fyCurrent) {
+  const strict = async (f) => {
+    const row = await DB.prepare(`SELECT id FROM form_versions WHERE fy = ? ORDER BY id DESC LIMIT 1`).bind(f).first();
+    return row ? loadForm(DB, row.id) : null;
+  };
+  const own = await strict(fy);
+  if (own) return own;
+  if (!Number.isInteger(fyCurrent)) fyCurrent = publicConfig(await getConfigAll(DB), monthFy(currentRound())).fy_current;
+  if (fyCurrent !== fy) {
+    const cur = await strict(fyCurrent);
+    if (cur) return cur;
+  }
+  const row = await DB.prepare(`SELECT id FROM form_versions ORDER BY id DESC LIMIT 1`).first();
   return row ? loadForm(DB, row.id) : null;
 }
 

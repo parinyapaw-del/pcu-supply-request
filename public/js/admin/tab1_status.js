@@ -82,7 +82,7 @@ export function renderTab1(container, ctx) {
     const opts = monthOptions();
     if (!opts.length) { select.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
     opts.forEach((m) => {
-      const label = monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : "");
+      const label = ctx.monthLabel(m);
       select.appendChild(el("option", { value: m, selected: m === tabState.month }, label));
     });
   }
@@ -140,7 +140,8 @@ export function renderTab1(container, ctx) {
   function drawHeader() {
     const round = currentRound();
     header.innerHTML = "";
-    const title = el("h2", {}, `รอบ ${monthLong(tabState.month)}`);
+    const title = el("h2", {}, `รอบ ขอเบิก ${monthLong(tabState.month)}`);
+    if (round && round.trial) title.appendChild(el("span", { class: "badge badge-warn badge-trial", id: "t1-trial-badge" }, "ทดลอง"));
     header.appendChild(title);
     if (!round) { header.appendChild(el("p", { class: "muted" }, "ไม่มีข้อมูลรอบ")); return; }
     const row = el("div", { class: "round-row" });
@@ -243,7 +244,9 @@ export function renderTab1(container, ctx) {
     const submitted = Object.values(reqs).filter((r) => r.status === "submitted" || r.status === "issued");
     const issuedN = submitted.filter((r) => r.status === "issued").length;
     const totalBaht = submitted.reduce((s, r) => s + ((r.progress && r.progress.baht) || 0), 0);
-    const summary = `ส่งแล้ว ${submitted.length}/${state.bootstrap.pcus.length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`;
+    const curRound = currentRound();
+    const trialBadge = curRound && curRound.trial ? ' <span class="badge badge-warn badge-trial" id="t1-summary-trial">ทดลอง</span>' : "";
+    const summary = `${trialBadge}ส่งแล้ว ${submitted.length}/${state.bootstrap.pcus.length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`;
 
     tableHost.innerHTML = `<p class="admin-note" id="t1-summary">${summary}</p>` + tableScroll(`<table class="admin-table" id="t1-tbl">
       <thead><tr><th class="left">รพ.สต.</th><th class="left">สถานะ</th><th class="num">บาท</th><th class="left">การดำเนินการ</th></tr></thead>

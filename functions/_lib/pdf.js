@@ -3,9 +3,9 @@
 // Contract: functions/API.md §4 / §5 / §6b. The download itself is functions/api/pdf/[id].js.
 // 2b-R: retention (prunePdfFiles), R2 cost guard (PDF_QUOTA) and usage counters (usage.js).
 import { err, sha256Hex, stableStringify } from "./http.js";
-import { auditStmt, batchChunked, formPublic, latestForm, loadForm } from "./db.js";
+import { auditStmt, batchChunked, formForFy, formPublic, loadForm } from "./db.js";
 import { signToken, verifyToken } from "./auth.js";
-import { currentMonth, isDate, isMonth, monthFy, monthMinus, nextMonth, nowIso } from "./time.js";
+import { currentRound, isDate, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
 import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
 import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
@@ -60,13 +60,13 @@ async function loadBundle(DB, pcuCode, month) {
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
 
 // 2h print options (per print, never stored on the request): {doc_date:"YYYY-MM-DD"|null, supply_month:"YYYY-MM"|null}.
-// absent / null / "" → null · doc_date any valid date · supply_month only the month after the round · any other type fails the same
+// absent / null / "" → null · doc_date any valid date · supply_month only the round month itself (2j: round = "ขอเบิกเดือน X") · any other type fails the same
 // checks (isDate / === need a string) → BAD_REQUEST. `month` must already be valid.
 export function printOptsOf(p, month) {
   const pick = (v) => (v === undefined || v === null || v === "" ? null : v);
   const doc_date = pick(p && p.doc_date), supply_month = pick(p && p.supply_month);
   if (doc_date !== null && !isDate(doc_date)) throw err("BAD_REQUEST", "วันที่เอกสารไม่ถูกต้อง");
-  if (supply_month !== null && supply_month !== nextMonth(month)) throw err("BAD_REQUEST", "เดือนที่เบิกต้องเป็นเดือนถัดจากรอบ");
+  if (supply_month !== null && supply_month !== month) throw err("BAD_REQUEST", "เดือนที่เบิกต้องเป็นเดือนของรอบ");
   return { doc_date, supply_month };
 }
 
@@ -246,7 +246,7 @@ async function createOrGetPdf(ctx, pcuCode, month, actor, role, p) {
 // ---- retention (2b-R) ---------------------------------------------------------------------------------------------------------
 export const PDF_RULE = { keep_latest: 2, keep_other: 1, months: 12 };
 
-// latest = currentMonth() (honours X-Dev-Month in dev; same source as adminRequests.current_month).
+// latest = currentRound() = nextMonth(calMonth) (2j; honours X-Dev-Month in dev; = adminRequests.current_round).
 // Per (pcu, request month), newest first: month < latest−11 → delete all · month ≥ latest → keep 2 · else keep 1.
 // Deletes the R2 object (by stored r2_key; R2 ignores missing keys) and the pdf_files row. Audit `pdf_prune` only when ≥ 1 file went.
 // opts: {pcu?, reason: "create"|"backup"|"admin"|"quota", actor?, role?}  →  {deleted:[r2_key], bytes}
@@ -254,7 +254,7 @@ export async function prunePdfFiles(env, DB, opts = {}) {
   const pcu = opts.pcu || null;
   const reason = opts.reason || "admin";
   if (!env.FILES) return { deleted: [], bytes: 0 }; // nothing can be stored without the binding; never orphan objects
-  const latest = currentMonth();
+  const latest = currentRound();
   const oldest = monthMinus(latest, PDF_RULE.months - 1);
   const sql = `SELECT pf.request_id, pf.content_key, pf.r2_key, pf.bytes, r.pcu, r.month
                FROM pdf_files pf JOIN requests r ON r.id = pf.request_id ${pcu ? "WHERE r.pcu = ?" : ""}
@@ -305,7 +305,7 @@ export async function printData(ctx, p) {
   const opts = { doc_date: payload.dd ?? null, supply_month: payload.sm ?? null };
   if ((await contentKeyOf(bundle, opts)) !== payload.ck) throw err("CONFLICT", "ใบเบิกถูกแก้ไขระหว่างสร้าง PDF กรุณาลองใหม่");
   const { pcuRow, reqRow, lines, hidden } = bundle;
-  const form = (reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null) || (await latestForm(DB, monthFy(payload.month)));
+  const form = (reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null) || (await formForFy(DB, monthFy(payload.month)));
   return {
     pcu: { code: pcuRow.code, name: pcuRow.name, print_name: pcuRow.print_name || pcuRow.name, group: pcuRow.grp },
     month: payload.month,

@@ -130,6 +130,67 @@ export function renderTab9(container, ctx) {
   });
   container.appendChild(stCard);
 
+  // ---- trial round (brief 2j §3.7 / §5): config.trial_month + adminClearTrial{month} -----------------------------
+  const trCard = el("div", { class: "admin-card", id: "t9-trial-card" });
+  trCard.appendChild(el("h2", {}, "รอบทดลอง"));
+  trCard.appendChild(el("p", { class: "admin-note" }, "รอบที่ตั้งเป็นรอบทดลองจะมีป้าย \"ทดลอง\" ให้ รพ.สต. เห็นว่าใช้ฝึกกรอก ไม่ต้องส่งจริง · ใบเบิกในรอบทดลองยังส่งได้ตามปกติ · ข้อมูลรอบนี้อยู่ในปีงบของเดือนที่ส่ง ไม่นับในปีงบถัดไป"));
+  const trCurrent = el("p", { id: "t9-trial-current" });
+  const trMonth = el("input", { type: "month", id: "t9-trial-month" });
+  const trSet = el("button", { type: "button", class: "btn btn-primary btn-sm", id: "t9-trial-set" }, "ตั้งเป็นรอบทดลอง");
+  const trUnset = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t9-trial-unset" }, "ยกเลิก");
+  const trClear = el("button", { type: "button", class: "btn btn-danger btn-sm", id: "t9-trial-clear" }, "ล้างเฉพาะข้อมูลรอบทดลอง");
+  const trMsg = el("p", { class: "admin-note", id: "t9-trial-msg", role: "status" });
+  const trialMonth = () => (b().config && b().config.trial_month) || null;
+  function drawTrial() {
+    const t = trialMonth();
+    trCurrent.innerHTML = t
+      ? `รอบทดลองตอนนี้: <strong id="t9-trial-value">ขอเบิก ${escapeHtml(monthLong(t))}</strong> <span class="badge badge-warn badge-trial">ทดลอง</span>`
+      : `รอบทดลองตอนนี้: <strong id="t9-trial-value">ไม่มี</strong>`;
+    trMonth.value = t || ctx.roundMonth();
+    trUnset.disabled = !t;
+    trClear.disabled = !t;
+    trClear.title = t ? "" : "ยังไม่ได้ตั้งรอบทดลอง";
+  }
+  async function saveTrial(value, okText) {
+    trSet.disabled = true; trUnset.disabled = true;
+    try {
+      const res = await ctx.adminCall("adminSetConfig", { key: "trial_month", value });
+      if (res && res.config) Object.assign(b().config, res.config);
+      b().config.trial_month = value;
+      if (!value) b().config.trial_month = null;
+      (b().rounds || []).forEach((r) => { r.trial = !!value && r.month === value; });
+      trMsg.className = "admin-ok-text"; trMsg.textContent = okText;
+      toast(okText);
+      try { await ctx.refreshBootstrap(); } catch (e) { /* keep optimistic state */ }
+      ctx.markStale(["tab1", "tab2", "tab2b", "tab9"]); // tab9 re-renders (this card) from the fresh config
+    } catch (err) { trMsg.className = "admin-err-text"; trMsg.textContent = errMessage(err); } finally { trSet.disabled = false; drawTrial(); }
+  }
+  trSet.addEventListener("click", () => {
+    if (!/^\d{4}-\d{2}$/.test(trMonth.value)) { toast("เลือกเดือนให้ถูกต้อง", "err"); return; }
+    saveTrial(trMonth.value, `ตั้งรอบทดลองเป็น ขอเบิก ${monthLong(trMonth.value)} แล้ว`);
+  });
+  trUnset.addEventListener("click", () => saveTrial(null, "ยกเลิกรอบทดลองแล้ว"));
+  trClear.addEventListener("click", async () => {
+    const t = trialMonth();
+    if (!t) return;
+    const ok = await confirmDialog(`ล้างข้อมูลของรอบทดลอง ขอเบิก ${monthLong(t)} เท่านั้น?\nจะลบใบเบิก รายการในใบ สถานะการจ่าย และไฟล์ PDF ของรอบนี้ — รอบอื่นไม่ถูกแตะ · ย้อนกลับไม่ได้`, { title: "ล้างข้อมูลรอบทดลอง", okText: "ล้างเฉพาะรอบทดลอง", danger: true });
+    if (!ok) return;
+    trClear.disabled = true;
+    try {
+      const out = await ctx.adminCall("adminClearTrial", { confirm: "ล้างข้อมูล", month: t });
+      trMsg.className = "admin-ok-text";
+      trMsg.textContent = `ล้างรอบ ${monthLong(t)} แล้ว: ใบ ${out.deleted_requests} · รายการ ${out.deleted_lines} · สถานะจ่าย ${out.deleted_issue_status} · PDF ${out.deleted_pdf_files}`;
+      await ctx.refreshBootstrap();
+      ctx.markStale(["tab1", "tab2", "tab2b"]);
+    } catch (err) { trMsg.className = "admin-err-text"; trMsg.textContent = errMessage(err); } finally { drawTrial(); }
+  });
+  trCard.appendChild(trCurrent);
+  trCard.appendChild(el("div", { class: "admin-toolbar" }, [el("label", {}, ["เดือนที่ขอเบิก: ", trMonth]), trSet, trUnset]));
+  trCard.appendChild(el("div", { class: "admin-toolbar" }, [trClear]));
+  trCard.appendChild(trMsg);
+  drawTrial();
+  container.appendChild(trCard);
+
   // ---- backup now / clear trial ------------------------------------------------------------------------------
   const opCard = el("div", { class: "admin-card", id: "t9-ops-card" });
   opCard.appendChild(el("h2", {}, "สำรองข้อมูล / ล้างข้อมูลทดลอง"));
@@ -147,19 +208,20 @@ export function renderTab9(container, ctx) {
   opCard.appendChild(bkMsg);
 
   opCard.appendChild(el("hr"));
-  opCard.appendChild(el("p", { class: "admin-note" }, "ล้างเฉพาะ \"ใบเบิก\" (ใบ รายการในใบ สถานะการจ่าย ไฟล์ PDF) — ไม่แตะผู้ใช้ PIN แผน เพดาน ฟอร์ม และ audit log · ใช้ก่อนเริ่มใช้งานจริงเท่านั้น ย้อนกลับไม่ได้"));
-  const clrBtn = el("button", { type: "button", class: "btn btn-danger", id: "t9-clear" }, "ล้างข้อมูลทดลอง...");
+  opCard.appendChild(el("p", { class: "admin-note" }, "ล้างเฉพาะ \"ใบเบิก\" ของทุกรอบ (ใบ รายการในใบ สถานะการจ่าย ไฟล์ PDF) — ไม่แตะผู้ใช้ PIN แผน เพดาน ฟอร์ม และ audit log · ถ้าต้องการล้างเฉพาะรอบทดลองให้ใช้การ์ด \"รอบทดลอง\" ด้านบน · ใช้ก่อนเริ่มใช้งานจริงเท่านั้น ย้อนกลับไม่ได้"));
+  const clrBtn = el("button", { type: "button", class: "btn btn-danger", id: "t9-clear" }, "ล้างข้อมูลทดลองทั้งหมด (ทุกรอบ)...");
   const clrMsg = el("p", { class: "admin-note", id: "t9-clear-msg" });
   clrBtn.addEventListener("click", async () => {
     const res = await formDialog("ล้างข้อมูลทดลอง", [
       { key: "confirm", label: "พิมพ์ \"ล้างข้อมูล\" เพื่อยืนยัน", required: true, placeholder: "ล้างข้อมูล" }
-    ], { okText: "ล้างใบเบิกทั้งหมด", intro: "จะลบใบเบิกทุกเดือนของทุกแห่ง — ย้อนกลับไม่ได้ (แนะนำให้ Export backup ก่อน)", validate: (v) => (v.confirm === "ล้างข้อมูล" ? "" : "ต้องพิมพ์ \"ล้างข้อมูล\" ให้ตรง") });
+    ], { okText: "ล้างใบเบิกทุกรอบ", intro: "จะลบใบเบิกของทุกรอบ (ทุกเดือน) ของทุกแห่ง — ย้อนกลับไม่ได้ (แนะนำให้ Export backup ก่อน)", validate: (v) => (v.confirm === "ล้างข้อมูล" ? "" : "ต้องพิมพ์ \"ล้างข้อมูล\" ให้ตรง") });
     if (!res) return;
     try {
       const out = await ctx.adminCall("adminClearTrial", { confirm: res.confirm });
       clrMsg.className = "admin-ok-text";
       clrMsg.textContent = `ล้างแล้ว: ใบ ${out.deleted_requests} · รายการ ${out.deleted_lines} · สถานะจ่าย ${out.deleted_issue_status} · PDF ${out.deleted_pdf_files}`;
       await ctx.refreshBootstrap();
+      ctx.markStale(["tab1", "tab2", "tab2b"]);
     } catch (err) { clrMsg.className = "admin-err-text"; clrMsg.textContent = errMessage(err); }
   });
   opCard.appendChild(el("div", { class: "admin-toolbar" }, [clrBtn]));
@@ -350,5 +412,5 @@ export function renderTab9(container, ctx) {
   loadAudit(false);
   loadPdf();
 
-  return { onShow() { stCb.checked = !!b().config.stock_required; loadPdf(); loadAudit(false); } };
+  return { onShow() { stCb.checked = !!b().config.stock_required; drawTrial(); loadPdf(); loadAudit(false); } };
 }

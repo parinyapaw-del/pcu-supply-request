@@ -2,15 +2,15 @@
 // Two modes: ต่อใบ (one PCU + month: adminGetRequest -> issueLines / issueAll / issueDone) and
 // ต่อรายการ (one item across the network: adminItemIssue -> issueItem).
 // OP-first split of the issued total is shown live (compute.js splitIssued); the server applies the same rule.
-// A dispenser only receives lines of its own units (API filter) and may write until the end of the month after
-// the request month — the server answers FORBIDDEN "หมดเวลา…" afterwards (admin.js keeps the session for it).
-import { formatInt, formatMoney, nextMonthKey, compareMonthKey } from "../format.js";
+// A dispenser only receives lines of its own units (API filter) and may write until the end of the round month
+// (round m = "ขอเบิก m": keyed in m-1, dispensed in m-1 and m) — the server answers FORBIDDEN "หมดเวลา…" afterwards (admin.js keeps the session for it).
+import { formatInt, formatMoney, compareMonthKey } from "../format.js";
 import { el, escapeHtml, tableScroll, monthLong, formatBangkokDateTime, confirmDialog, toast, errMessage } from "./util.js";
 import { buildCatalog, addForm, DISPENSE_UNITS, ISSUE_REASONS, splitIssued, isUsableStatus, itemOrPlaceholder } from "./compute.js";
 import { clearRequestCache } from "./requests.js";
 import { unitStripHtml } from "./tab1_status.js";
 
-const EXPIRED_MSG = "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)";
+const EXPIRED_MSG = "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนที่ขอเบิก)";
 const STATUS_LABEL = { draft: "แบบร่าง", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
 
 function whoLabel(who) {
@@ -225,7 +225,7 @@ export function renderTab2b(container, ctx) {
   function fillMonths() {
     monthSel.innerHTML = "";
     if (!months().length) { monthSel.appendChild(el("option", { value: "", disabled: true, selected: true }, "— ไม่มีรอบในปีงบนี้ —")); return; }
-    months().forEach((m) => monthSel.appendChild(el("option", { value: m, selected: m === ts.month }, monthLong(m) + (m === state.bootstrap.current_month ? " (เดือนนี้)" : ""))));
+    months().forEach((m) => monthSel.appendChild(el("option", { value: m, selected: m === ts.month }, ctx.monthLabel(m))));
   }
 
   // items for the ต่อรายการ select — dispenser: only items of its units
@@ -259,7 +259,7 @@ export function renderTab2b(container, ctx) {
   }
 
   function windowExpired(month) {
-    return !state.isAdmin && compareMonthKey(state.bootstrap.current_month, nextMonthKey(month)) > 0;
+    return !state.isAdmin && compareMonthKey(state.bootstrap.current_month, month) > 0;
   }
 
   async function guardDirty() {
@@ -372,7 +372,7 @@ export function renderTab2b(container, ctx) {
     host.innerHTML = "";
     ts.editor = null;
     const head = el("div", { class: "admin-card t2b-head", id: "t2b-sheet-head" });
-    head.appendChild(el("h2", {}, `${pcu.code} ${pcu.name} — ${monthLong(ts.month)}`));
+    head.appendChild(el("h2", {}, `${pcu.code} ${pcu.name} — ขอเบิก ${monthLong(ts.month)}`));
     host.appendChild(head);
     if (!request || !isUsableStatus(request.status)) {
       head.appendChild(el("div", { class: "notice notice-info", id: "t2b-not-sent" },
@@ -520,7 +520,7 @@ export function renderTab2b(container, ctx) {
     const my = ++ts.seq;
     if (!ts.itemCode) {
       ts.item = null;
-      host.innerHTML = `<div class="admin-card"><p class="muted">เลือกรายการเพื่อบันทึกการจ่ายทุก รพ.สต. ในเดือนนี้</p></div>`;
+      host.innerHTML = `<div class="admin-card"><p class="muted">เลือกรายการเพื่อบันทึกการจ่ายทุก รพ.สต. ในรอบนี้</p></div>`;
       return;
     }
     host.innerHTML = loadingHtml("กำลังโหลด...");
@@ -551,7 +551,7 @@ export function renderTab2b(container, ctx) {
       host.appendChild(el("div", { class: "notice notice-info", id: "t2b-skipped" }, `ข้าม ${skipped.length} แห่ง: ${names}`));
     }
     if (!rows.length) {
-      host.appendChild(el("div", { class: "admin-card" }, el("p", { class: "muted" }, "ไม่มี รพ.สต. ที่ขอรายการนี้ในเดือนนี้ (นับเฉพาะใบที่ส่งแล้ว)")));
+      host.appendChild(el("div", { class: "admin-card" }, el("p", { class: "muted" }, "ไม่มี รพ.สต. ที่ขอรายการนี้ในรอบนี้ (นับเฉพาะใบที่ส่งแล้ว)")));
       return;
     }
     const pcuName = (code) => (state.bootstrap.pcus.find((p) => p.code === code) || {}).name || "";

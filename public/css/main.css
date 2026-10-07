@@ -409,3 +409,54 @@ button, input, select {
 }
 .round-card-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .num-input:disabled { background: var(--muted-bg); color: var(--muted); cursor: not-allowed; }
+
+/* ---- brief 2j: round labels + trial round ---- */
+.badge-info { background: var(--muted-bg); color: var(--focus); }
+.badge-trial { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+.round-card-head h3 .badge { margin-left: 4px; vertical-align: middle; }
+.trial-note { margin: 4px 0 8px; color: var(--warn); font-size: 0.9rem; }
+.notice-trial { background: var(--warn-bg); color: var(--warn); border: 1px solid var(--warn); }
+
+/* ---- brief 2j: item search on the fill pages ---- */
+.item-search { margin: 8px 0 12px; }
+.item-search-input { width: 100%; box-sizing: border-box; font-size: 1rem; }
+.item-search-results {
+  margin-top: 6px;
+  max-height: 55vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.item-search-results[hidden] { display: none; }
+.item-search-group {
+  position: sticky;
+  top: 0;
+  background: var(--muted-bg);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+.item-search-hit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: none;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+button.item-search-hit:hover, button.item-search-hit:focus-visible { background: var(--muted-bg); }
+.item-search-hit .hit-code { font-weight: 700; }
+.item-search-hit .hit-unit { color: var(--muted); }
+.item-search-hit.is-hidden { color: var(--muted); opacity: 0.75; cursor: default; }
+.item-search-hit .hit-tag { display: inline-block; margin-left: 6px; font-size: 0.8rem; font-weight: 600; }
+.item-search-empty, .item-search-more { padding: 10px; font-size: 0.9rem; }

@@ -319,7 +319,7 @@ export function renderTab5(container, ctx) {
   const form = el("div", { class: "unlock-form" });
   const uPcu = el("select", { class: "select-input", id: "t5-u-pcu" }, b().pcus.map((p) => el("option", { value: p.code }, `${p.code} ${p.name}`)));
   const uItem = el("select", { class: "select-input", id: "t5-u-item" }, state.cat.items.map((it) => el("option", { value: it.code }, `${it.code} ${it.name}`)));
-  const uMonth = el("input", { type: "month", id: "t5-u-month", value: b().current_month });
+  const uMonth = el("input", { type: "month", id: "t5-u-month", value: ctx.roundMonth() });
   const uReason = el("input", { type: "text", id: "t5-u-reason", placeholder: "เหตุผล (จำเป็น)", maxlength: "200" });
   const uBtn = el("button", { type: "button", class: "btn btn-primary btn-sm", id: "t5-u-add" }, "ปลดล็อก");
   form.appendChild(el("label", {}, ["รพ.สต.: ", uPcu]));

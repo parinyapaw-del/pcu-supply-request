@@ -2,14 +2,14 @@
 import { err, assertLimitValue, isStr, jparse } from "./http.js";
 import {
   SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, insertStatements,
-  latestForm, loadForm, priceMap, publicConfig, TABLES,
+  formForFy, latestForm, loadForm, priceMap, publicConfig, TABLES,
 } from "./db.js";
 import {
   BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, PIN_LENGTH, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
   verifyGoogleIdToken,
 } from "./auth.js";
 import {
-  computeDeadline, currentMonth, fyMonths, isDate, isMonth, monthFy, nowIso, prevMonth,
+  currentMonth, currentRound, fyExcelMonths, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso,
 } from "./time.js";
 import {
   LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, roundInfo,
@@ -21,7 +21,7 @@ import { R2_CAP_KEYS, r2Caps, readUsage } from "./usage.js";
 const round2 = (x) => Math.round(x * 100) / 100;
 
 function ctxFy(cfgAll) {
-  return publicConfig(cfgAll, monthFy(currentMonth())).fy_current;
+  return publicConfig(cfgAll, monthFy(currentRound())).fy_current;
 }
 
 async function assertPcu(DB, code) {
@@ -30,7 +30,7 @@ async function assertPcu(DB, code) {
   return row;
 }
 async function assertItem(DB, fy, code) {
-  const form = await latestForm(DB, fy);
+  const form = await formForFy(DB, fy);
   if (!form || !isStr(code) || !form.index.has(code)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + code);
   return form;
 }
@@ -154,7 +154,7 @@ export async function adminUsersRemove(ctx, p) {
 // ---- bootstrap ----------------------------------------------------------------------------------------------------------
 export async function adminBootstrap(ctx) {
   const { DB, env, who } = ctx;
-  const cur = currentMonth(), prev = prevMonth(cur);
+  const cal = currentMonth(), cur = nextMonth(cal), prev = cal; // 2j: currentRound / prevRound
   const cfgAll = await getConfigAll(DB);
   const cfg = { ...publicConfig(cfgAll, monthFy(cur)), ...budgetConfig(cfgAll), ...r2Caps(cfgAll) };
   const fy = cfg.fy_current;
@@ -171,13 +171,15 @@ export async function adminBootstrap(ctx) {
 
   const roundMap = new Map(roundRes.results.map((r) => [r.month, r]));
   const monthSet = new Set([cur, prev, ...reqMonths.results.map((r) => r.month), ...roundRes.results.map((r) => r.month)]);
-  const rounds = [...monthSet].sort().reverse().map((m) => roundInfo(m, roundMap.get(m), cfg.deadline_day));
+  const rounds = [...monthSet].sort().reverse().map((m) => roundInfo(m, roundMap.get(m), cfg.deadline_day, cfg.trial_month));
 
   const nowMs = Date.now();
   const out = {
     me: { email: who.email, role: who.role, units: who.units },
-    server_time: nowIso(), current_month: cur,
-    config: isAdmin ? cfg : { limit_mode: cfg.limit_mode, stock_required: cfg.stock_required, deadline_day: cfg.deadline_day, fy_current: cfg.fy_current },
+    server_time: nowIso(), current_month: cal, current_round: cur,
+    config: isAdmin ? cfg : {
+      limit_mode: cfg.limit_mode, stock_required: cfg.stock_required, deadline_day: cfg.deadline_day, fy_current: cfg.fy_current, trial_month: cfg.trial_month,
+    },
     pcus: pcuRes.results.map((r) => isAdmin
       ? {
           code: r.code, name: r.name, print_name: r.print_name || r.name, group: r.grp,
@@ -237,7 +239,7 @@ export async function adminBootstrap(ctx) {
       DB.prepare(`SELECT fy, pcu, item_code, plan_op, plan_pp FROM plans WHERE fy IN (${inFy})`).bind(...fys).raw(),
       DB.prepare(`SELECT fy, item_code, price FROM prices_prev WHERE fy IN (${inFy})`).bind(...fys).raw(),
     ]);
-    for (const f of fys) prevOut[f] = { months: fyMonths(f), actual: {}, plans: {}, prices: {} };
+    for (const f of fys) prevOut[f] = { months: fyExcelMonths(f), actual: {}, plans: {}, prices: {} }; // Excel columns Oct … Sep
     const idx = {};
     for (const f of fys) idx[f] = new Map(prevOut[f].months.map((m, i) => [m, i]));
     for (const [f, month, pcu, code, aop, app] of apRes) {
@@ -259,9 +261,9 @@ export async function adminBootstrap(ctx) {
 // ---- requests (admin + dispenser) --------------------------------------------------------------------------------------------
 export async function adminRequests(ctx, p) {
   const { DB } = ctx;
-  const cur = currentMonth();
+  const cal = currentMonth(), cur = nextMonth(cal); // 2j: default = [currentRound, prevRound]
   if (p.month !== undefined && p.month !== null) assertMonthParam(p.month);
-  const months = p.month ? [p.month] : [cur, prevMonth(cur)];
+  const months = p.month ? [p.month] : [cur, cal];
   const ph = months.map(() => "?").join(",");
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
@@ -282,7 +284,7 @@ export async function adminRequests(ctx, p) {
   const byReq = new Map();
   for (const l of lineRes.results) { if (!byReq.has(l.request_id)) byReq.set(l.request_id, []); byReq.get(l.request_id).push(l); }
 
-  const formFor = async (r) => (r.form_version_id ? loadForm(DB, r.form_version_id) : latestForm(DB, monthFy(r.month)));
+  const formFor = async (r) => (r.form_version_id ? loadForm(DB, r.form_version_id) : formForFy(DB, monthFy(r.month), cfg.fy_current));
   const requests = [];
   for (const r of reqRes.results) {
     const form = await formFor(r);
@@ -309,8 +311,8 @@ export async function adminRequests(ctx, p) {
     requests.push(obj);
   }
   return {
-    requests, rounds: months.map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day)),
-    server_time: nowIso(), current_month: cur,
+    requests, rounds: months.map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
+    server_time: nowIso(), current_month: cal, current_round: cur,
   };
 }
 
@@ -320,7 +322,7 @@ export async function adminGetRequest(ctx, p) {
   assertMonthParam(p.month);
   const reqRow = await getRequestRow(DB, pcuRow.code, p.month);
   const bound = reqRow && reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null;
-  const form = bound || (await latestForm(DB, monthFy(p.month)));
+  const form = bound || (await formForFy(DB, monthFy(p.month)));
   let lines = reqRow ? await getLines(DB, reqRow.id) : [];
   let issue = null;
   if (reqRow) { // 2c: computed from ALL lines, before a dispenser's own-unit filtering
@@ -367,9 +369,9 @@ export async function adminNote(ctx, p) {
 
 // ---- rounds -----------------------------------------------------------------------------------------------------------------------------
 async function roundResult(DB, month) {
-  const cfg = publicConfig(await getConfigAll(DB), monthFy(currentMonth()));
+  const cfg = publicConfig(await getConfigAll(DB), monthFy(currentRound()));
   const row = await DB.prepare(`SELECT * FROM rounds WHERE month = ?`).bind(month).first();
-  return roundInfo(month, row, cfg.deadline_day);
+  return roundInfo(month, row, cfg.deadline_day, cfg.trial_month);
 }
 
 export async function adminSetRound(ctx, p) {
@@ -406,7 +408,7 @@ export async function adminLockRound(ctx, p) {
 // ---- config -------------------------------------------------------------------------------------------------------------------------------
 async function configResult(DB) {
   const cfgAll = await getConfigAll(DB);
-  return { ...publicConfig(cfgAll, monthFy(currentMonth())), ...budgetConfig(cfgAll), ...r2Caps(cfgAll) };
+  return { ...publicConfig(cfgAll, monthFy(currentRound())), ...budgetConfig(cfgAll), ...r2Caps(cfgAll) };
 }
 
 export async function adminSetLimitMode(ctx, p) {
@@ -433,6 +435,9 @@ export async function adminSetConfig(ctx, p) {
       value = typeof value === "string" ? Number(value) : value;
       if (!Number.isInteger(value) || value < 1 || value > 31) throw err("BAD_REQUEST", "deadline_day ต้องเป็นจำนวนเต็ม 1–31 หรือว่าง");
     }
+  } else if (key === "trial_month") { // 2j: the practice round, "YYYY-MM" or null (= no trial round)
+    if (value === null || value === "" || value === undefined) value = null;
+    else if (!isMonth(value)) throw err("BAD_REQUEST", "trial_month ต้องเป็นเดือนรูปแบบ YYYY-MM หรือว่าง");
   } else if (R2_CAP_KEYS.includes(key)) { // 2b-R cost guard caps; null = default
     if (value === null || value === "" || value === undefined) value = null;
     else {
@@ -696,21 +701,37 @@ export async function adminSetBackupPassword(ctx, p) {
 }
 
 // ---- maintenance ---------------------------------------------------------------------------------------------------------------------------------
+// 2j: with `month` only that round's requests (+ their lines / issue_status / pdf_files rows + R2 objects) go; without it, every round.
 export async function adminClearTrial(ctx, p) {
   const { DB, env, who } = ctx;
   if (p.confirm !== "ล้างข้อมูล") throw err("BAD_REQUEST", 'พิมพ์คำว่า "ล้างข้อมูล" เพื่อยืนยัน');
-  const { results: pdfs } = await DB.prepare(`SELECT r2_key FROM pdf_files`).all();
-  const res = await DB.batch([
-    DB.prepare(`DELETE FROM request_lines`), DB.prepare(`DELETE FROM issue_status`), DB.prepare(`DELETE FROM pdf_files`), DB.prepare(`DELETE FROM requests`),
-  ]);
+  const month = p.month === undefined || p.month === null || p.month === "" ? null : p.month;
+  if (month !== null) assertMonthParam(month);
+  let pdfs, res;
+  if (month) {
+    const sub = `SELECT id FROM requests WHERE month = ?`;
+    ({ results: pdfs } = await DB.prepare(`SELECT r2_key FROM pdf_files WHERE request_id IN (${sub})`).bind(month).all());
+    res = await DB.batch([
+      DB.prepare(`DELETE FROM request_lines WHERE request_id IN (${sub})`).bind(month),
+      DB.prepare(`DELETE FROM issue_status WHERE request_id IN (${sub})`).bind(month),
+      DB.prepare(`DELETE FROM pdf_files WHERE request_id IN (${sub})`).bind(month),
+      DB.prepare(`DELETE FROM requests WHERE month = ?`).bind(month),
+    ]);
+  } else {
+    ({ results: pdfs } = await DB.prepare(`SELECT r2_key FROM pdf_files`).all());
+    res = await DB.batch([
+      DB.prepare(`DELETE FROM request_lines`), DB.prepare(`DELETE FROM issue_status`), DB.prepare(`DELETE FROM pdf_files`), DB.prepare(`DELETE FROM requests`),
+    ]);
+  }
   const out = {
     deleted_lines: res[0].meta.changes, deleted_issue_status: res[1].meta.changes,
     deleted_pdf_files: res[2].meta.changes, deleted_requests: res[3].meta.changes,
   };
+  if (month) out.month = month;
   if (env.FILES && pdfs.length) {
     try { await env.FILES.delete(pdfs.map((r) => r.r2_key).filter(Boolean)); } catch (e) { console.error("clearTrial r2", e); }
   }
-  await DB.batch([auditStmt(DB, who.email, who.role, "adminClearTrial", "", "", JSON.stringify(out))]);
+  await DB.batch([auditStmt(DB, who.email, who.role, "adminClearTrial", "", month || "", JSON.stringify(out))]);
   return out;
 }
 
@@ -737,7 +758,7 @@ export async function adminPdfFiles(ctx, p) {
     files,
     total_files: files.length,
     total_bytes: files.reduce((a, f) => a + (f.bytes || 0), 0),
-    rule: { latest_month: currentMonth(), ...PDF_RULE },
+    rule: { latest_month: currentRound(), ...PDF_RULE },
     usage,
   };
 }

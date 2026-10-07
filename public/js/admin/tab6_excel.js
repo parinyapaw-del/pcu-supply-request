@@ -5,7 +5,7 @@ import { el, downloadBlob, monthLong, toast } from "./util.js";
 
 export function renderTab6(container, ctx) {
   const { state } = ctx;
-  const cur = state.bootstrap.current_month;
+  const cur = ctx.roundMonth();
   const fy = ctx.fySelected();
   const pick = ctx.defaultMonth() || cur;
   container.innerHTML = "";
@@ -42,7 +42,7 @@ export function renderTab6(container, ctx) {
   }
 
   const row1 = el("div", { class: "admin-toolbar" });
-  const btnCur = el("button", { type: "button", class: "btn btn-primary", id: "t6-month-now" }, `ดาวน์โหลด Excel เดือนนี้ (${monthLong(cur)})`);
+  const btnCur = el("button", { type: "button", class: "btn btn-primary", id: "t6-month-now" }, `ดาวน์โหลด Excel รอบปัจจุบัน (ขอเบิก ${monthLong(cur)})`);
   btnCur.addEventListener("click", () => download("month=" + encodeURIComponent(cur), monthLong(cur)));
   row1.appendChild(btnCur);
   if (ctx.isCurrentFy()) card.appendChild(row1);
