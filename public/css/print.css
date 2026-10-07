@@ -46,6 +46,19 @@
      at scale 0.66 = 654.4pt → still one page without fitPrintPages() scaling, so every page keeps the same font size. */
   --sheet-h: 656pt;
 }
+/* touch devices (iPhone / iPad / Android — class set by js/pages/print.js): iOS Safari also reserves a header and footer
+   band on every sheet (site name, date, page number; no setting to switch it off) on top of the printer margins, so its
+   page box is ~60pt shorter again — 36 + 656 + 11 = 703pt still spilled (blank page after every sheet, 2026-10-07).
+   25 + 576 + 7 = 608pt fits every box measured with the WKWebView harness (evidence_phase2/2f3_*): A4 full 842, A4 minus
+   0.25in/0.5in margins minus a 60pt header/footer band (746 / 710), and Letter minus 0.5in margins minus the band (660 →
+   box ≈ 619pt in layout units; 636pt still spilled there). Worst-case sheet 991.5 xlsx pt × 0.58 = 575pt ≤ 576pt → no
+   fitPrintPages() scaling, one font size on every page (16pt Sarabun × 0.58 ≈ 9.3pt). */
+:root.print-compact {
+  --print-scale: 0.58;
+  --sheet-h: 576pt;
+  --page-pad-v: 0.35in;
+  --page-pad-h: 0.6in;
+}
 
 .print-wrap { padding-bottom: 24px; }
 /* narrow screens: the A4 preview scrolls inside its own box instead of widening the whole page */
@@ -125,6 +138,7 @@
     box-shadow: none;
     overflow: visible;
   }
+  :root.print-compact .print-page { padding-bottom: 0.1in; }
   /* break BEFORE every page but the first, so pages the user unticked (display:none) never leave a blank sheet */
   .print-page + .print-page { break-before: page; }
   /* unticked pages in the toolbar: not printed */

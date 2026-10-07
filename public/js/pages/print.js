@@ -34,7 +34,15 @@ function blankRequestFor(pcu, month) {
 
 const PREVIEW_KEY = "pcuSupply2:formPreview";
 
+/** Touch devices (phones/tablets) print through iOS Safari / Android print services whose page box is smaller than the
+ *  paper (printer margins + iOS's fixed header/footer band): css/print.css shrinks the sheet for them (`.print-compact`). */
+function markCompactPrint() {
+  const touch = (navigator.maxTouchPoints || 0) > 0 || "ontouchstart" in window;
+  document.documentElement.classList.toggle("print-compact", touch);
+}
+
 export async function renderPrint(container, app, params) {
+  markCompactPrint();
   const asAdmin = params && params.get("as") === "admin";
   const isPreview = asAdmin && params.get("preview") === "1";
   let month, pcu, form, hidden, request;
