@@ -62,7 +62,8 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `pcuChangePin` (2k) | `old_pin, new_pin` (strings, 5 digits each) | `{token, exp}` — new PCU token (new `pin_version`) for this device; the client must replace its stored token. Success = new salt, `pin_version++`, clears fail/lock, `pin_custom=1`, audit `pcuChangePin` "ok" (actor = PCU code, role `pcu`) · `BAD_REQUEST` "กรอก PIN เดิมและ PIN ใหม่ให้ครบ 5 หลัก" (either not `^[0-9]{5}$` / not a string) · `BAD_REQUEST` "PIN ใหม่ต้องต่างจาก PIN เดิม" (`new_pin === old_pin`, before any DB access) · `BAD_PIN{remaining}` "PIN เดิมไม่ถูกต้อง" · `PIN_LOCKED{until}` — wrong old PIN shares `pcuLogin`'s counter/lock (`pin_fail`, `pin_locked_until`; 5 failures → 5-min lock; audit `bad_pin fail=<n>` / `locked`) |
 | `pcuBootstrap` | – | see §4.1 |
 | `pcuGetMonth` | `month` (`> currentRound` → `BAD_REQUEST` "เดือนนี้ยังไม่ถึง") | one `byMonth` entry (§4.1) + `round` + `unlocks` — for "older months" · + `form` (the request's bound version, PCU-stripped) **only when** it differs from the latest of `fy_current` (2d) |
-| `saveLines` | `month, lines:{code:{stock,op,pp,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...] }` |
+| `saveLines` | `month, lines:{code:{stock,op,pp,used?,adj?,adj_reason?,calc_from?,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...], recalc:{code:{stock,used}} }` (2o `recalc` below) |
+| `pcuSetStockMode` (2o) | `mode:'A'\|'B'` | `{stock_mode}` — stored in `pcus.stock_mode` (A = กรอกคงเหลือเอง, B = คำนวณคงเหลือจากยอดใช้ไป); switching never touches line values · other mode → `BAD_REQUEST` · audit `pcuSetStockMode` (detail = mode) |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
 | `requestPdf` | `month, doc_date?, supply_month?` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}`; 2h print options §6b |
@@ -84,13 +85,27 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   `limit_unlocks` row for (pcu,item,month)) → `OVER_LIMIT{items}`.
   Lines saved earlier in the same call stay saved (it is autosave + submit). `warn` mode: submit succeeds and the same list is returned as `over_limit`.
   `off`: `over_limit:[]`.
+- **2o stock calculation** (server owns the formula — `functions/_lib/stock.js`). Extra per-line keys, all optional: `used` (int 0–99999 | null) · `adj`
+  (int −99999…99999 | null) · `adj_reason` (`received_extra|borrow_return|expired_damaged|recount|other` | null — null accepted with a non-zero adj) ·
+  `calc_from` (`'used'|'stock'|null`). A key **not sent keeps the stored value** (old clients that only send `stock,op,pp` lose nothing); `stock/op/pp`
+  keep the old rule (missing = null). Out of range / not in the enum → `BAD_REQUEST` (Thai message).
+  Baseline of a line = `prev_lines[code]` of the round (§4.1) with `stock` not null; `available = stock + received + (adj ?? 0)`.
+  `calc_from='used'` → `stock = available − used` (< 0 or used null → `stock = null`) · `'stock'` → `used = available − stock` (< 0 or stock null → `used = null`) ·
+  `null` → nothing computed (stock as typed). **No baseline → `calc_from` is stored as null** (stock/used kept as sent). Client-computed outputs are ignored.
+  `recalc` = written lines whose stored `{stock, used}` differ from what the client sent (stale lines / unchanged lines are not listed; `{}` otherwise).
+  `stock_required`: a computed stock counts as filled; a null one (negative) is missing → `INCOMPLETE`.
+  Issued-unit lock (2c `CONFLICT`) compares `stock, op, pp, used, adj, adj_reason, calc_from` after the server computation.
+- **2o auto-recalc** `recalcStockChain(pcu, M)`: recomputes the `calc_from` lines of the pcu's round `nextMonth(M)` and keeps going to the next round while
+  that round's stock changed (never past `currentRound`). Runs after `saveLines` when a written line changed `stock/op/pp/used/adj` on a sent request
+  (or when the request is sent for the first time) and after every issue write (§5.3). It never bumps `requests.updated_at` / line `updated_at`
+  (no `edited_after_submit`), writes no audit, ignores round locks and request status. Lines whose baseline disappeared are left untouched.
 
 ### 4.1 `pcuBootstrap` data
 ```
 {
   server_time, current_month,                // current_month = calMonth (kept for compatibility)
   current_round,                             // 2j: nextMonth(calMonth) — the round open for keying (= rounds[0].month)
-  pcu: {code,name,print_name,group,pin_custom},  // 2k: pin_custom bool — false while the PCU still uses the default PIN
+  pcu: {code,name,print_name,group,pin_custom,stock_mode},  // 2k: pin_custom bool — false while the PCU still uses the default PIN · 2o: stock_mode 'A'|'B' (default 'A')
   config: { limit_mode:"off"|"warn"|"enforce", stock_required:0|1, deadline_day:int|null, fy_current:2570, trial_month:"YYYY-MM"|null },
   form_version_id: 12,
   form: { id, fy, created_at, note, steps:[ {code,order,sheet,page_no,title,subject,to,dispense_unit,active?,rows:[
@@ -108,14 +123,16 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   byMonth: { "2026-11": {                                    // for the 2 shown rounds (also returned by pcuGetMonth)
       request: RequestObj | null,
       used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Nov … Oct rounds), excluding that round
-      prev_lines: { code: {op,pp} }, // from the previous round's (prevMonth(month)) submitted/issued request (only op+pp>0); {} if none
+      prev_lines: { code: {op,pp,stock,received,received_src:"issued"|"requested"} }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
+                                     // rows with op+pp>0 OR stock set; stock null = no baseline; received = issued_total when the item's unit is done
+                                     // (issue_status) and issued_total not null, else op+pp; {} if no request / draft. The trial round is an ordinary baseline.
       issue: null | IssueInfo        // 2c; null until >= 1 unit is marked done (PCU view, see below)
   } },
   issue_notices: [ {month, complete, incomplete} ]   // status 'issued' requests with issued_seen_at null (notice bar) — cleared by pcuAck
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
-               edited_after_submit:bool, lines: { code: {stock,op,pp,updated_at} },
+               edited_after_submit:bool, lines: { code: {stock,op,pp,used,adj,adj_reason,calc_from,updated_at} },   // 2o: used/adj/adj_reason/calc_from (null when unset), PCU + admin views
                issued?: { code: {total,op,pp,reason:"out_of_stock"|"other"|null,note:string|null} } }   // issued: PCU view only, see below
 IssueInfo = { units_total, units_done, done:bool, complete, incomplete, issued_seen_at|null,
               units: { "พัสดุ"|"จ่ายกลาง"|"LAB": {needed:bool, done:bool, done_at|null, done_by|null, lines:n, issued_lines:n} } }
@@ -133,7 +150,8 @@ version of `fy_current`, else the newest version of any fy (so the trial round 2
 - **PCU view** (`byMonth[m].issue`, `pcuGetMonth`): `null` until >= 1 unit is done; then the counts, `issued_lines` and `done_at` only cover **done units** (figures of units still being handled are
   not leaked) and `done_by` is always `null`. `units[u].done` is what the fill page uses to lock the pages of issued units (the server enforces it: `saveLines` -> `CONFLICT`).
 - **`request.issued`** (PCU view only; present only when the request has >= 1 `issue_status` row): `{ code: {total, op, pp, reason, note} }` for requested lines of **done units** that have a figure
-  (`op`/`pp` = the OP-first split of `total`). `request.lines` stays exactly as the PCU filled it (Q78); issued figures never feed limits / `used_fy` / `prev_lines`.
+  (`op`/`pp` = the OP-first split of `total`). `request.lines` stays exactly as the PCU filled it (Q78); issued figures never feed limits / `used_fy`.
+  2o exception: `prev_lines[code].received` uses `issued_total` — of **done units only** (same no-leak rule).
 
 ## 5. Admin / dispenser actions
 Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue`; own units + time window only),
@@ -183,7 +201,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
-| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month,doc_date?,supply_month?}`, `devSetRequestMonth{pcu,month,new_month}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month). None of the dev actions is counted in `usage_counters` |
+| `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month,doc_date?,supply_month?}`, `devSetRequestMonth{pcu,month,new_month}`, `devRerunMigration{v}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month); `devRerunMigration` (2o) deletes `schema_version` rows ≥ `v` (int ≥ 2) and re-runs those migrations on the live tables → `{schema_version}`. None of the dev actions is counted in `usage_counters` |
 | header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
 | header `X-Dev-Month: YYYY-MM` | – | only honoured when `DEV_FAKE_GOOGLE==="1"` (POST /api and the export): overrides "the current Bangkok month" (= calMonth; currentRound = the month after it) so tests do not depend on the real date |
 
@@ -262,6 +280,7 @@ Who: admin, or a dispenser (role `dispenser`, `units` subset of {พัสดุ
   `issued_total == requested` -> `reason`/`note` stored as `null` (whatever was sent). Writes set `issued_at = now`, `issued_by` = actor e-mail (`"backup"` for the backup login).
 - **OP-first split**: `short = op+pp - issued_total`; `issued_op = max(0, op - short)`; `issued_pp = pp - max(0, short - op)` (OP 10 / PP 5: 12 -> 7/5 · 15 -> 10/5 · 3 -> 0/3 · 0 -> 0/0).
 - **All-or-nothing**: every line/entry is validated (permissions first) before anything is written; one bad line rejects the whole call. Each call = one D1 batch with its `audit_log` row(s).
+- **2o**: after every write of `issueLines` / `issueAll` / `issueDone` / `issueItem` the stock chain of the next round(s) of the affected PCU(s) is recalculated (§4 auto-recalc; one lookup query, then only PCUs with `calc_from` lines). `adminItemIssue` is read-only (no recalc).
 - **Responses** of `issueLines` / `issueAll` / `issueDone`: `{request: RequestObj(admin view: price_snapshot + issued_* per line; a dispenser only gets its own units' lines), issue: IssueInfo}` after the write.
 
 `issueLines{pcu, month, lines}` — up to 400 lines; audit `issue_lines` (detail `CODE=total(reason:note) …`).
@@ -329,7 +348,7 @@ After opening, re-previewing the same file gives `mode:"same_fy"` and (because t
 `month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2j: FY2570 = rounds `2026-11` … `2027-10`; the plan/form of the scope = that fy, form via `formForFy`).
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
 Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else form price) ·
-OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version; all statuses) ·
+OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version · 2o (appended): ใช้ไป · ปรับยอด · เหตุผลปรับยอด (ได้รับเพิ่ม · ยืม/คืน · หมดอายุ/เสียหาย · นับใหม่ · อื่น ๆ); all statuses) ·
 **รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (Σ `issued_total`); submitted/issued only) ·
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
 2n: PCUs in group `"ทดลอง"` are excluded from all three sheets (no rows in sheet 1/3, no column in sheet 2, not in any total).
@@ -350,7 +369,7 @@ next to `month` (`printOptsOf`). Absent / `null` / `""` → `null` (that header 
 any other type → `BAD_REQUEST`. `filename` is unchanged (still the round month).
 
 Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({lv:LAYOUT_VERSION, v:form_version_id,
-pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), dd:doc_date|null, sm:supply_month|null}))` → each distinct option set is
+pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), (stock is not hashed — the sheet prints only OP/PP, so a 2o stock recalc keeps the key), dd:doc_date|null, sm:supply_month|null}))` → each distinct option set is
 its own key / file (retention §6b.1 unchanged; `submitted_at` dropped from the key in 2h — a resend with identical content reuses the file) → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
 else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<pcu>/<month>/<content_key>.pdf")` + `pdf_files` row + audit `pdf_create`
 (actor = PCU code or staff e-mail) in one D1 batch.
@@ -432,7 +451,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -441,13 +460,15 @@ config(key PK, value)                     -- value = JSON text (e.g. "0", "\"war
 schema_version(v)
 users(email PK, role 'admin'|'dispenser', units JSON, added_at, added_by)
 pcus(code PK, name, print_name, "group", pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom,
-     login_count, last_login_at)   -- v3 (2m): login_count INTEGER NOT NULL DEFAULT 0 · last_login_at TEXT (iso) — +1 per successful pcuLogin
+     login_count, last_login_at,   -- v3 (2m): login_count INTEGER NOT NULL DEFAULT 0 · last_login_at TEXT (iso) — +1 per successful pcuLogin
+     stock_mode)                   -- v4 (2o): TEXT NOT NULL DEFAULT 'A' ('A'|'B')
 form_versions(id PK AUTOINCREMENT, fy, created_at, created_by, note, data JSON, data_hash)   -- data = FORMAT.md `form` object {fy,note,steps}
 rounds(month PK, fy, deadline_date, locked, locked_at, locked_by, note)
 requests(id PK 'PCU01_2026-10', pcu, month, status, form_version_id, submitter_name, last_step, created_at, updated_at,
          first_submitted_at, submitted_at, submit_count, admin_note, admin_note_at, issued_seen_at)   UNIQUE(pcu,month)
 request_lines(request_id, item_code, stock, op, pp, price_snapshot, updated_at,
-              issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by)    PK(request_id,item_code)
+              issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by,
+              used, adj, adj_reason, calc_from)    PK(request_id,item_code)   -- v4 (2o): used INTEGER · adj INTEGER · adj_reason TEXT · calc_from TEXT ('used'|'stock'|NULL)
 issue_status(request_id, dispense_unit, done_at, done_by)   PK(request_id,dispense_unit)
 hidden_items(pcu, item_code, hidden_at, by)                 PK(pcu,item_code)
 limits(fy, pcu, item_code, limit_month, limit_year, source, updated_by, updated_at, note)   PK(fy,pcu,item_code)
@@ -467,6 +488,8 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   **v3** (2m) = `ALTER TABLE pcus ADD COLUMN login_count …` + `ALTER TABLE pcus ADD COLUMN last_login_at TEXT` (same one-by-one / "duplicate column" rule)
   + backfill `UPDATE pcus SET login_count = COUNT(*), last_login_at = MAX(ts)` of `audit_log` rows `action='pcuLogin' AND detail='ok'` per pcu
   (a backfill error is not tolerated → migration fails and retries next request).
+  **v4** (2o) = `ALTER TABLE pcus ADD COLUMN stock_mode TEXT NOT NULL DEFAULT 'A'` + `ALTER TABLE request_lines ADD COLUMN used INTEGER` / `adj INTEGER` /
+  `adj_reason TEXT` / `calc_from TEXT` (same one-by-one / "duplicate column" rule; tested by re-running it with `devRerunMigration{v:4}`).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

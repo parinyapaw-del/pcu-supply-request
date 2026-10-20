@@ -8,6 +8,7 @@ import { currentMonth, isMonth, monthFy, nowIso } from "./time.js";
 import {
   formOfRequest, getLines, getRequestRow, issueInfoFrom, neededUnits, requestObj, requestedQty, unitOfCode,
 } from "./views.js";
+import { recalcAfterIssue } from "./stock.js";
 
 const REASONS = ["out_of_stock", "other"];
 const MAX_LINES = 400;
@@ -120,6 +121,7 @@ export async function issueLines(ctx, p) {
   const stmts = plan.map((x) => lineUpdate(DB, reqRow.id, x.code, x.line, x.v, ts, who.email));
   stmts.push(auditStmt(DB, who.email, who.role, "issue_lines", reqRow.pcu, reqRow.month, clip(plan.map((x) => fmtLine(x.code, x.v)).join(" "))));
   await batchChunked(DB, stmts);
+  await recalcAfterIssue(DB, [reqRow.pcu], reqRow.month); // 2o: received changed → next rounds' calc lines
   return respond(DB, who, reqRow.pcu, reqRow.month);
 }
 
@@ -141,6 +143,7 @@ export async function issueAll(ctx, p) {
   for (const l of targets) stmts.push(lineUpdate(DB, reqRow.id, l.item_code, l, { total: requestedQty(l), reason: null, note: null }, ts, who.email));
   stmts.push(auditStmt(DB, who.email, who.role, "issue_all", reqRow.pcu, reqRow.month, `units=${units.join(",")} lines=${targets.length}`));
   await batchChunked(DB, stmts);
+  await recalcAfterIssue(DB, [reqRow.pcu], reqRow.month); // 2o: received changed → next rounds' calc lines
   return respond(DB, who, reqRow.pcu, reqRow.month);
 }
 
@@ -184,6 +187,7 @@ export async function issueDone(ctx, p) {
   }
   stmts.push(auditStmt(DB, who.email, who.role, "issue_done", reqRow.pcu, reqRow.month, `unit=${p.unit} done=${want ? 1 : 0} filled=${filled} status=${status}`));
   await batchChunked(DB, stmts);
+  await recalcAfterIssue(DB, [reqRow.pcu], reqRow.month); // 2o: received changed → next rounds' calc lines
   return respond(DB, who, reqRow.pcu, reqRow.month);
 }
 
@@ -283,6 +287,9 @@ export async function issueItem(ctx, p) {
     stmts.push(lineUpdate(DB, x.r.id, p.item_code, x.r, x.v, ts, who.email));
     stmts.push(auditStmt(DB, who.email, who.role, "issue_item", x.r.pcu, p.month, fmtLine(p.item_code, x.v)));
   }
-  if (stmts.length) await batchChunked(DB, stmts);
+  if (stmts.length) {
+    await batchChunked(DB, stmts);
+    await recalcAfterIssue(DB, plan.map((x) => x.r.pcu), p.month); // 2o
+  }
   return { updated: plan.map((x) => x.r.pcu), skipped };
 }

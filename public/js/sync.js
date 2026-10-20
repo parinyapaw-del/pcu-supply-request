@@ -2,7 +2,8 @@
 // One "session" per (pcu, month): holds the in-memory request (server truth merged with any still-unsaved
 // local edits), tracks which lines/meta are dirty, mirrors dirty data to localStorage so nothing is lost
 // offline, debounces autosave (2 s) and performs the "send" (= saveLines{send:true}, spec §4.3).
-// Lines use `null` for empty (stock/op/pp) — what the server stores.
+// Lines use `null` for empty (stock/op/pp) — what the server stores. Brief 2o adds used/adj/adj_reason/calc_from
+// (stock-mode B): they are only sent when the line actually carries them (undefined = "keep the server's value").
 import { call, ApiError, getPcuToken } from "./api.js";
 import { STORAGE_PREFIX } from "./constants.js";
 import * as store from "./store.js";
@@ -69,8 +70,16 @@ function blankRequest(pcu, month) {
   };
 }
 
+// 2o: optional per-line fields. `undefined` is omitted from the payload (server keeps its value, old-client compatible);
+// `null` is sent as-is (calc_from:null = "stop calculating this row").
+const EXTRA_FIELDS = ["used", "adj", "adj_reason", "calc_from"];
+
+// Snapshot of a line for the save payload (spec 1.5 §10.4 bug 3) — a plain copy, so later edits (which create NEW
+// line objects) never mutate what is in flight.
 function cloneLine(l) {
-  return { stock: l.stock == null ? null : l.stock, op: l.op == null ? null : l.op, pp: l.pp == null ? null : l.pp, updated_at: l.updated_at || "" };
+  const out = { stock: l.stock == null ? null : l.stock, op: l.op == null ? null : l.op, pp: l.pp == null ? null : l.pp, updated_at: l.updated_at || "" };
+  EXTRA_FIELDS.forEach((f) => { if (l[f] !== undefined) out[f] = l[f] == null ? null : l[f]; });
+  return out;
 }
 
 // Initializes (or refreshes) a session from the server's RequestObj (or null = not started yet).
@@ -155,8 +164,8 @@ function statusOf(session, override) {
   return { state, lastSavedAt: session.lastSavedAt, dirty: session.dirtyLines.size > 0 || session.dirtyMeta };
 }
 
-function notify(session, override) {
-  const status = statusOf(session, override);
+function notify(session, override, extra) {
+  const status = { ...statusOf(session, override), ...(extra || {}) };
   session.listeners.forEach((fn) => {
     try {
       fn(status);
@@ -183,12 +192,18 @@ export function getLine(pcu, month, code) {
 
 // value: integer or null (empty).
 export function setLine(pcu, month, code, field, value) {
+  setLineFields(pcu, month, code, { [field]: value });
+}
+
+// Sets several fields of one line atomically (2o: e.g. used + the computed stock + calc_from in one edit).
+// patch: { stock?, op?, pp?, used?, adj?, adj_reason?, calc_from? } — integers / null / enum strings.
+export function setLineFields(pcu, month, code, patch) {
   const session = getSession(pcu, month);
   if (!session || session.conflict) return;
   // Always a NEW object: an in-flight save holds a snapshot of the previous one, and the
   // "unchanged since sent?" check in doSave must see edits made while the request was in flight.
   const line = { ...(session.request.lines[code] || { stock: null, op: null, pp: null, updated_at: "" }) };
-  line[field] = value;
+  Object.assign(line, patch);
   line.updated_at = new Date().toISOString();
   session.request.lines[code] = line;
   session.dirtyLines.add(code);
@@ -305,14 +320,39 @@ async function runSave(session) {
       session.dirtyMeta = false;
     }
 
+    // 2o: the server owns the stock/used formula. Which clean lines now differ from what the client holds
+    // (server `recalc:{code:{stock,used}}` and/or the returned RequestObj line)? Collected BEFORE applyServerRequest
+    // overwrites them, so the fill page can repaint exactly those rows.
+    const recalcCodes = [];
+    const recalc = data.recalc || {};
+    const serverLines = (data.request && data.request.lines) || {};
+    new Set(Object.keys(linesPayload).concat(Object.keys(recalc))).forEach((code) => {
+      if (session.dirtyLines.has(code)) return; // typed meanwhile: the user's newer value wins
+      const cur = session.request.lines[code];
+      const srv = recalc[code] || serverLines[code];
+      if (!cur || !srv) return;
+      const sStock = srv.stock === undefined ? cur.stock : srv.stock;
+      const sUsed = srv.used === undefined ? cur.used : srv.used;
+      if ((sStock == null ? null : sStock) !== (cur.stock == null ? null : cur.stock) || (sUsed == null ? null : sUsed) !== (cur.used == null ? null : cur.used)) {
+        recalcCodes.push(code);
+      }
+    });
+
     applyServerRequest(session, data.request);
+    // recalc is authoritative for the lines it names (also when the response carried no full RequestObj)
+    Object.keys(recalc).forEach((code) => {
+      const cur = session.request.lines[code];
+      if (session.dirtyLines.has(code) || !cur) return;
+      const rc = recalc[code];
+      session.request.lines[code] = { ...cur, stock: rc.stock === undefined ? cur.stock : rc.stock, used: rc.used === undefined ? cur.used : rc.used };
+    });
 
     session.lastSavedAt = new Date();
     session.retryIdx = 0;
     session.offline = false;
     session.lastOutcome = "ok";
     saveMirror(session);
-    notify(session, session.dirtyLines.size || session.dirtyMeta ? "pending" : "saved");
+    notify(session, session.dirtyLines.size || session.dirtyMeta ? "pending" : "saved", recalcCodes.length ? { recalc: recalcCodes } : null);
     if (session.dirtyLines.size || session.dirtyMeta) scheduleSave(session, 200);
   } catch (err) {
     if (err instanceof ApiError && err.code === "NETWORK") {

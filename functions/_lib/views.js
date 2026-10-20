@@ -2,11 +2,12 @@
 import { formForFy, loadForm, priceMap } from "./db.js";
 import { computeDeadline, fyMonths, monthFy, prevMonth } from "./time.js";
 import { UNITS } from "./auth.js";
+import { baselineFor } from "./stock.js";
 
 export const REQ_COLS =
   "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at";
 export const LINE_COLS =
-  "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by";
+  "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from";
 
 export const requestId = (pcu, month) => `${pcu}_${month}`;
 
@@ -25,13 +26,16 @@ export function requestObj(row, lines, admin = false) {
   if (lines) {
     const m = {};
     for (const l of lines) {
+      const sc = { // 2o: stock-mode fields (both views)
+        used: l.used ?? null, adj: l.adj ?? null, adj_reason: l.adj_reason ?? null, calc_from: l.calc_from ?? null,
+      };
       m[l.item_code] = admin
         ? {
-            stock: l.stock, op: l.op, pp: l.pp, updated_at: l.updated_at, price_snapshot: l.price_snapshot ?? null,
+            stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, price_snapshot: l.price_snapshot ?? null,
             issued_total: l.issued_total ?? null, issued_op: l.issued_op ?? null, issued_pp: l.issued_pp ?? null,
             issue_reason: l.issue_reason ?? null, issue_note: l.issue_note ?? null, issued_at: l.issued_at ?? null, issued_by: l.issued_by ?? null,
           }
-        : { stock: l.stock, op: l.op, pp: l.pp, updated_at: l.updated_at };
+        : { stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at };
     }
     out.lines = m;
   }
@@ -85,16 +89,8 @@ export async function usedFyFor(DB, pcu, month) {
   return out;
 }
 
-export async function prevLinesFor(DB, pcu, month) {
-  const { results } = await DB.prepare(
-    `SELECT l.item_code AS code, COALESCE(l.op,0) AS op, COALESCE(l.pp,0) AS pp
-       FROM requests r JOIN request_lines l ON l.request_id = r.id
-      WHERE r.pcu = ? AND r.month = ? AND r.status IN ('submitted','issued') AND (COALESCE(l.op,0) + COALESCE(l.pp,0)) > 0`
-  ).bind(pcu, prevMonth(month)).all();
-  const out = {};
-  for (const r of results) out[r.code] = { op: r.op, pp: r.pp };
-  return out;
-}
+// 2o: { code: {op, pp, stock, received, received_src} } of the previous round (stock.js baselineFor) — rows with op+pp > 0 or stock set.
+export const prevLinesFor = (DB, pcu, month) => baselineFor(DB, pcu, month);
 
 // ---- issue (2c) -------------------------------------------------------------------------------------------------------
 // The form a request resolves its codes against: the bound version, else formForFy (latest of the round's fy → fy_current → newest).

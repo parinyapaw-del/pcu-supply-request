@@ -4,6 +4,7 @@ import { err } from "./http.js";
 import { formForFy, loadForm } from "./db.js";
 import { TRIAL_GROUP } from "./auth.js";
 import { bangkokDateTime, fyMonths, monthFy } from "./time.js";
+import { ADJ_REASON_TH } from "./stock.js";
 
 const STATUS_TH = { draft: "กำลังกรอก", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
 const REASON_TH = { out_of_stock: "ของหมด/รอจัดซื้อ" };
@@ -22,7 +23,7 @@ export async function buildExport(DB, { month, fy }) {
   const [pcuRes, reqRes, lineRes, planRes, scopeForm] = await Promise.all([
     DB.prepare(`SELECT code, name, "group" AS grp FROM pcus ORDER BY code`).all(),
     DB.prepare(`SELECT id, pcu, month, status, form_version_id, submitted_at FROM requests WHERE month IN (${ph}) ORDER BY month, pcu`).bind(...months).all(),
-    DB.prepare(`SELECT request_id, item_code, op, pp, price_snapshot, issued_total, issued_op, issued_pp, issue_reason, issue_note
+    DB.prepare(`SELECT request_id, item_code, op, pp, price_snapshot, issued_total, issued_op, issued_pp, issue_reason, issue_note, used, adj, adj_reason
                   FROM request_lines WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(scopeFy).all(),
     formForFy(DB, scopeFy),
@@ -44,7 +45,8 @@ export async function buildExport(DB, { month, fy }) {
 
   // ---- sheet 1: per line ----
   const head1 = ["เดือน", "รหัส รพ.สต.", "รพ.สต.", "หน้า", "รหัสรายการ", "รายการ", "หน่วย", "ราคา/หน่วย", "OP", "PP", "รวม", "เป็นเงิน",
-    "จ่ายจริง OP", "จ่ายจริง PP", "จ่ายจริงรวม", "เหตุผล", "สถานะ", "เวลาส่ง (เวลาไทย)", "form version"];
+    "จ่ายจริง OP", "จ่ายจริง PP", "จ่ายจริงรวม", "เหตุผล", "สถานะ", "เวลาส่ง (เวลาไทย)", "form version",
+    "ใช้ไป", "ปรับยอด", "เหตุผลปรับยอด"]; // 2o (appended: earlier column letters / formulas unchanged)
   const rows1 = [head1];
   const reqAgg = []; // submitted/issued per request for sheets 2/3
   for (const r of requests) {
@@ -65,12 +67,13 @@ export async function buildExport(DB, { month, fy }) {
         issued ? nz(l.issued_op) : "", issued ? nz(l.issued_pp) : "", issued ? l.issued_total : "",
         issued ? (l.issue_reason === "other" ? l.issue_note || "อื่น ๆ" : REASON_TH[l.issue_reason] || l.issue_reason || "") : "",
         STATUS_TH[r.status] || r.status, bangkokDateTime(r.submitted_at), r.form_version_id ?? "",
+        l.used ?? "", l.adj ?? "", l.adj_reason ? ADJ_REASON_TH[l.adj_reason] || l.adj_reason : "",
       ]);
     }
     if (r.status === "submitted" || r.status === "issued") reqAgg.push({ r, form, lines: linesBy.get(r.id) || [] });
   }
   const ws1 = XLSX.utils.aoa_to_sheet(rows1);
-  colWidths(ws1, [9, 9, 16, 12, 10, 44, 8, 10, 8, 8, 8, 12, 11, 11, 11, 18, 10, 18, 11]);
+  colWidths(ws1, [9, 9, 16, 12, 10, 44, 8, 10, 8, 8, 8, 12, 11, 11, 11, 18, 10, 18, 11, 8, 8, 16]);
 
   // ---- sheet 2: PCU × item ----
   const itemList = []; // {code,name,unit}

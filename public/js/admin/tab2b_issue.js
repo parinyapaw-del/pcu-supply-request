@@ -450,7 +450,7 @@ export function renderTab2b(container, ctx) {
         const l = r.x.l;
         const by = l.issued_at ? ` title="บันทึก ${escapeHtml(formatBangkokDateTime(l.issued_at))} โดย ${escapeHtml(whoLabel(l.issued_by))}"` : "";
         body.push(`<tr data-key="${escapeHtml(r.key)}"${by}>
-          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}</td>
+          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}${usedAdjHtml(l)}</td>
           <td class="num">${formatInt(r.op)}</td><td class="num">${formatInt(r.pp)}</td><td class="num"><strong>${formatInt(r.req)}</strong></td>
           ${inputCell(r)}${gotCells()}${reasonCell(r)}</tr>`);
       });
@@ -467,6 +467,16 @@ export function renderTab2b(container, ctx) {
     host.querySelector('[data-act="save"]').addEventListener("click", saveSheet);
     host.querySelector('[data-act="revert"]').addEventListener("click", () => editor.revert());
     refreshFooter();
+  }
+
+  // 2o: ใช้ไป / ปรับยอด (เหตุผล) of a request line — shown when present (never on the printed form, Q16)
+  const ADJ_REASON_LABEL = { received_extra: "ได้รับเพิ่ม", borrow_return: "ยืม/คืน", expired_damaged: "หมดอายุ/เสียหาย", recount: "นับใหม่", other: "อื่น ๆ" };
+  function usedAdjHtml(l) {
+    const parts = [];
+    if (l.used != null) parts.push(`ใช้ไป ${formatInt(l.used)}`);
+    const adj = Number(l.adj) || 0;
+    if (adj) parts.push(`ปรับยอด ${adj > 0 ? "+" : "−"}${formatInt(Math.abs(adj))}${l.adj_reason ? ` (${escapeHtml(ADJ_REASON_LABEL[l.adj_reason] || l.adj_reason)})` : ""}`);
+    return parts.length ? `<div class="muted small t2b-usedadj">${parts.join(" · ")}</div>` : "";
   }
 
   async function saveSheet() {

@@ -387,7 +387,7 @@ async function main() {
   let r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { stock: 2, op: 5, pp: 1, updated_at: t(1) }, [B.code]: { op: 3, pp: null, updated_at: t(1) } }, last_step: "P2", submitter_name: "สมชาย" }, T1);
   eq(r.status, "draft", "first autosave creates a draft");
   eq(r.submitted, false, "autosave is not a submit");
-  eq(r.request.lines[A.code], { stock: 2, op: 5, pp: 1, updated_at: t(1) }, "line stored (PCU view has no price/issued fields)");
+  eq(r.request.lines[A.code], { stock: 2, op: 5, pp: 1, used: null, adj: null, adj_reason: null, calc_from: null, updated_at: t(1) }, "line stored (PCU view has no price/issued fields; 2o fields null)");
   eq([r.request.last_step, r.request.submitter_name], ["P2", "สมชาย"], "last_step + submitter_name stored");
   eq(r.request.form_version_id, null, "draft has no form_version_id yet");
   r = await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 9, updated_at: t(0) } } }, T1);
@@ -471,7 +471,7 @@ async function main() {
   const prevSubmit = await mustOk("saveLines", { month: PREV, lines: { [A.code]: { op: 10, pp: 5, updated_at: t(1) } }, send: true }, T3);
   eq(prevSubmit.over_limit, [], "mode off: over_limit empty and submit ok (previous month, 15 units)");
   eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].used_fy[A.code], 15, "used_fy[current] = Σ other rounds of the fiscal year (15) — round 2026-11 is FY2570 and counts (2j)");
-  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].prev_lines[A.code], { op: 10, pp: 5 }, "prev_lines from previous month's submitted request");
+  eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].prev_lines[A.code], { op: 10, pp: 5, stock: null, received: 15, received_src: "requested" }, "prev_lines from previous month's submitted request (2o: + stock/received)");
   await mustOk("adminSetLimitMode", { mode: "enforce" }, ADM);
   await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 4, pp: 2, updated_at: t(1) } } }, T3);
   const ol = await api("saveLines", { month: CUR, lines: {}, send: true }, T3);
@@ -743,7 +743,7 @@ async function main() {
     const hc = (await mustOk("pcuBootstrap", {}, T9)).history[0];
     eq(hc, { month: "2026-10", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at }, "calendar CAL: the sent FY2569 round 2026-10 is history[0] with status submitted + submitted_at");
     eq(e2.data.byMonth["2026-11"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-10");
-    eq(e2.data.byMonth["2026-11"].prev_lines[A.code], { op: 1, pp: 0 }, "…but prev_lines still reads the previous round");
+    eq(e2.data.byMonth["2026-11"].prev_lines[A.code], { op: 1, pp: 0, stock: null, received: 1, received_src: "requested" }, "…but prev_lines still reads the previous round");
     ok((await api("saveLines", { month: "2026-11", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-11) works");
     eq((await mustOk("pcuBootstrap", {}, T9)).byMonth[CUR].used_fy, {}, "calendar CAL: used_fy of round 2026-12 still excludes the FY2569 round 2026-10");
   }
@@ -975,11 +975,13 @@ async function main() {
       const bundle = {
         pcuRow: { code: pd.pcu.code, name: pd.pcu.name, print_name: pd.pcu.print_name },
         reqRow: { form_version_id: adm.form_version_id, submitted_at: pd.request.submitted_at },
-        lines: Object.entries(pd.request.lines).map(([item_code, l]) => ({ item_code, op: l.op, pp: l.pp })),
+        lines: Object.entries(pd.request.lines).map(([item_code, l]) => ({ item_code, op: l.op, pp: l.pp, stock: l.stock })),
         hidden: pd.hidden,
       };
       const ls = {};
-      for (const l of bundle.lines) if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
+      for (const l of bundle.lines) {
+        if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
+      }
       const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, hidden: [...pd.hidden].sort(), lines: ls, dd: null, sm: null };
       const keyFor = (lv) => sha256Hex(stableStringify(lv === undefined ? fields : { lv, ...fields }));
       const local = await pdfLib.contentKeyOf(bundle);
@@ -1405,7 +1407,7 @@ async function main() {
     let m3 = pb2.byMonth[CUR];
     eq(Object.keys(m3.request.issued), [LABI.code], "PCU request.issued has only the done unit's lines");
     eq(m3.request.issued[LABI.code], { total: 5, op: 3, pp: 2, reason: null, note: null }, "PCU request.issued[code] = {total,op,pp,reason,note}");
-    eq(Object.keys(m3.request.lines[LABI.code]).sort(), ["op", "pp", "stock", "updated_at"], "PCU request.lines unchanged (no issued fields, Q78)");
+    eq(Object.keys(m3.request.lines[LABI.code]).sort(), ["adj", "adj_reason", "calc_from", "op", "pp", "stock", "updated_at", "used"], "PCU request.lines unchanged (no issued fields, Q78; + 2o fields)");
     ok(m3.issue && m3.issue.units.LAB.done && m3.issue.units["พัสดุ"].done === false && m3.issue.units.LAB.done_by === null, "PCU IssueInfo.units present; done_by hidden from PCU");
     eq([m3.issue.complete, m3.issue.incomplete, m3.issue.units["พัสดุ"].issued_lines], [1, 0, 0], "PCU IssueInfo counts only done units (พัสดุ figures not leaked)");
     eq(pb2.issue_notices, [], "no notice yet (status not issued)");
@@ -1549,6 +1551,178 @@ async function main() {
     // ---- clean up ----
     ok((await api("adminUsersRemove", { email: D_LAB }, ADM2)).ok && (await api("adminUsersRemove", { email: D_STORE }, ADM2)).ok, "temporary dispensers removed again");
     ok((await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2)).deleted_issue_status >= 4, "adminClearTrial wipes issue_status rows too");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("stock mode (2o): used / adj / calc_from + server recalc");
+  {
+    const M0 = "2026-10", M1 = PREV, M2 = CUR; // M0 = the trial round (FY2569) — a valid baseline since 2026-10-20 (no special-casing)
+    const H0 = { month: "2026-09" }; // calendar 2026-09 → round 2026-10 open for keying
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    await mustOk("adminSetConfig", { key: "trial_month", value: M0 }, ADM2);
+    for (const m of [M0, M1, M2]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const P = (await mustOk("pcuLogin", { pcu: "PCU06", pin: "12345" })).token;
+    const Q = (await mustOk("pcuLogin", { pcu: "PCU09", pin: "12345" })).token;
+    const A2 = seedItems.find((i) => i.step === "P1" && i.code !== A.code);
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-21T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { ...v, updated_at: tsn() }]));
+    const sv = (tok, month, lines, extra = {}, opts = {}) => api("saveLines", { month, lines: L(lines), ...extra }, tok, opts);
+    const svOk = async (tok, month, lines, extra, opts) => { const r = await sv(tok, month, lines, extra, opts); if (!r.ok) console.log("  saveLines error", JSON.stringify(r.error)); return r.ok ? r.data : null; };
+    const adm = async (pcu, month) => (await mustOk("adminGetRequest", { pcu, month }, ADM2)).request;
+    const pick = (l) => l && [l.stock, l.used, l.adj, l.adj_reason, l.calc_from];
+
+    // ---- pcuSetStockMode ----
+    eq((await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode, "A", "pcuBootstrap.pcu.stock_mode defaults to A");
+    eq(await mustOk("pcuSetStockMode", { mode: "B" }, P), { stock_mode: "B" }, "pcuSetStockMode B → {stock_mode:'B'}");
+    eq((await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode, "B", "pcuBootstrap.pcu.stock_mode = B after the switch");
+    eq((await mustOk("pcuBootstrap", {}, Q)).pcu.stock_mode, "A", "another PCU stays A");
+    expectErr(await api("pcuSetStockMode", { mode: "C" }, P), "BAD_REQUEST", "pcuSetStockMode mode C");
+    expectErr(await api("pcuSetStockMode", {}, P), "BAD_REQUEST", "pcuSetStockMode without mode");
+    expectErr(await api("pcuSetStockMode", { mode: "A" }, ADM2), "FORBIDDEN", "pcuSetStockMode with a staff token");
+    ok((await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.some((e) => e.action === "pcuSetStockMode" && e.pcu === "PCU06" && e.detail === "B"), "audit pcuSetStockMode (detail = mode)");
+
+    // ---- validation ----
+    for (const [f, v, why] of [["used", -1, "used −1"], ["used", 100000, "used 100000"], ["used", 1.5, "used 1.5"], ["adj", 100000, "adj 100000"], ["adj", -100000, "adj −100000"],
+      ["adj", 2.5, "adj 2.5"], ["adj_reason", "lost", "adj_reason outside the enum"], ["calc_from", "op", "calc_from op"]]) {
+      expectErr(await sv(P, M1, { [A.code]: { op: 1, [f]: v } }), "BAD_REQUEST", `saveLines rejects ${why}`);
+    }
+    ok(/ปรับยอด/.test((await sv(P, M1, { [A.code]: { adj: 100000 } })).error.message), "adj error message is Thai");
+
+    // ---- no baseline: no previous-round request ----
+    let r = await svOk(P, M1, { [A.code]: { stock: 5, op: 2, pp: 0, used: 3, calc_from: "used" } });
+    eq(pick(r && r.request.lines[A.code]), [5, 3, null, null, null], "no baseline → calc_from forced null, stock / used kept as sent");
+    eq(r && r.recalc, {}, "no baseline → recalc {}");
+    // draft previous round is no baseline either
+    await svOk(Q, M0, { [A.code]: { stock: 10, op: 1, pp: 0 } }, {}, H0);
+    r = await svOk(Q, M1, { [A.code]: { stock: 3, op: 0, pp: 0, used: 1, calc_from: "used" } });
+    eq([pick(r && r.request.lines[A.code]), (await mustOk("pcuGetMonth", { month: M1 }, Q)).prev_lines], [[3, 1, null, null, null], {}], "previous round only a draft → no baseline, prev_lines {}");
+
+    // ---- baseline from the trial round 2026-10 ----
+    r = await svOk(P, M0, { [A.code]: { stock: 10, op: 20, pp: 0 }, [B.code]: { stock: 4, op: 0, pp: 0 } }, { send: true }, H0);
+    eq(r && r.status, "submitted", "setup: PCU06 sends the trial round 2026-10 (A stock 10 / ขอ 20 · B stock 4 / ขอ 0)");
+    const pl1 = (await mustOk("pcuGetMonth", { month: M1 }, P)).prev_lines;
+    eq([pl1[A.code], pl1[B.code]], [{ op: 20, pp: 0, stock: 10, received: 20, received_src: "requested" }, { op: 0, pp: 0, stock: 4, received: 0, received_src: "requested" }],
+      "prev_lines of round 2026-11 = trial round: {op,pp,stock,received,received_src} incl. a stock-only row (op+pp 0)");
+    eq((await mustOk("pcuBootstrap", {}, P)).byMonth[M1].prev_lines[A.code].stock, 10, "pcuBootstrap.byMonth[prev].prev_lines carries the same baseline");
+
+    // ---- calc_from used / stock, negative, adj, received_extra ----
+    r = await svOk(P, M1, { [A.code]: { stock: null, op: 2, pp: 0, used: 25, calc_from: "used" }, [B.code]: { stock: 1, op: 0, pp: 0, calc_from: "stock" } });
+    eq([pick(r.request.lines[A.code]), pick(r.request.lines[B.code])], [[5, 25, null, null, "used"], [1, 3, null, null, "stock"]], "calc_from used → stock = 10+20−25 = 5 · calc_from stock → used = 4+0−1 = 3");
+    eq(r.recalc, { [A.code]: { stock: 5, used: 25 }, [B.code]: { stock: 1, used: 3 } }, "response.recalc lists the lines the server computed");
+    r = await svOk(P, M1, { [A.code]: { stock: 5, op: 2, pp: 0, used: 40, calc_from: "used" } });
+    eq([pick(r.request.lines[A.code]), r.recalc[A.code]], [[null, 40, null, null, "used"], { stock: null, used: 40 }], "used > available → stock NULL (red), used kept");
+    r = await svOk(P, M1, { [B.code]: { stock: 10, op: 0, pp: 0, calc_from: "stock" } });
+    eq(pick(r.request.lines[B.code]), [10, null, null, null, "stock"], "stock > available → used NULL (yellow), stock kept");
+    r = await svOk(P, M1, { [B.code]: { stock: 10, op: 0, pp: 0, used: 0, adj: 6, adj_reason: "received_extra", calc_from: "stock" } });
+    eq([pick(r.request.lines[B.code]), r.recalc], [[10, 0, 6, "received_extra", "stock"], {}], "ใส่เป็นยอดรับเพิ่ม: adj += stock − available, used 0 → round-trips (used = 4+0+6−10 = 0, recalc {})");
+    r = await svOk(P, M1, { [A.code]: { stock: 999, op: 2, pp: 0, used: 25, adj: -2, adj_reason: null } });
+    eq([pick(r.request.lines[A.code]), r.recalc[A.code]], [[3, 25, -2, null, "used"], { stock: 3, used: 25 }], "adj −2 (reason null accepted) → stock 3; client stock 999 ignored; calc_from kept when omitted");
+    r = await svOk(P, M1, { [A.code]: { stock: 3, op: 2, pp: 0, adj: 2, adj_reason: "recount" } });
+    eq(pick(r.request.lines[A.code]), [7, 25, 2, "recount", "used"], "adj +2 → stock 7 (used kept when omitted)");
+    r = await svOk(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, adj: null, adj_reason: null } });
+    eq(pick(r.request.lines[A.code]), [5, 25, null, null, "used"], "adj cleared → stock 5");
+
+    // ---- old client (no 2o fields) keeps the stored values; mode A line is never computed ----
+    r = await svOk(P, M1, { [A.code]: { stock: 99, op: 2, pp: 0 } });
+    eq([pick(r.request.lines[A.code]), r.recalc], [[5, 25, null, null, "used"], { [A.code]: { stock: 5, used: 25 } }], "old client {stock,op,pp}: used/calc_from kept → server recomputes stock 5");
+    r = await svOk(P, M1, { [A2.code]: { stock: 7, op: 3, pp: 0, used: 2, adj: 1, adj_reason: "borrow_return", calc_from: null } });
+    eq([pick(r.request.lines[A2.code]), r.recalc], [[7, 2, 1, "borrow_return", null], {}], "mode A (calc_from null): stock as typed, used / adj stored, nothing computed");
+    r = await svOk(P, M1, { [A2.code]: { stock: 8, op: 3, pp: 0 } });
+    eq(pick(r.request.lines[A2.code]), [8, 2, 1, "borrow_return", null], "old client on a mode-A line: used / adj / adj_reason survive");
+
+    // ---- stock_required counts a computed stock; a NULL (negative) one is missing ----
+    await mustOk("adminSetConfig", { key: "stock_required", value: 1 }, ADM2);
+    const inc1 = await sv(P, M1, {}, { send: true });
+    expectErr(inc1, "INCOMPLETE", "stock_required=1 → INCOMPLETE (other items empty)");
+    ok(inc1.error && ![A.code, B.code, A2.code].some((c) => inc1.error.missing.includes(c)), "computed stock counts as filled (A, B, A2 not missing)");
+    await svOk(P, M1, { [A.code]: { stock: 5, op: 2, pp: 0, used: 40 } });
+    const inc2 = await sv(P, M1, {}, { send: true });
+    ok(inc2.error && inc2.error.missing.includes(A.code), "computed stock NULL (negative) → item listed in INCOMPLETE.missing");
+    await svOk(P, M1, { [A.code]: { stock: null, op: 2, pp: 0, used: 25 } });
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    eq((await svOk(P, M1, {}, { send: true })).status, "submitted", "setup: PCU06 sends round 2026-11");
+
+    // ---- round 2026-12 on top of 2026-11 ----
+    r = await svOk(P, M2, { [A.code]: { op: 1, pp: 0, used: 4, calc_from: "used" }, [A2.code]: { stock: 5, op: 0, pp: 0, calc_from: "stock" } }, { send: true });
+    eq([pick(r.request.lines[A.code]), pick(r.request.lines[A2.code])], [[3, 4, null, null, "used"], [5, 6, null, null, "stock"]], "round 2026-12: A stock = 5+2−4 = 3 · A2 used = 8+3−5 = 6");
+    const u2 = (await adm("PCU06", M2)).updated_at;
+    eq((await adm("PCU06", M2)).edited_after_submit, false, "setup: round 2026-12 sent");
+
+    // ---- saveLines on the previous round triggers the chain ----
+    await svOk(P, M1, { [A.code]: { stock: null, op: 2, pp: 0, used: 23 } });
+    let m2 = await adm("PCU06", M2);
+    eq([m2.lines[A.code].stock, m2.lines[A2.code].used, m2.updated_at, m2.edited_after_submit], [5, 6, u2, false],
+      "editing round 2026-11 (stock 7) recalcs 2026-12 A → 7+2−4 = 5; updated_at untouched, not edited_after_submit");
+
+    // ---- issued figures: PCU view does not leak a unit that is not done; done → received = issued ----
+    const k1 = (await mustOk("devPrintToken", { pcu: "PCU06", month: M2 })).content_key;
+    await mustOk("issueLines", { pcu: "PCU06", month: M1, lines: { [A.code]: { issued_total: 1, reason: "out_of_stock" }, [A2.code]: { issued_total: 1, reason: "out_of_stock" } } }, ADM2);
+    let pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
+    eq([pl2[A.code], pl2[A2.code].received_src, (await adm("PCU06", M2)).lines[A.code].stock], [{ op: 2, pp: 0, stock: 7, received: 2, received_src: "requested" }, "requested", 5],
+      "issued but unit not done → prev_lines received = ขอ (no leak) and no recalc");
+    await mustOk("issueDone", { pcu: "PCU06", month: M1, unit: A.unit_of, done: 1 }, ADM2);
+    pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
+    eq(pl2[A.code], { op: 2, pp: 0, stock: 7, received: 1, received_src: "issued" }, "unit done → prev_lines received = issued_total (received_src issued)");
+    m2 = await adm("PCU06", M2);
+    eq([pick(m2.lines[A.code]), pick(m2.lines[A2.code]), m2.updated_at, m2.edited_after_submit], [[4, 4, null, null, "used"], [5, 4, null, null, "stock"], u2, false],
+      "issueDone recalcs 2026-12 (calc_from used: stock 7+1−4 = 4 · calc_from stock: used 8+1−5 = 4), updated_at untouched");
+    const k2 = (await mustOk("devPrintToken", { pcu: "PCU06", month: M2 })).content_key;
+    eq(k1, k2, "PDF content_key unchanged by a stock recalc (the printed sheet shows only OP/PP)");
+
+    // ---- cascade 2 rounds from the trial round, through a locked round ----
+    await mustOk("adminLockRound", { month: M2, locked: 1 }, ADM2);
+    const u1 = (await adm("PCU06", M1)).updated_at;
+    await mustOk("issueLines", { pcu: "PCU06", month: M0, lines: { [A.code]: { issued_total: 15, reason: "out_of_stock" } } }, ADM2);
+    eq((await adm("PCU06", M1)).lines[A.code].stock, 7, "issueLines on 2026-10 (unit not done) changes nothing downstream");
+    await mustOk("issueDone", { pcu: "PCU06", month: M0, unit: A.unit_of, done: 1 }, ADM2);
+    const m1 = await adm("PCU06", M1);
+    m2 = await adm("PCU06", M2);
+    eq([m1.lines[A.code].stock, m1.updated_at, pick(m2.lines[A.code]), m2.updated_at], [2, u1, [null, 4, null, null, "used"], u2],
+      "cascade: 2026-10 done (received 15) → 2026-11 A stock 10+15−23 = 2 → 2026-12 A 2+1−4 < 0 → NULL, on a locked round, no updated_at bump");
+    eq([m1.lines[B.code].used, m2.lines[A2.code].used], [0, 4], "lines whose baseline did not change stay as they were");
+    const v2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).request.lines[A.code];
+    eq([v2.stock, v2.used, v2.calc_from], [null, 4, "used"], "PCU view of 2026-12: calc line with stock NULL + used (frontend shows the negative banner)");
+    await mustOk("issueDone", { pcu: "PCU06", month: M0, unit: A.unit_of, done: 0 }, ADM2);
+    eq([(await adm("PCU06", M1)).lines[A.code].stock, (await adm("PCU06", M2)).lines[A.code].stock], [7, 4], "undo done on 2026-10 → received back to ขอ 20 → chain recalculated again (7 · 4)");
+    await mustOk("adminLockRound", { month: M2, locked: 0 }, ADM2);
+
+    // ---- issueAll / issueItem trigger it too ----
+    await mustOk("issueDone", { pcu: "PCU06", month: M0, unit: A.unit_of, done: 1 }, ADM2); // received 15 again → 2026-11 A = 2
+    await mustOk("issueItem", { month: M1, item_code: A.code, entries: { PCU06: { issued_total: 2 } } }, ADM2);
+    eq((await adm("PCU06", M2)).lines[A.code].stock, 0, "issueItem on 2026-11 (A issued 2, unit done) → 2026-12 A = 2+2−4 = 0");
+    await mustOk("issueAll", { pcu: "PCU06", month: M0 }, ADM2);
+    eq([(await adm("PCU06", M1)).lines[A.code].stock, (await adm("PCU06", M2)).lines[A.code].stock], [7, 5], "issueAll on 2026-10 (A issued 20) → 2026-11 A = 10+20−23 = 7 → 2026-12 A = 7+2−4 = 5");
+
+    // ---- locked unit: the "same line" check includes the 2o fields ----
+    ok((await sv(P, M1, { [A.code]: { stock: 0, op: 2, pp: 0, used: 23, calc_from: "used" } })).ok, "issued unit: re-sending the same line (stale stock, same used) is accepted");
+    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, used: 24 } }), "CONFLICT", "issued unit: changing used → CONFLICT");
+    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, adj: 1 } }), "CONFLICT", "issued unit: changing adj → CONFLICT");
+    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, calc_from: null } }), "CONFLICT", "issued unit: changing calc_from → CONFLICT");
+    ok((await sv(P, M1, { [B.code]: { stock: 10, op: 0, pp: 0 } })).ok, "issued unit: old client re-sending B unchanged is accepted");
+
+    // ---- admin view + Excel ----
+    const am1 = await adm("PCU06", M1);
+    eq(pick(am1.lines[A2.code]), [8, 2, 1, "borrow_return", null], "adminGetRequest lines carry used / adj / adj_reason / calc_from");
+    const xr = await get(`/api/export.xlsx?month=${M1}`, { authorization: "Bearer " + ADM2 });
+    const xs = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await xr.arrayBuffer()), { type: "buffer" }).Sheets["รายบรรทัด"], { header: 1 });
+    eq(xs[0].slice(19), ["ใช้ไป", "ปรับยอด", "เหตุผลปรับยอด"], "export line sheet: + ใช้ไป / ปรับยอด / เหตุผลปรับยอด (appended)");
+    const xa = xs.find((x) => x[1] === "PCU06" && x[4] === A2.code), xa1 = xs.find((x) => x[1] === "PCU06" && x[4] === A.code);
+    eq(xa && xa.slice(19, 22), [2, 1, "ยืม/คืน"], "export: A2 → used 2, adj 1, ยืม/คืน");
+    ok(xa1 && xa1[19] === 23 && !xa1[20] && !xa1[21], "export: A → used 23, adj / reason blank");
+
+    // ---- migration v4 idempotent ----
+    expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 4, "re-running migration v4 on existing columns succeeds (duplicate column tolerated)");
+    eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
+
+    // ---- clean up ----
+    await mustOk("pcuSetStockMode", { mode: "A" }, P);
+    eq((await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode, "A", "back to mode A");
+    eq((await mustOk("pcuGetMonth", { month: M2 }, P)).request.lines[A.code].used, 4, "switching to A never deletes values");
+    await mustOk("adminSetConfig", { key: "trial_month", value: null }, ADM2);
+    ok((await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2)).deleted_requests >= 4, "stock-mode requests wiped again");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

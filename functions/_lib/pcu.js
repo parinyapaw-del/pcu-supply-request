@@ -10,6 +10,7 @@ import { currentMonth, currentRound, fyMonths, isMonth, monthFy, nextMonth, nowI
 import {
   getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
 } from "./views.js";
+import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
 const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
@@ -26,7 +27,7 @@ export async function pcuLogin(ctx, p) {
   const pin = String(p.pin || "");
   if (!code || !PIN_RE.test(pin)) throw err("BAD_REQUEST", "กรอก รพ.สต. และ PIN 5 หลัก");
   const row = await DB.prepare(
-    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom FROM pcus WHERE code = ?`
+    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom, stock_mode FROM pcus WHERE code = ?`
   ).bind(code).first();
   if (!row) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้");
 
@@ -189,7 +190,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
 
   return {
     server_time: nowIso(), current_month: cal, current_round: cur,
-    pcu: { ...pcuPublic(pcuRow), pin_custom: !!pcuRow.pin_custom },
+    pcu: { ...pcuPublic(pcuRow), pin_custom: !!pcuRow.pin_custom, stock_mode: pcuRow.stock_mode === "B" ? "B" : "A" }, // 2o
     config: cfg,
     form_version_id: form ? form.id : null,
     form: formPublic(form, PCU_FORM),
@@ -245,13 +246,19 @@ export async function saveLines(ctx, p) {
   if (codes.length > MAX_LINES) throw err("BAD_REQUEST", "จำนวนบรรทัดมากเกินไป");
   const now = nowIso();
 
-  // pure validation first
+  // pure validation first. 2o: used / adj / adj_reason / calc_from are optional — a key that is not sent keeps the stored value.
   const parsed = codes.map((code) => {
     const l = linesIn[code] && typeof linesIn[code] === "object" ? linesIn[code] : {};
     let ua = l.updated_at;
     if (typeof ua === "number" && Number.isFinite(ua)) ua = new Date(ua).toISOString();
     if (!isStr(ua) || !ua) ua = now;
-    return { code, stock: assertQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua };
+    return {
+      code, stock: assertQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua,
+      used: has(l, "used") ? assertQty(l.used) : undefined,
+      adj: has(l, "adj") ? assertAdj(l.adj) : undefined,
+      adj_reason: has(l, "adj_reason") ? assertAdjReason(l.adj_reason) : undefined,
+      calc_from: has(l, "calc_from") ? assertCalcFrom(l.calc_from) : undefined,
+    };
   });
 
   const cfgAll = await getConfigAll(DB);
@@ -272,20 +279,29 @@ export async function saveLines(ctx, p) {
 
   const id = requestId(pcu.code, month);
 
-  // 2c hook: a step whose dispense unit is already issued cannot change
-  if (reqRow && parsed.length) {
-    const { results: iu } = await DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(id).all();
-    if (iu.length) {
-      const locked = new Set(iu.map((r) => r.dispense_unit));
-      const form = bound || latest;
-      const existing = new Map((await getLines(DB, id)).map((l) => [l.item_code, l]));
-      for (const l of parsed) {
-        const ent = form.index.get(l.code);
-        if (!ent || !locked.has(ent.step.dispense_unit)) continue;
-        const e = existing.get(l.code);
-        const same = e ? (e.stock ?? null) === l.stock && (e.op ?? null) === l.op && (e.pp ?? null) === l.pp : l.stock === null && l.op === null && l.pp === null;
-        if (!same) throw err("CONFLICT", `หน้า "${ent.step.dispense_unit}" ถูกจ่ายแล้ว แก้ไขรายการไม่ได้`);
-      }
+  // 2o: merge omitted fields with the stored line, then the server computes the outputs (never trusts client-computed values)
+  const [existingRows, iuRes] = reqRow && parsed.length
+    ? await Promise.all([getLines(DB, id), DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(id).all()])
+    : [[], { results: [] }];
+  const existing = new Map(existingRows.map((l) => [l.item_code, l]));
+  const keep = (l, e, k) => (l[k] !== undefined ? l[k] : e ? e[k] ?? null : null);
+  for (const l of parsed) {
+    const e = existing.get(l.code);
+    l.used = keep(l, e, "used"); l.adj = keep(l, e, "adj"); l.adj_reason = keep(l, e, "adj_reason"); l.calc_from = keep(l, e, "calc_from");
+    l.sent = { stock: l.stock, used: l.used };
+  }
+  const base = parsed.some((l) => l.calc_from) ? await baselineFor(DB, pcu.code, month) : {};
+  for (const l of parsed) Object.assign(l, computeLine(base[l.code], l));
+
+  // 2c hook: a step whose dispense unit is already issued cannot change (2o: incl. used / adj / adj_reason / calc_from)
+  if (iuRes.results.length) {
+    const locked = new Set(iuRes.results.map((r) => r.dispense_unit));
+    const form = bound || latest;
+    for (const l of parsed) {
+      const ent = form.index.get(l.code);
+      if (!ent || !locked.has(ent.step.dispense_unit)) continue;
+      const e = existing.get(l.code);
+      if (!sameLine(e, l)) throw err("CONFLICT", `หน้า "${ent.step.dispense_unit}" ถูกจ่ายแล้ว แก้ไขรายการไม่ได้`);
     }
   }
 
@@ -299,24 +315,36 @@ export async function saveLines(ctx, p) {
   const nLineStart = stmts.length;
   for (const l of parsed) {
     stmts.push(DB.prepare(
-      `INSERT INTO request_lines (request_id,item_code,stock,op,pp,updated_at) VALUES (?,?,?,?,?,?)
-       ON CONFLICT(request_id,item_code) DO UPDATE SET stock=excluded.stock, op=excluded.op, pp=excluded.pp, updated_at=excluded.updated_at
+      `INSERT INTO request_lines (request_id,item_code,stock,op,pp,used,adj,adj_reason,calc_from,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(request_id,item_code) DO UPDATE SET stock=excluded.stock, op=excluded.op, pp=excluded.pp, used=excluded.used, adj=excluded.adj,
+         adj_reason=excluded.adj_reason, calc_from=excluded.calc_from, updated_at=excluded.updated_at
        WHERE request_lines.updated_at IS NULL OR excluded.updated_at > request_lines.updated_at`
-    ).bind(id, l.code, l.stock, l.op, l.pp, l.updated_at));
+    ).bind(id, l.code, l.stock, l.op, l.pp, l.used, l.adj, l.adj_reason, l.calc_from, l.updated_at));
   }
   const metaSets = [], metaVals = [];
   if (p.last_step !== undefined && p.last_step !== null && String(p.last_step)) { metaSets.push("last_step = ?"); metaVals.push(String(p.last_step).slice(0, 64)); }
   if (p.submitter_name !== undefined && p.submitter_name !== null) { metaSets.push("submitter_name = ?"); metaVals.push(String(p.submitter_name).slice(0, 120)); }
   if (metaSets.length) stmts.push(DB.prepare(`UPDATE requests SET ${metaSets.join(", ")} WHERE id = ?`).bind(...metaVals, id));
 
-  let changed = 0;
+  let changed = 0, qtyChanged = false;
+  const recalc = {}; // 2o: written lines whose stored stock/used differ from what the client sent
   if (stmts.length) {
     const res = await batchChunked(DB, stmts);
-    for (let i = nLineStart; i < nLineStart + parsed.length; i++) changed += (res[i] && res[i].meta && res[i].meta.changes) || 0;
+    parsed.forEach((l, i) => {
+      const n = (res[nLineStart + i] && res[nLineStart + i].meta && res[nLineStart + i].meta.changes) || 0;
+      if (!n) return;
+      changed += n;
+      const e = existing.get(l.code) || {};
+      if (["stock", "op", "pp", "used", "adj"].some((k) => (e[k] ?? null) !== l[k])) qtyChanged = true;
+      if (l.stock !== l.sent.stock || l.used !== l.sent.used) recalc[l.code] = { stock: l.stock, used: l.used };
+    });
   }
   if (changed > 0) {
     await DB.prepare(`UPDATE requests SET updated_at = ? WHERE id = ?`).bind(now, id).run();
   }
+  // 2o: the next rounds' calc lines use this round as baseline (only once it is sent) — recalc them (no updated_at bump, no audit)
+  const wasSent = !!reqRow && reqRow.status !== "draft";
+  if (qtyChanged && wasSent) await recalcStockChain(DB, pcu.code, month);
 
   // ---- send: validate + stamp the submission ----
   let submitted = false, overLimit = [];
@@ -353,10 +381,44 @@ export async function saveLines(ctx, p) {
     fin.push(auditStmt(DB, pcu.code, "pcu", "submit", pcu.code, month, `items=${n} form_version=${latest.id}`));
     await batchChunked(DB, fin);
     submitted = true;
+    if (!wasSent) await recalcStockChain(DB, pcu.code, month); // first send: this round just became a baseline
   }
 
   const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu.code, month), getLines(DB, id)]);
-  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false) };
+  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc };
+}
+
+// ---- 2o: stock mode + saveLines field rules ------------------------------------------------------------------------------------
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const LINE_FIELDS = ["stock", "op", "pp", "used", "adj", "adj_reason", "calc_from"];
+const sameLine = (e, l) => (e ? LINE_FIELDS.every((k) => (e[k] ?? null) === l[k]) : LINE_FIELDS.every((k) => l[k] === null));
+
+function assertAdj(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < -99999 || n > 99999) throw err("BAD_REQUEST", "ปรับยอดต้องเป็นเลขจำนวนเต็ม −99999 ถึง 99999 หรือว่าง");
+  return n;
+}
+function assertAdjReason(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (!ADJ_REASONS.includes(v)) throw err("BAD_REQUEST", "เหตุผลปรับยอดไม่ถูกต้อง (ได้รับเพิ่ม · ยืม/คืน · หมดอายุ/เสียหาย · นับใหม่ · อื่น ๆ)");
+  return v;
+}
+function assertCalcFrom(v) {
+  if (v === null || v === undefined || v === "") return null;
+  if (!CALC_FROM.includes(v)) throw err("BAD_REQUEST", "ช่องที่ใช้คำนวณต้องเป็น ใช้ไป (used) หรือ คงเหลือ (stock) หรือว่าง");
+  return v;
+}
+
+// pcuSetStockMode{mode:'A'|'B'} — A = กรอกคงเหลือเอง · B = คำนวณคงเหลือจากยอดใช้ไป (stored per PCU; switching never touches line values)
+export async function pcuSetStockMode(ctx, p) {
+  const { DB, pcu } = ctx;
+  if (p.mode !== "A" && p.mode !== "B") throw err("BAD_REQUEST", "โหมดต้องเป็น A หรือ B");
+  await DB.batch([
+    DB.prepare(`UPDATE pcus SET stock_mode = ? WHERE code = ?`).bind(p.mode, pcu.code),
+    auditStmt(DB, pcu.code, "pcu", "pcuSetStockMode", pcu.code, "", p.mode),
+  ]);
+  return { stock_mode: p.mode };
 }
 
 // ---- hidden ---------------------------------------------------------------------------------------------------------------------

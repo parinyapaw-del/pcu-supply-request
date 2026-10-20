@@ -1,6 +1,6 @@
 // POST /api — the single JSON router (functions/API.md §1). Always answers HTTP 200 {ok,data|error}.
 import { ApiError, err, errorBody, jsonResponse, okResponse, readJson } from "../_lib/http.js";
-import { dropAllTables, ensureSchema, getDb } from "../_lib/db.js";
+import { dropAllTables, ensureSchema, getDb, rerunMigrationsFrom } from "../_lib/db.js";
 import { requirePcu, requireStaff } from "../_lib/auth.js";
 import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
@@ -25,6 +25,7 @@ const PCU = {
   saveLines: pcu.saveLines,
   setHidden: pcu.setHidden,
   pcuAck: pcu.pcuAck,
+  pcuSetStockMode: pcu.pcuSetStockMode, // 2o
   requestPdf: pdf.requestPdf,
 };
 // admin + dispenser
@@ -88,6 +89,11 @@ const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 async function devAction(action, ctx, p) {
   if (ctx.env.DEV_FAKE_GOOGLE !== "1") throw err("FORBIDDEN", "ใช้ได้เฉพาะโหมดพัฒนา");
   if (action === "devReset") { await dropAllTables(ctx.env); return { ok: true }; }
+  if (action === "devRerunMigration") { // 2o: re-apply migrations >= v on the live tables (idempotency test)
+    const v = Number(p.v);
+    if (!Number.isInteger(v) || v < 2) throw err("BAD_REQUEST", "v ต้องเป็นจำนวนเต็ม ≥ 2");
+    return { schema_version: await rerunMigrationsFrom(ctx.env, v) };
+  }
   if (action === "devPutBackup") { // seed a fake old backup to test pruning
     if (!/^backup\/\d{4}-\d{2}-\d{2}\.json$/.test(String(p.key || ""))) throw err("BAD_REQUEST", "key ไม่ถูกต้อง");
     await ctx.env.FILES.put(p.key, "{}");
@@ -122,7 +128,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

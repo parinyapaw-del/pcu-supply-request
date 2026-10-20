@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -79,11 +79,21 @@ const V3 = [
      last_login_at = (SELECT MAX(a.ts) FROM audit_log a WHERE a.action = 'pcuLogin' AND a.detail = 'ok' AND a.pcu = pcus.code)`,
 ];
 
+// Migration v4 (2o, stock mode A/B): pcus.stock_mode + request_lines.used / adj / adj_reason / calc_from (spec 2o-2s §3.1). Same one-by-one rule.
+const V4 = [
+  `ALTER TABLE pcus ADD COLUMN stock_mode TEXT NOT NULL DEFAULT 'A'`,
+  `ALTER TABLE request_lines ADD COLUMN used INTEGER`,
+  `ALTER TABLE request_lines ADD COLUMN adj INTEGER`,
+  `ALTER TABLE request_lines ADD COLUMN adj_reason TEXT`,
+  `ALTER TABLE request_lines ADD COLUMN calc_from TEXT`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
   { v: 2, statements: V2, oneByOne: true, tolerate: /duplicate column/i },
   { v: 3, statements: V3, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 4, statements: V4, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
@@ -126,6 +136,15 @@ export async function ensureSchema(env) {
 export async function currentSchemaVersion(DB) {
   const row = await DB.prepare(`SELECT MAX(v) AS v FROM schema_version`).first();
   return Number((row && row.v) || 0);
+}
+
+// dev only (devRerunMigration, tests): forget migrations >= v and run them again on the existing tables (idempotency check).
+export async function rerunMigrationsFrom(env, v) {
+  const DB = getDb(env);
+  await DB.prepare(`DELETE FROM schema_version WHERE v >= ?`).bind(v).run();
+  resetCaches();
+  await ensureSchema(env);
+  return currentSchemaVersion(DB);
 }
 
 // dev only (devReset): drop everything, forget per-isolate caches

@@ -1,9 +1,11 @@
 // Fill wizard (phase 2 spec §4.2/§4.3): one step per form step (ordered by `order`, ≤ 10) -> summary page.
-// Columns คงเหลือ / OP / PP — คงเหลือ is optional unless config.stock_required === 1. Autosave via sync.js;
+// Columns คงเหลือ / OP / PP — คงเหลือ is optional unless config.stock_required === 1. Brief 2o: stock mode B adds
+// a ใช้ไป column + "± ปรับยอด" and calculates คงเหลือ <-> ใช้ไป from the previous round's คงเหลือ. Autosave via sync.js;
 // บันทึก and พิมพ์ on the summary page both SEND (saveLines{send:true}, see send.js).
 import { getOrderedSteps, getActiveItemRows } from "../data.js";
 import { call, getPcuToken } from "../api.js";
 import * as sync from "../sync.js";
+import * as store from "../store.js";
 import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
@@ -188,8 +190,21 @@ function renderBanners(app, month, stepLocked) {
     parts.push(`<div class="notice notice-trial" id="fill-trial-banner"><strong>ทดลองกรอก</strong> — ${esc(trialNote(rnd))}${rnd.deadline_date ? ` (${esc(deadlineText(rnd))})` : ""}</div>`);
   }
   parts.push(formVersionBanner(app, request));
+  const negRows = isEditable(app, month) ? negativeCalcRows(app, month) : [];
+  if (negRows.length) {
+    // 2o §3.4: a recalc (the received amount changed after this request was keyed) left คงเหลือ blank
+    parts.push(`<div class="notice notice-trial" id="fill-recalc-banner"><strong>ยอดได้รับเปลี่ยน</strong> มี ${negRows.length} รายการที่คงเหลือคำนวณติดลบ —
+      <a href="#" data-jump="${esc(negRows[0].stepCode)}" data-code="${esc(negRows[0].code)}">ไปที่รายการแรก</a>
+      ${negRows.length > 1 ? `<details class="recalc-list"><summary>ดูทุกรายการ</summary><ul class="jump-list">${negRows.map((r) => `<li><a href="#" data-jump="${esc(r.stepCode)}" data-code="${esc(r.code)}">${esc(r.name)} (${esc(r.code)})</a></li>`).join("")}</ul></details>` : ""}</div>`);
+  }
   parts.push(`<div class="fill-status" id="fill-status"></div>`);
   host.innerHTML = parts.join("");
+  host.querySelectorAll("[data-jump]").forEach((a) => {
+    a.addEventListener("click", (ev) => {
+      ev.preventDefault();
+      location.hash = `#/fill/${a.dataset.jump}?month=${month}&focus=${encodeURIComponent(a.dataset.code)}&field=${isModeB(app) ? "used" : "stock"}`;
+    });
+  });
   return host;
 }
 
@@ -268,6 +283,8 @@ function renderNav(app, month, stepCode, codes) {
   unsubStatus = sync.subscribe(pcuCode(app), month, (st) => {
     updateAutosaveStatus(st);
     refreshStatusChip(app, month);
+    // 2o: the server recalculated these rows (stock <-> used) differently from what is on screen -> repaint them
+    if (st.recalc) st.recalc.forEach((code) => repaintRow(app, month, code));
     if (st.state === "conflict" && wasEditable) {
       // The server refused an edit (round locked meanwhile): re-render read-only with the "รอบนี้ปิดรับแล้ว" banner.
       wasEditable = false;
@@ -317,6 +334,7 @@ function renderStepForm(app, month, step, editable) {
   const box = document.createElement("div");
   box.className = "step-form";
 
+  box.appendChild(buildStockModeSwitch(app, month, step));
   box.appendChild(buildItemSearch(app, month, step));
 
   if (!stockRequired(app) && editable) {
@@ -505,8 +523,200 @@ async function toggleHidden(app, code, hide) {
   }
 }
 
+// ---------------- 2o: stock mode B (ใช้ไป / ปรับยอด / calc_from) ----------------
+// คงเหลือ = ยกมา + ได้รับ + ปรับยอด − ใช้ไป. The server owns the formula and re-derives on save; the client uses the same
+// formula only to show the result straight away and then accepts the server's values (sync.js `recalc`).
+const ADJ_REASONS = [
+  ["received_extra", "ได้รับเพิ่ม"], ["borrow_return", "ยืม/คืน"], ["expired_damaged", "หมดอายุ/เสียหาย"],
+  ["recount", "นับใหม่"], ["other", "อื่น ๆ"],
+];
+
+function isModeB(app) {
+  return app.boot.pcu.stock_mode === "B";
+}
+
+// Baseline (ยกมา) = the previous round's คงเหลือ; null = none (no request / draft / stock not keyed) -> Q13.
+function baselineOf(app, month, code) {
+  const pl = monthData(app, month).prev_lines;
+  const prev = pl && pl[code];
+  return prev && prev.stock != null ? prev : null;
+}
+
+function availableOf(base, line) {
+  return (Number(base.stock) || 0) + (Number(base.received) || 0) + (Number(line.adj) || 0);
+}
+
+// The derived field of a line from its driver (`calc_from`): { stock } (driver used) or { used } (driver stock).
+// A negative result becomes null (Q14).
+function deriveFields(base, line) {
+  if (!base || !line.calc_from) return {};
+  const avail = availableOf(base, line);
+  if (line.calc_from === "used" && line.used != null) {
+    const v = avail - Number(line.used);
+    return { stock: v < 0 ? null : v };
+  }
+  if (line.calc_from === "stock" && line.stock != null) {
+    const v = avail - Number(line.stock);
+    return { used: v < 0 ? null : v };
+  }
+  return {};
+}
+
+// "ok" | "nobase" | "neg" (ใช้ไป > available: red, stock not computed) | "surplus" (stock > available: yellow + put-as-received)
+function calcStatus(base, line) {
+  if (!base) return "nobase";
+  if (line.calc_from === "used" && line.used != null && line.stock == null) return "neg";
+  if (line.calc_from === "stock" && line.stock != null && line.used == null) return "surplus";
+  return "ok";
+}
+
+// What one typed value changes on the line (field: stock | used | adj | adj_reason | op | pp). The last-typed of
+// used/stock is the driver (calc_from); mode A / no baseline = plain typing (calc_from:null, spec §3.5).
+function patchForEdit(modeB, base, line, field, value) {
+  const patch = { [field]: value };
+  if (field === "stock") {
+    if (!modeB || !base) { patch.calc_from = null; return patch; }
+    if (value == null) {
+      if (line.calc_from === "stock") { patch.calc_from = null; patch.used = null; } // driver cleared: its derived value goes too
+      return patch;
+    }
+    patch.calc_from = "stock";
+  } else if (field === "used") {
+    if (value == null) {
+      if (line.calc_from === "used") { patch.calc_from = null; patch.stock = null; }
+      return patch;
+    }
+    patch.calc_from = "used";
+  } else if (field === "adj") {
+    if (value == null) patch.adj_reason = null;
+  } else {
+    return patch; // op / pp / adj_reason: nothing to recompute
+  }
+  return Object.assign(patch, deriveFields(base, { ...line, ...patch }));
+}
+
+function calcHintText(base, line) {
+  const adj = Number(line.adj) || 0;
+  return `ยกมา ${formatInt(base.stock)} + ได้รับ ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${formatInt(availableOf(base, line))}`;
+}
+
+// Mode-B block under the item name: ยกมา hint, "± ปรับยอด" link + input, message slot (filled by refreshRowCalc).
+function calcBlockHtml(app, month, item, line, editable) {
+  if (!isModeB(app)) return "";
+  const base = baselineOf(app, month, item.code);
+  if (!base) return `<div class="ghost-line calc-nobase">ไม่มียอดยกมา — กรอกคงเหลือเอง</div>`;
+  const open = (Number(line.adj) || 0) !== 0 || !!line.adj_reason;
+  return `<div class="ghost-line calc-hint" data-calc-hint>${esc(calcHintText(base, line))}</div>
+    <div class="adj-wrap">
+      ${editable ? `<button type="button" class="btn btn-link adj-toggle" data-adj-toggle>± ปรับยอด</button>` : ""}
+      <span class="adj-box" data-adj-box ${open ? "" : "hidden"}>
+        <input class="num-input adj-input" data-field="adj" inputmode="text" autocomplete="off" maxlength="6" placeholder="± จำนวน" aria-label="ปรับยอด" value="${esc(valStr(line.adj))}" ${editable ? "" : "disabled"}>
+        <select class="adj-reason" data-field="adj_reason" aria-label="เหตุผลปรับยอด" ${editable ? "" : "disabled"}>
+          <option value="">เหตุผล…</option>${ADJ_REASONS.map(([v, l]) => `<option value="${v}"${line.adj_reason === v ? " selected" : ""}>${l}</option>`).join("")}
+        </select>
+      </span>
+    </div>
+    <div class="calc-msg" data-calc-msg></div>`;
+}
+
+// Repaints the mode-B state of one item row (table row + mobile card): synced input values, "คำนวณ" tags,
+// computed-field background, red / yellow states, the ยกมา hint and the Q14 message. Never touches the focused input.
+function refreshRowCalc(app, month, item) {
+  const modeB = isModeB(app);
+  const line = sync.getLine(pcuCode(app), month, item.code);
+  const base = baselineOf(app, month, item.code);
+  const st = modeB ? calcStatus(base, line) : "ok";
+  const stockComputed = modeB && !!base && line.calc_from === "used" && line.stock != null;
+  const usedComputed = modeB && !!base && line.calc_from === "stock" && line.used != null;
+  document.querySelectorAll(`[data-code="${item.code}"]`).forEach((root) => {
+    const setVal = (field, v) => {
+      const el = root.querySelector(`[data-field="${field}"]`);
+      if (el && document.activeElement !== el) el.value = field === "adj_reason" ? (v || "") : valStr(v);
+    };
+    setVal("stock", line.stock); setVal("used", line.used); setVal("adj", line.adj); setVal("adj_reason", line.adj_reason);
+    const stockEl = root.querySelector('input[data-field="stock"]');
+    const usedEl = root.querySelector('input[data-field="used"]');
+    if (stockEl) {
+      stockEl.classList.toggle("calc-field", stockComputed);
+      stockEl.classList.toggle("input-warn", st === "surplus");
+      if (line.stock != null) stockEl.classList.remove("input-error");
+    }
+    if (usedEl) {
+      usedEl.classList.toggle("calc-field", usedComputed);
+      usedEl.classList.toggle("input-error", st === "neg");
+    }
+    root.querySelectorAll("[data-calc-tag]").forEach((tag) => { tag.hidden = !(tag.dataset.calcTag === "stock" ? stockComputed : usedComputed); });
+    const hint = root.querySelector("[data-calc-hint]");
+    if (hint && base) hint.textContent = calcHintText(base, line);
+    const box = root.querySelector("[data-adj-box]");
+    if (box && ((Number(line.adj) || 0) !== 0 || line.adj_reason)) box.hidden = false; // never auto-closes under the user
+    const msg = root.querySelector("[data-calc-msg]");
+    if (msg) {
+      const editable = !!stockEl && !stockEl.disabled;
+      if (st === "neg") {
+        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatInt(line.used)} มากกว่ายอดที่มี ${formatInt(availableOf(base, line))} — ตรวจสอบยอดใช้ไป หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
+      } else if (st === "surplus") {
+        msg.innerHTML = `<div class="calc-warn">คงเหลือ ${formatInt(line.stock)} มากกว่ายอดที่มี ${formatInt(availableOf(base, line))} (บันทึกคงเหลือ ไม่คำนวณใช้ไป)
+          ${editable ? `<button type="button" class="btn btn-secondary btn-sm" data-put-extra>ใส่เป็นยอดรับเพิ่ม</button>` : ""}</div>`;
+      } else {
+        msg.innerHTML = "";
+      }
+    }
+  });
+  if (line.stock != null) sendUi.missing.delete(item.code);
+}
+
+function repaintRow(app, month, code) {
+  for (const step of getOrderedSteps(app.boot.form)) {
+    const item = getActiveItemRows(step).find((it) => it.code === code);
+    if (item) { refreshRowCalc(app, month, item); return; }
+  }
+}
+
+// Hidden-item-free list of rows with calc_from set, used keyed and stock blank (a recalc went negative) — spec §3.4 banner.
+function negativeCalcRows(app, month) {
+  const request = requestOf(app, month);
+  if (!request || !request.lines) return [];
+  const hidden = hiddenSet(app);
+  const out = [];
+  getOrderedSteps(app.boot.form).forEach((step) => {
+    getActiveItemRows(step).forEach((it) => {
+      const l = request.lines[it.code];
+      if (l && l.calc_from && l.used != null && l.stock == null && !hidden.has(it.code)) out.push({ code: it.code, name: it.name, stepCode: step.code });
+    });
+  });
+  return out;
+}
+
+// Top-of-page switch "คำนวณคงเหลือจากยอดใช้ไป" (= stock mode B), stored per PCU on the server (pcuSetStockMode).
+// Switching back to A only hides the column — values are kept.
+function buildStockModeSwitch(app, month, step) {
+  const wrap = document.createElement("div");
+  wrap.className = "stock-mode-switch";
+  wrap.innerHTML = `<label class="switch-label"><input type="checkbox" id="stock-mode-toggle" ${isModeB(app) ? "checked" : ""}>
+    <span><strong>คำนวณคงเหลือจากยอดใช้ไป</strong></span></label>
+    <span class="muted small">กรอก “ใช้ไป” แล้วระบบคำนวณคงเหลือจากยอดยกมาให้ (หรือกรอกคงเหลือแล้วระบบคำนวณใช้ไป) — ปิดไว้ = กรอกคงเหลือเองแบบเดิม</span>`;
+  const cb = wrap.querySelector("#stock-mode-toggle");
+  cb.addEventListener("change", async () => {
+    const want = cb.checked ? "B" : "A";
+    cb.disabled = true;
+    try {
+      await sync.flush(pcuCode(app), month);
+      const data = await call("pcuSetStockMode", { mode: want }, { token: getPcuToken() });
+      app.boot.pcu.stock_mode = data && data.stock_mode ? data.stock_mode : want;
+      if (!app.offline) store.setCachedBootstrap(pcuCode(app), app.boot);
+      renderFill(document.getElementById("app"), app, step.code, null);
+    } catch (err) {
+      cb.checked = !cb.checked;
+      cb.disabled = false;
+      toast(err && err.message ? err.message : "เปลี่ยนโหมดไม่สำเร็จ", "error");
+    }
+  });
+  return wrap;
+}
+
 // Q90 helper lines. Plan / used-this-FY are fy_current numbers, so they only show on rounds of fy_current
-// (never any previous-FY numbers); "รอบก่อน" comes from the previous round's submitted request.
+// (never any previous-FY numbers); "รอบก่อน" comes from the previous round's submitted request (2o: คงเหลือ + ได้รับ).
 function hintHtml(app, month, item) {
   const data = monthData(app, month);
   const lines = [];
@@ -516,9 +726,18 @@ function hintHtml(app, month, item) {
     const used = (data.used_fy && data.used_fy[item.code]) || 0;
     lines.push(`แผนปี ${fyShort(app.boot.config.fy_current)}: ${formatInt(planTotal)} · เบิกแล้วปีนี้: ${formatInt(used)}`);
   }
+  let html = lines.map((t) => `<div class="ghost-line">${esc(t)}</div>`).join("");
   const prev = data.prev_lines && data.prev_lines[item.code];
-  if (prev) lines.push(`รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}`);
-  return lines.map((t) => `<div class="ghost-line">${esc(t)}</div>`).join("");
+  if (prev) {
+    const opPp = `<span class="hint-opp"> · ขอ OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}</span>`;
+    if (prev.received === undefined) {
+      html += `<div class="ghost-line">รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}</div>`; // old server without 2o fields
+    } else {
+      const src = prev.received_src === "issued" ? "จ่ายจริง" : "ตามที่ขอ";
+      html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ไม่ได้กรอกคงเหลือ" : `คงเหลือ ${formatInt(prev.stock)}`} · ได้รับ ${formatInt(Number(prev.received) || 0)} (${src})${opPp}</div>`;
+    }
+  }
+  return html;
 }
 
 function valStr(v) {
@@ -529,11 +748,13 @@ function buildItemTable(app, month, step, editable) {
   const table = document.createElement("table");
   table.className = "item-table";
   const req = stockRequired(app);
+  const modeB = isModeB(app);
   table.innerHTML = `<thead><tr>
     <th class="col-seq">ลำดับ</th>
     <th class="col-name">รายการ</th>
     <th class="col-unit">หน่วย</th>
     <th class="col-price">ราคา/หน่วย</th>
+    ${modeB ? '<th class="col-num col-used">ใช้ไป</th>' : ""}
     <th class="col-num">คงเหลือ${req ? " *" : ""}</th>
     <th class="col-num">OP</th>
     <th class="col-num">PP</th>
@@ -547,7 +768,7 @@ function buildItemTable(app, month, step, editable) {
     if (row.type === "section") {
       const tr = document.createElement("tr");
       tr.className = "section-row";
-      tr.innerHTML = `<td colspan="10">${esc(row.title)}</td>`;
+      tr.innerHTML = `<td colspan="${modeB ? 11 : 10}">${esc(row.title)}</td>`;
       tbody.appendChild(tr);
       continue;
     }
@@ -558,8 +779,17 @@ function buildItemTable(app, month, step, editable) {
   return table;
 }
 
-function inputHtml(field, value, editable) {
-  return `<input class="num-input" data-field="${field}" inputmode="numeric" autocomplete="off" maxlength="5" value="${esc(valStr(value))}" ${editable ? "" : "disabled"}>`;
+function inputHtml(field, value, editable, title) {
+  return `<input class="num-input" data-field="${field}" inputmode="numeric" autocomplete="off" maxlength="5" value="${esc(valStr(value))}" ${editable ? "" : "disabled"}${title ? ` title="${esc(title)}"` : ""}>`;
+}
+
+const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
+const NO_BASE_TITLE = "ไม่มียอดยกมา — กรอกคงเหลือเอง";
+
+// ใช้ไป input (mode B): disabled when the row has no baseline (Q13).
+function usedInputHtml(app, month, item, line, editable) {
+  const base = baselineOf(app, month, item.code);
+  return inputHtml("used", line.used, editable && !!base, base ? "" : NO_BASE_TITLE);
 }
 
 function buildItemTr(app, month, item, editable) {
@@ -568,15 +798,18 @@ function buildItemTr(app, month, item, editable) {
   tr.dataset.code = item.code;
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
+  const modeB = isModeB(app);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
     <td class="col-name"><div class="item-name">${esc(item.name)}</div>
       ${hintHtml(app, month, item)}
+      ${calcBlockHtml(app, month, item, line, editable)}
       <div class="limit-msg" data-limit-for="${esc(item.code)}"></div></td>
     <td class="col-unit">${esc(item.unit || "")}</td>
     <td class="col-price">${formatMoney(item.price)}</td>
-    <td class="col-num">${inputHtml("stock", line.stock, editable)}</td>
+    ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
+    <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
     <td class="col-num">${inputHtml("op", line.op, editable)}</td>
     <td class="col-num">${inputHtml("pp", line.pp, editable)}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
@@ -610,6 +843,7 @@ function buildItemCard(app, month, item, editable) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const req = stockRequired(app);
+  const modeB = isModeB(app);
 
   card.innerHTML = `
     <div class="item-card-head">
@@ -619,8 +853,10 @@ function buildItemCard(app, month, item, editable) {
     </div>
     <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(item.price)}</div>
     ${hintHtml(app, month, item)}
-    <div class="item-card-inputs">
-      <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}</label>
+    ${calcBlockHtml(app, month, item, line, editable)}
+    <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
+      ${modeB ? `<label>ใช้ไป${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</label>` : ""}
+      <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
       <label>OP${inputHtml("op", line.op, editable)}</label>
       <label>PP${inputHtml("pp", line.pp, editable)}</label>
     </div>
@@ -648,7 +884,7 @@ function refreshRowLimit(app, month, item) {
     : null;
   const unlocked = !!st && st.unlockReason !== null;
   document.querySelectorAll(`[data-code="${item.code}"] input.num-input`).forEach((inp) => {
-    if (inp.dataset.field === "stock") return;
+    if (inp.dataset.field !== "op" && inp.dataset.field !== "pp") return; // stock/used/adj have their own states (refreshRowCalc)
     inp.classList.toggle("input-error", !!st && !unlocked);
     inp.classList.toggle("input-warn", unlocked);
   });
@@ -667,14 +903,28 @@ function wireStepEvents(app, month, step, editable) {
 
   container.querySelectorAll(".num-input").forEach((input) => {
     input.addEventListener("input", () => {
-      const digits = input.value.replace(/[^0-9]/g, "").slice(0, 5);
-      if (digits !== input.value) input.value = digits;
       const tr = input.closest("[data-code]");
       const code = tr.dataset.code;
       const field = input.dataset.field;
       const item = items.find((it) => it.code === code);
 
-      sync.setLine(pcuCode(app), month, code, field, digits === "" ? null : parseInt(digits, 10));
+      let value;
+      if (field === "adj") {
+        // ± integer: optional leading "-", up to 5 digits
+        let s = input.value.replace(/[^0-9-]/g, "");
+        const neg = s.startsWith("-");
+        s = (neg ? "-" : "") + s.replace(/-/g, "").slice(0, 5);
+        if (s !== input.value) input.value = s;
+        if (s === "-") return; // sign typed, digits to come
+        value = s === "" ? null : parseInt(s, 10);
+      } else {
+        const digits = input.value.replace(/[^0-9]/g, "").slice(0, 5);
+        if (digits !== input.value) input.value = digits;
+        value = digits === "" ? null : parseInt(digits, 10);
+      }
+
+      const cur = sync.getLine(pcuCode(app), month, code);
+      sync.setLineFields(pcuCode(app), month, code, patchForEdit(isModeB(app), baselineOf(app, month, code), cur, field, value));
       if (field === "stock") {
         input.classList.remove("input-error");
         sendUi.missing.delete(code);
@@ -685,6 +935,7 @@ function wireStepEvents(app, month, step, editable) {
       document.querySelectorAll(`[data-code="${code}"] .row-money`).forEach((el) => { el.textContent = formatMoney(total * item.price); });
       refreshStepTotals(app, month, step);
       refreshRowLimit(app, month, item);
+      refreshRowCalc(app, month, item);
       refreshStatusChip(app, month);
     });
 
@@ -696,6 +947,49 @@ function wireStepEvents(app, month, step, editable) {
       moveToNextInput(app, input, step);
     });
   });
+
+  // 2o: ± ปรับยอด reason dropdown, the "± ปรับยอด" link, and the Q14 "ใส่เป็นยอดรับเพิ่ม" button
+  container.querySelectorAll("select.adj-reason").forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const code = sel.closest("[data-code]").dataset.code;
+      const item = items.find((it) => it.code === code);
+      const cur = sync.getLine(pcuCode(app), month, code);
+      sync.setLineFields(pcuCode(app), month, code, patchForEdit(true, baselineOf(app, month, code), cur, "adj_reason", sel.value || null));
+      refreshRowCalc(app, month, item);
+      sync.flush(pcuCode(app), month);
+    });
+  });
+  const formEl = container.querySelector(".step-form");
+  if (formEl) {
+    formEl.addEventListener("click", (ev) => {
+      const toggle = ev.target.closest("[data-adj-toggle]");
+      if (toggle) {
+        const box = toggle.closest("[data-code]").querySelector("[data-adj-box]");
+        if (box) {
+          box.hidden = !box.hidden;
+          const inp = box.querySelector("input");
+          if (!box.hidden && inp) inp.focus();
+        }
+        return;
+      }
+      const put = ev.target.closest("[data-put-extra]");
+      if (put) {
+        const code = put.closest("[data-code]").dataset.code;
+        const item = items.find((it) => it.code === code);
+        const line = sync.getLine(pcuCode(app), month, code);
+        const base = baselineOf(app, month, code);
+        if (!base || line.stock == null) return;
+        const diff = Number(line.stock) - availableOf(base, line);
+        if (diff <= 0) return;
+        const adj = Math.min(99999, (Number(line.adj) || 0) + diff);
+        const patch = { adj, adj_reason: "received_extra", calc_from: "stock" };
+        Object.assign(patch, deriveFields(base, { ...line, ...patch }));
+        sync.setLineFields(pcuCode(app), month, code, patch);
+        refreshRowCalc(app, month, item);
+        sync.flush(pcuCode(app), month);
+      }
+    });
+  }
 
   container.querySelectorAll("[data-hide]").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -710,31 +1004,30 @@ function wireStepEvents(app, month, step, editable) {
     });
   });
 
-  items.forEach((item) => refreshRowLimit(app, month, item));
+  items.forEach((item) => { refreshRowLimit(app, month, item); refreshRowCalc(app, month, item); });
   refreshStatusChip(app, month);
 }
 
 function moveToNextInput(app, currentInput, step) {
-  const order = ["stock", "op", "pp"];
+  const order = isModeB(app) ? ["used", "stock", "op", "pp"] : ["stock", "op", "pp"];
   const items = activeStepItems(app, step);
   const tr = currentInput.closest("[data-code]");
   const code = tr.dataset.code;
-  const field = currentInput.dataset.field;
-  const itemIdx = items.findIndex((it) => it.code === code);
-  const fieldIdx = order.indexOf(field);
+  let itemIdx = items.findIndex((it) => it.code === code);
+  let fieldIdx = order.indexOf(currentInput.dataset.field);
+  if (itemIdx < 0 || fieldIdx < 0) return;
 
-  let nextSelector = null;
-  if (fieldIdx < order.length - 1) {
-    nextSelector = `[data-code="${code}"] input[data-field="${order[fieldIdx + 1]}"]`;
-  } else if (itemIdx < items.length - 1) {
-    nextSelector = `[data-code="${items[itemIdx + 1].code}"] input[data-field="stock"]`;
-  } else {
-    return;
-  }
   const isCard = !!currentInput.closest(".item-card");
   const scope = document.querySelector(isCard ? ".item-cards" : ".item-table");
-  const next = (scope && scope.querySelector(nextSelector)) || document.querySelector(nextSelector);
-  if (next) next.focus();
+  // Next enabled input in reading order — a disabled one (e.g. ใช้ไป of a row without baseline) is skipped.
+  for (let guard = 0; guard < order.length * items.length; guard++) {
+    fieldIdx++;
+    if (fieldIdx >= order.length) { fieldIdx = 0; itemIdx++; }
+    if (itemIdx >= items.length) return;
+    const sel = `[data-code="${items[itemIdx].code}"] input[data-field="${order[fieldIdx]}"]`;
+    const next = (scope && scope.querySelector(sel)) || document.querySelector(sel);
+    if (next && !next.disabled) { next.focus(); return; }
+  }
 }
 
 // After a blocked send for missing คงเหลือ (stock_required=1): red fields + a note on the step.
