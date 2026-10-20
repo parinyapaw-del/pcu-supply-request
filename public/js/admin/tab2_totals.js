@@ -75,7 +75,7 @@ export function renderTab2(container, ctx) {
       const entries = data.entries.filter((e) => !trial.has(e.pcu));
       const requests = data.requests.filter((r) => !trial.has(r.pcu));
       entries.forEach((e) => { if (e.form) addForm(cat, e.form); });
-      ts.data = { ...data, entries, requests, cat, agg: aggregateRequests(cat, entries) };
+      ts.data = { ...data, entries, requests, cat, agg: aggregateRequests(cat, entries, { round: ts.month, prices: state.bootstrap.prices }) };
       draw();
     } catch (err) {
       if (my !== ts.seq) return;

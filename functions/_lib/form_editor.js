@@ -3,9 +3,10 @@
 // Pages and items are never deleted — only closed (`active:false`) — so every request keeps resolving its codes.
 import { err, isStr, sha256Hex, stableStringify } from "./http.js";
 import {
-  DEFAULT_UNIT_BY_STEP, auditStmt, budgetConfig, formPublic, getConfigAll, loadForm, publicConfig,
+  DEFAULT_UNIT_BY_STEP, auditStmt, batchChunked, budgetConfig, formPublic, getConfigAll, insertStatements, latestForm, loadForm, publicConfig,
 } from "./db.js";
-import { currentRound, fyExcelMonths, monthFy, nowIso } from "./time.js";
+import { currentRound, fyExcelMonths, fyMonths, isMonth, monthFy, nowIso } from "./time.js";
+import { backdateStmts, loadPriceHistory, priceEffect } from "./price.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const round2 = (x) => Math.round(x * 100) / 100;
@@ -144,8 +145,8 @@ export function diffSteps(baseSteps, newSteps) {
 }
 
 // audit.detail is capped at 2000 chars by auditStmt: keep it valid JSON by falling back to counts for a huge diff
-function auditDetail(id, note, diff) {
-  let s = JSON.stringify({ id, note, diff });
+function auditDetail(id, note, diff, priceFrom) {
+  let s = JSON.stringify({ id, note, diff, price_from: priceFrom });
   if (s.length <= 1900) return s;
   const counts = Object.fromEntries(Object.entries(diff).map(([k, v]) => [k, v.length]));
   s = JSON.stringify({ id, note: note.slice(0, 200), diff_counts: counts, truncated: true });
@@ -162,7 +163,50 @@ export async function adminFormGet(ctx, p) {
   if (!Number.isInteger(id) || id < 1) throw err("BAD_REQUEST", "id ไม่ถูกต้อง");
   const form = await loadForm(ctx.DB, id);
   if (!form) throw err("NOT_FOUND", "ไม่พบฟอร์ม version นี้");
-  return { form: adminForm(form) };
+  return { form: adminForm(form), price_history: await priceHistoryList(ctx.DB, await fyCurrentOf(ctx.DB)) };
+}
+
+// ---- 2p: price effective from a round ---------------------------------------------------------------------------------------------
+const fyCurrentOf = async (DB) => publicConfig(await getConfigAll(DB), monthFy(currentRound())).fy_current;
+
+// adminFormGet / adminFormSave `price_history` (fy_current): [{code, from_round, price, set_at, set_by, note}] by code, from_round
+async function priceHistoryList(DB, fy) {
+  const { results } = await DB.prepare(
+    `SELECT item_code AS code, from_round, price, set_at, set_by, note FROM price_history WHERE fy = ? ORDER BY item_code, from_round`
+  ).bind(fy).all();
+  return results.map((r) => ({ code: r.code, from_round: r.from_round, price: r.price, set_at: r.set_at ?? null, set_by: r.set_by ?? null, note: r.note ?? null }));
+}
+
+// from_round must be a round of fy_current (≥ its first round; future rounds of the year allowed)
+function assertFromRound(v, fyCur, label) {
+  if (!isMonth(v) || !fyMonths(fyCur).includes(v)) throw err("BAD_REQUEST", `${label}: รอบที่เริ่มใช้ราคาต้องเป็นรอบในปีงบ ${fyCur} (${fyMonths(fyCur)[0]} ถึง ${fyMonths(fyCur)[11]})`);
+  return v;
+}
+// default "เริ่มใช้ตั้งแต่รอบ" = currentRound, clamped into the fy's 12 rounds
+function defaultFrom(fy) {
+  const ms = fyMonths(fy), cur = currentRound();
+  return cur < ms[0] ? ms[0] : cur > ms[11] ? ms[11] : cur;
+}
+
+// adminPricePreview{changes:[{code, price, from_round}]} — what adminFormSave{price_from} will do to SENT requests (no write).
+// → {requests, months:[first,last]|[], delta_baht, per_code:[{code, n_lines, delta, old, price, from_round, to_round, requests, backdate}]}
+export async function adminPricePreview(ctx, p) {
+  const { DB } = ctx;
+  const fyCur = await fyCurrentOf(DB);
+  const form = await latestForm(DB, fyCur);
+  if (!form) throw err("NOT_FOUND", "ยังไม่มีแบบฟอร์มในระบบ");
+  if (!Array.isArray(p.changes) || !p.changes.length) throw err("BAD_REQUEST", "ต้องมี changes อย่างน้อย 1 รายการ");
+  if (p.changes.length > 400) throw err("BAD_REQUEST", "changes มากเกินไป");
+  const seen = new Set();
+  const changes = p.changes.map((c) => {
+    if (!isObj(c) || !isStr(c.code) || !form.index.has(c.code)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + String(c && c.code).slice(0, 20));
+    if (seen.has(c.code)) throw err("BAD_REQUEST", "รหัสรายการซ้ำ: " + c.code);
+    seen.add(c.code);
+    if (typeof c.price !== "number" || !Number.isFinite(c.price) || c.price < 0 || c.price > 1e9) throw err("BAD_REQUEST", `รายการ ${c.code}: ราคาต้องเป็นตัวเลข ≥ 0`);
+    return { code: c.code, price: round2(c.price), from_round: assertFromRound(c.from_round, fyCur, `รายการ ${c.code}`) };
+  });
+  const hist = await loadPriceHistory(DB, fyCur);
+  return priceEffect(DB, fyCur, hist, form, changes, currentRound());
 }
 
 export async function adminFormSave(ctx, p) {
@@ -177,12 +221,23 @@ export async function adminFormSave(ctx, p) {
   const latestRow = await DB.prepare(`SELECT id FROM form_versions WHERE fy = ? ORDER BY id DESC LIMIT 1`).bind(base.fy).first();
   if (!latestRow || latestRow.id !== base.id) throw err("CONFLICT", "มีการบันทึกฟอร์ม version ใหม่ไปแล้ว — โหลดใหม่ก่อนแก้");
 
+  // 2p: price_from {code: "YYYY-MM"} — only for a form of fy_current; codes must exist in the new form; validated before anything is written
+  const fyCur = await fyCurrentOf(DB);
+  const priceFrom = {};
+  if (p.price_from !== undefined && p.price_from !== null) {
+    if (!isObj(p.price_from)) throw err("BAD_REQUEST", "price_from ต้องเป็น {รหัสรายการ: รอบ}");
+    const keys = Object.keys(p.price_from);
+    if (keys.length && base.fy !== fyCur) throw err("BAD_REQUEST", `กำหนดรอบที่เริ่มใช้ราคาได้เฉพาะฟอร์มปีงบปัจจุบัน (${fyCur})`);
+    for (const code of keys) priceFrom[code] = assertFromRound(p.price_from[code], fyCur, `รายการ ${code}`);
+  }
+
   const newSteps = canonSteps(validateInput(p.form));
   const baseSteps = canonSteps(base.steps);
   const bi = indexOf(baseSteps), ni = indexOf(newSteps);
   const ns = new Set(newSteps.map((s) => s.code));
   for (const s of baseSteps) if (!ns.has(s.code)) throw err("BAD_REQUEST", `ลบหน้าไม่ได้ ให้ปิดหน้าแทน: ${s.code}`);
   for (const code of bi.keys()) if (!ni.has(code)) throw err("BAD_REQUEST", `ลบรายการไม่ได้ ให้ปิดรายการแทน: ${code}`);
+  for (const code of Object.keys(priceFrom)) if (!ni.has(code)) throw err("BAD_REQUEST", "price_from: ไม่พบรหัสรายการ " + code);
 
   // "same" = identical structure (the note is not part of the comparison)
   const [hNew, hBase] = await Promise.all([
@@ -190,6 +245,15 @@ export async function adminFormSave(ctx, p) {
     sha256Hex(stableStringify({ fy: base.fy, steps: baseSteps })),
   ]);
   if (hNew === hBase) return { saved: false, same: true, form: adminForm(base), versions: await versionsList(DB) };
+
+  // 2p: every changed price gets a price_history row from `from_round` (price_from[code], default currentRound; a form of another fy → its first
+  // round). A from_round ≤ currentRound back-dates (sent requests of the open round included): price_snapshot of the sent lines in [from_round, next from_round) is rewritten (never
+  // price_print) — the effect is computed BEFORE the write with the same function adminPricePreview uses.
+  const diff = diffSteps(baseSteps, newSteps);
+  const ownFy = base.fy === fyCur;
+  const changes = diff.price_changed.map((c) => ({ code: c.code, price: c.new, from_round: ownFy ? priceFrom[c.code] || defaultFrom(base.fy) : fyMonths(base.fy)[0] }));
+  const hist = await loadPriceHistory(DB, base.fy);
+  const effect = changes.length ? await priceEffect(DB, base.fy, hist, base, changes, ownFy ? currentRound() : "") : null;
 
   // same hashing as the importer (importer.js): sha256(stableStringify({fy, note, steps})) — so a seed exported from this version re-imports as "same"
   const data = { fy: base.fy, note: note || null, steps: newSteps };
@@ -202,10 +266,36 @@ export async function adminFormSave(ctx, p) {
   ).bind(base.fy, ts, who.email, note || null, JSON.stringify(data), hash, base.fy, base.id).run();
   if (!res.meta || !res.meta.changes) throw err("CONFLICT", "มีการบันทึกฟอร์ม version ใหม่ไปแล้ว — โหลดใหม่ก่อนแก้");
   const newId = res.meta.last_row_id;
-  const diff = diffSteps(baseSteps, newSteps);
-  await DB.batch([auditStmt(DB, who.email, who.role, "form_save", "", "", auditDetail(newId, note, diff))]);
+  const stmts = [];
+  if (changes.length || diff.items_added.length) {
+    const HCOLS = ["fy", "item_code", "from_round", "price", "set_by", "set_at", "note"];
+    const first = fyMonths(base.fy)[0], hnote = `form v${newId}`;
+    // base rows (INSERT OR IGNORE): a changed item keeps its old price from the fy's first round; an added item gets its price from there
+    const baseRows = [
+      ...diff.price_changed.map((c) => [base.fy, c.code, first, c.old, who.email, ts, hnote]),
+      ...diff.items_added.map((code) => [base.fy, code, first, ni.get(code).item.price, who.email, ts, hnote]),
+    ];
+    stmts.push(...insertStatements(DB, "price_history", HCOLS, baseRows, { prefix: "INSERT OR IGNORE INTO" }));
+    stmts.push(...insertStatements(DB, "price_history", HCOLS, changes.map((c) => [base.fy, c.code, c.from_round, c.price, who.email, ts, hnote]), {
+      suffix: "ON CONFLICT(fy,item_code,from_round) DO UPDATE SET price=excluded.price, set_by=excluded.set_by, set_at=excluded.set_at, note=excluded.note",
+    }));
+  }
+  const backdated = effect ? effect.per_code.filter((x) => x.backdate) : [];
+  stmts.push(...backdateStmts(DB, backdated));
+  const priceFromUsed = Object.fromEntries(changes.map((c) => [c.code, c.from_round]));
+  stmts.push(auditStmt(DB, who.email, who.role, "form_save", "", "", auditDetail(newId, note, diff, changes.length ? priceFromUsed : undefined)));
+  for (const x of backdated) {
+    stmts.push(auditStmt(DB, who.email, who.role, "price_backdate", "", x.from_round, JSON.stringify({
+      code: x.code, old: x.old, new: x.price, from_round: x.from_round, to_round: x.to_round, requests: x.requests, lines: x.n_lines, delta: x.delta, form_version: newId,
+    })));
+  }
+  await batchChunked(DB, stmts);
   const form = await loadForm(DB, newId);
-  return { saved: true, form: adminForm(form), versions: await versionsList(DB), diff };
+  return {
+    saved: true, form: adminForm(form), versions: await versionsList(DB), diff,
+    price_backdate: backdated.map((x) => ({ code: x.code, old: x.old, new: x.price, from_round: x.from_round, to_round: x.to_round, requests: x.requests, lines: x.n_lines, delta: x.delta })),
+    price_history: await priceHistoryList(DB, fyCur),
+  };
 }
 
 // Current DB state in the `pcu-supply-import/1` shape (seed/FORMAT.md) so the seed JSON can be regenerated from the live system.

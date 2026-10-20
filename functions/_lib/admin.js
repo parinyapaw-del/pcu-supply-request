@@ -15,6 +15,7 @@ import {
   LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, roundInfo,
 } from "./views.js";
 import { runBackup } from "./backup.js";
+import { priceFor, priceHistories, roundPriceOverrides } from "./price.js";
 import { PDF_RULE, pdfDownloadUrl, prunePdfFiles } from "./pdf.js";
 import { R2_CAP_KEYS, r2Caps, readUsage } from "./usage.js";
 
@@ -193,6 +194,8 @@ export async function adminBootstrap(ctx) {
     months: reqMonths.results.map((r) => r.month),
     rounds,
   };
+  // 2p (admin + dispenser): round prices (price_history) that differ from the form — every listed round + the 12 rounds of fy_current
+  out.prices = await roundPriceOverrides(priceHistories(DB), form, [...new Set([...months12, ...monthSet])].sort(), monthFy);
   if (!isAdmin) return out;
 
   const [planRes, statRes, limRes, unlockRes, hidRes, prevFyRes, usersEff] = await Promise.all([
@@ -286,10 +289,11 @@ export async function adminRequests(ctx, p) {
   for (const l of lineRes.results) { if (!byReq.has(l.request_id)) byReq.set(l.request_id, []); byReq.get(l.request_id).push(l); }
 
   const formFor = async (r) => (r.form_version_id ? loadForm(DB, r.form_version_id) : formForFy(DB, monthFy(r.month), cfg.fy_current));
+  const H = priceHistories(DB); // 2p: fallback price = the round's price (priceFor), not the form's
   const requests = [];
   for (const r of reqRes.results) {
     const form = await formFor(r);
-    const prices = priceMap(form);
+    const hist = await H(monthFy(r.month));
     let activeN = 0;
     if (form) for (const [, { item }] of form.index) if (item.active !== false) activeN++;
     let items = 0, filled = 0, qop = 0, qpp = 0, baht = 0;
@@ -299,7 +303,7 @@ export async function adminRequests(ctx, p) {
       const total = (l.op || 0) + (l.pp || 0);
       if (total > 0) {
         items++; qop += l.op || 0; qpp += l.pp || 0;
-        baht += total * (l.price_snapshot ?? prices[l.item_code] ?? 0);
+        baht += total * (l.price_snapshot ?? priceFor(hist, form, l.item_code, r.month) ?? 0);
       }
     }
     const obj = requestObj(r, null, true);

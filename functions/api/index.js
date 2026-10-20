@@ -6,7 +6,7 @@ import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
 import { adminImportApply, adminImportPreview } from "../_lib/import_fy.js";
-import { adminExportSeed, adminFormGet, adminFormSave } from "../_lib/form_editor.js";
+import { adminExportSeed, adminFormGet, adminFormSave, adminPricePreview } from "../_lib/form_editor.js";
 import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
@@ -68,6 +68,7 @@ const ADMIN = {
   adminExportSeed,
   adminFormGet,
   adminFormSave,
+  adminPricePreview, // 2p
   adminClearTrial: admin.adminClearTrial,
   adminBackupNow: admin.adminBackupNow,
   adminAuditLog: admin.adminAuditLog,
@@ -92,6 +93,8 @@ async function devAction(action, ctx, p) {
   if (action === "devRerunMigration") { // 2o: re-apply migrations >= v on the live tables (idempotency test)
     const v = Number(p.v);
     if (!Number.isInteger(v) || v < 2) throw err("BAD_REQUEST", "v ต้องเป็นจำนวนเต็ม ≥ 2");
+    // 2p: clear_price_history:true empties price_history first, so the v5 backfill (latest form of each fy) can be checked
+    if (p.clear_price_history === true) await ctx.DB.prepare(`DELETE FROM price_history`).run();
     return { schema_version: await rerunMigrationsFrom(ctx.env, v) };
   }
   if (action === "devPutBackup") { // seed a fake old backup to test pruning

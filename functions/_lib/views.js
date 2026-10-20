@@ -7,7 +7,7 @@ import { baselineFor } from "./stock.js";
 export const REQ_COLS =
   "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at";
 export const LINE_COLS =
-  "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from";
+  "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from,price_print";
 
 export const requestId = (pcu, month) => `${pcu}_${month}`;
 
@@ -32,6 +32,7 @@ export function requestObj(row, lines, admin = false) {
       m[l.item_code] = admin
         ? {
             stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, price_snapshot: l.price_snapshot ?? null,
+            price_print: l.price_print ?? null, // 2p: the price printed on the sheet (frozen at send; a back-date moves only price_snapshot)
             issued_total: l.issued_total ?? null, issued_op: l.issued_op ?? null, issued_pp: l.issued_pp ?? null,
             issue_reason: l.issue_reason ?? null, issue_note: l.issue_note ?? null, issued_at: l.issued_at ?? null, issued_by: l.issued_by ?? null,
           }

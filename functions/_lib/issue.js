@@ -9,6 +9,7 @@ import {
   formOfRequest, getLines, getRequestRow, issueInfoFrom, neededUnits, requestObj, requestedQty, unitOfCode,
 } from "./views.js";
 import { recalcAfterIssue } from "./stock.js";
+import { loadPriceHistory, priceFor } from "./price.js";
 
 const REASONS = ["out_of_stock", "other"];
 const MAX_LINES = 400;
@@ -239,8 +240,9 @@ export async function adminItemIssue(ctx, p) {
     });
   }
   const it = ent.item;
+  const price = priceFor(await loadPriceHistory(DB, monthFy(p.month)), latest, p.item_code, p.month) ?? 0; // 2p: the round's price
   return {
-    item: { code: it.code, name: it.name, unit: it.unit, price: Number(it.price) || 0, dispense_unit: ent.step.dispense_unit, step: ent.step.code, step_title: ent.step.title || "" },
+    item: { code: it.code, name: it.name, unit: it.unit, price, dispense_unit: ent.step.dispense_unit, step: ent.step.code, step_title: ent.step.title || "" },
     rows: out, form_version_id: latest.id,
   };
 }

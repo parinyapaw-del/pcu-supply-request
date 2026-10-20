@@ -61,13 +61,13 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `pcuLogin` (public) | `pcu, pin` | `{token, exp, pcu:{code,name,print_name,group}, bootstrap:<pcuBootstrap>}` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` · `NOT_FOUND` |
 | `pcuChangePin` (2k) | `old_pin, new_pin` (strings, 5 digits each) | `{token, exp}` — new PCU token (new `pin_version`) for this device; the client must replace its stored token. Success = new salt, `pin_version++`, clears fail/lock, `pin_custom=1`, audit `pcuChangePin` "ok" (actor = PCU code, role `pcu`) · `BAD_REQUEST` "กรอก PIN เดิมและ PIN ใหม่ให้ครบ 5 หลัก" (either not `^[0-9]{5}$` / not a string) · `BAD_REQUEST` "PIN ใหม่ต้องต่างจาก PIN เดิม" (`new_pin === old_pin`, before any DB access) · `BAD_PIN{remaining}` "PIN เดิมไม่ถูกต้อง" · `PIN_LOCKED{until}` — wrong old PIN shares `pcuLogin`'s counter/lock (`pin_fail`, `pin_locked_until`; 5 failures → 5-min lock; audit `bad_pin fail=<n>` / `locked`) |
 | `pcuBootstrap` | – | see §4.1 |
-| `pcuGetMonth` | `month` (`> currentRound` → `BAD_REQUEST` "เดือนนี้ยังไม่ถึง") | one `byMonth` entry (§4.1) + `round` + `unlocks` — for "older months" · + `form` (the request's bound version, PCU-stripped) **only when** it differs from the latest of `fy_current` (2d) |
+| `pcuGetMonth` | `month` (`> currentRound` → `BAD_REQUEST` "เดือนนี้ยังไม่ถึง") | one `byMonth` entry (§4.1) + `round` + `unlocks` — for "older months" · + `form` (the request's bound version, PCU-stripped) **only when** it differs from the latest of `fy_current` (2d) · + `prices:{<month>:{code:price}}` (2p, same rule as `pcuBootstrap.prices`) |
 | `saveLines` | `month, lines:{code:{stock,op,pp,used?,adj?,adj_reason?,calc_from?,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...], recalc:{code:{stock,used}} }` (2o `recalc` below) |
 | `pcuSetStockMode` (2o) | `mode:'A'\|'B'` | `{stock_mode}` — stored in `pcus.stock_mode` (A = กรอกคงเหลือเอง, B = คำนวณคงเหลือจากยอดใช้ไป); switching never touches line values · other mode → `BAD_REQUEST` · audit `pcuSetStockMode` (detail = mode) |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
 | `requestPdf` | `month, doc_date?, supply_month?` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}`; 2h print options §6b |
-| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code], doc_date, supply_month}` for `print.html` |
+| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code], doc_date, supply_month}` for `print.html` (2p: `form` item prices = the printed prices, §6b) |
 | `issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue` | – | staff actions (admin or dispenser), not PCU — §5.3 |
 
 `saveLines` rules
@@ -85,6 +85,9 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   `limit_unlocks` row for (pcu,item,month)) → `OVER_LIMIT{items}`.
   Lines saved earlier in the same call stay saved (it is autosave + submit). `warn` mode: submit succeeds and the same list is returned as `over_limit`.
   `off`: `over_limit:[]`.
+  2p: on send every line of the request gets `price_snapshot` **and** `price_print` = `priceFor(price_history of monthFy(month), code, month)`
+  (fallback: price in the latest form of the round's fy, else the bound version) — the price of **that round**, not the form's latest price, so re-sending
+  an old round uses that round's price.
 - **2o stock calculation** (server owns the formula — `functions/_lib/stock.js`). Extra per-line keys, all optional: `used` (int 0–99999 | null) · `adj`
   (int −99999…99999 | null) · `adj_reason` (`received_extra|borrow_return|expired_damaged|recount|other` | null — null accepted with a non-zero adj) ·
   `calc_from` (`'used'|'stock'|null`). A key **not sent keeps the stored value** (old clients that only send `stock,op,pp` lose nothing); `stock/op/pp`
@@ -128,7 +131,10 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
                                      // (issue_status) and issued_total not null, else op+pp; {} if no request / draft. The trial round is an ordinary baseline.
       issue: null | IssueInfo        // 2c; null until >= 1 unit is marked done (PCU view, see below)
   } },
-  issue_notices: [ {month, complete, incomplete} ]   // status 'issued' requests with issued_seen_at null (notice bar) — cleared by pcuAck
+  issue_notices: [ {month, complete, incomplete} ],  // status 'issued' requests with issued_seen_at null (notice bar) — cleared by pcuAck
+  prices: { "2026-12": { code: price } }   // 2p: key = each shown round ([currentRound, prevRound]); value = only the codes whose round price (priceFor,
+                                           // price_history of the round's fy) differs from the price in `form` or in the round's bound `forms[...]` ({} when none).
+                                           // Price of item X in round R on the client = prices[R][X] ?? form price.
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
@@ -138,6 +144,9 @@ IssueInfo = { units_total, units_done, done:bool, complete, incomplete, issued_s
               units: { "พัสดุ"|"จ่ายกลาง"|"LAB": {needed:bool, done:bool, done_at|null, done_by|null, lines:n, issued_lines:n} } }
 ```
 PCU-side lines never include price/issued fields (Q78).
+**2p price of a round** (`functions/_lib/price.js`): `priceFor(fy, code, R)` = the `price_history` row of `(fy, code)` with the newest `from_round ≤ R`
+(`fy = monthFy(R)`), else the item's price in the form (fallback). The form's price is the "latest price" shown in the editor; every computation (saveLines send,
+`adminRequests.progress.baht`, export, `adminItemIssue.item.price`, bootstrap `prices`, the printed sheet) uses `priceFor`. Plans / `plan_totals` keep the form price.
 Form fallback (2j `formForFy(DB, fy, fyCurrent)`): when nothing is bound, a round resolves against the latest version of its own fy, else the latest
 version of `fy_current`, else the newest version of any fy (so the trial round 2026-10 = FY2569, which has no form, uses the FY2570 form). Used by
 `saveLines`, `adminRequests`, `adminGetRequest`, the issue actions, `printData` and the export.
@@ -164,13 +173,13 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminRequestPdf` (admin or dispenser) | `pcu, month, doc_date?, supply_month?` | §6b — same result as `requestPdf` for that PCU's request |
 | `adminLoginBackup` | `password` | `{token, exp, role:"admin"}` · `BAD_PASSWORD{remaining}` · `LOCKED{until}` · `NOT_FOUND` if none set |
 | `adminBootstrap` | – | §5.1 |
-| `adminRequests` | `month?` (omitted = `[currentRound, prevRound]`) | `{requests:[RequestObj without lines + pcu_name + progress + issue], rounds:[RoundInfo], server_time, current_month (calMonth), current_round}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` · `issue` = IssueInfo (§4.1) or `null` when the request has no requested line (2c) |
-| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot & issued_* per line)|null, issue: IssueInfo|null, pcu:{...}, hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}}` (form = version bound to the request, else `formForFy` of the round's fy, §4.1). A **dispenser** only gets the lines of items on pages of its own `units` (`issue` is still computed over all lines/units). `issued_*` per line = `issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by` (all `null` until issued). |
+| `adminRequests` | `month?` (omitted = `[currentRound, prevRound]`) | `{requests:[RequestObj without lines + pcu_name + progress + issue], rounds:[RoundInfo], server_time, current_month (calMonth), current_round}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` (baht = Σ qty × (`price_snapshot` ?? priceFor(round)), 2p) · `issue` = IssueInfo (§4.1) or `null` when the request has no requested line (2c) |
+| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot, price_print (2p) & issued_* per line)|null, issue: IssueInfo|null, pcu:{...}, hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}}` (form = version bound to the request, else `formForFy` of the round's fy, §4.1). A **dispenser** only gets the lines of items on pages of its own `units` (`issue` is still computed over all lines/units). `issued_*` per line = `issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by` (all `null` until issued). |
 | `issueLines` (staff) | `pcu, month, lines:{code:{issued_total:int\|null, reason?:"out_of_stock"\|"other"\|null, note?:string\|null}}` | `{request: RequestObj(admin view), issue: IssueInfo}` — §5.3 |
 | `issueAll` (staff) | `pcu, month, unit?` | same — every requested line of the unit(s) = requested qty — §5.3 |
 | `issueDone` (staff) | `pcu, month, unit, done:0\|1` | same — §5.3 |
 | `issueItem` (staff) | `month, item_code, entries:{pcu:{issued_total, reason?, note?}}` | `{updated:[pcu], skipped:[{pcu, why}]}` — §5.3 |
-| `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price,dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
+| `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price (= priceFor(month), 2p),dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
 | `adminNote` | `pcu, month, note` (empty/blank clears) | `{request}` — creates a `draft` row if none; status unchanged |
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
 | `adminLockRound` | `month, locked:0\|1` | `{round}` |
@@ -196,8 +205,9 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminPdfFiles` (admin only) | `pcu?` (filter) | `{files:[{pcu, pcu_name, month, content_key, created_at, bytes\|null, url}] (newest first), total_files, total_bytes, rule, usage}` — §6b.1 |
 | `adminPdfPrune` (admin only) | – | `{deleted:[r2_key], bytes}` — runs the retention rule for all PCUs now (§6b.1; audit `pdf_prune` reason=admin when ≥ 1 file). Confirm dialog = UI's job |
 | `adminAuditLog` | `limit?` (default 100, max 500), `before?` (audit id → older rows) | `{entries:[{id,ts,actor,role,action,pcu,month,detail}], next_before:id\|null}` |
-| `adminFormGet` | `id` | `{form:{id,fy,created_at,created_by,note,steps}}` of any version (steps incl. closed pages) · `NOT_FOUND` — §5.2 |
-| `adminFormSave` | `base_version_id:int, note?:string(≤200), form:{steps:[...]}` | `{saved:true, form, versions, diff}` or `{saved:false, same:true, form, versions}` — new form version, §5.2 |
+| `adminFormGet` | `id` | `{form:{id,fy,created_at,created_by,note,steps}, price_history:[{code,from_round,price,set_at,set_by,note}]}` of any version (steps incl. closed pages; price_history = fy_current, by code, from_round — 2p) · `NOT_FOUND` — §5.2 |
+| `adminFormSave` | `base_version_id:int, note?:string(≤200), form:{steps:[...]}, price_from?:{code:"YYYY-MM"}` | `{saved:true, form, versions, diff, price_backdate, price_history}` or `{saved:false, same:true, form, versions}` — new form version, §5.2 |
+| `adminPricePreview` (2p) | `changes:[{code, price, from_round}]` | `{requests, months:[first,last]\|[], delta_baht, per_code:[{code, n_lines, delta, old, price, from_round, to_round, requests, backdate}]}` — no write, §5.2 |
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
@@ -207,7 +217,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 
 All mutating admin/PCU actions (except autosave) append to `audit_log` in the same D1 batch.
 
-### 5.1 `adminBootstrap` data (admin; dispenser gets only `me, server_time, current_month, current_round, config(limit_mode, stock_required, deadline_day, fy_current, trial_month), pcus(code,name,print_name,group), form, form_versions, rounds, months`)
+### 5.1 `adminBootstrap` data (admin; dispenser gets only `me, server_time, current_month, current_round, config(limit_mode, stock_required, deadline_day, fy_current, trial_month), pcus(code,name,print_name,group), form, form_versions, rounds, months, prices`)
 ```
 {
   me: {email|"backup", role, units:[...]}, server_time, current_month, current_round,   // current_month = calMonth · current_round = nextMonth(calMonth) (2j)
@@ -228,6 +238,8 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   prev: { "2569": { months:["2025-10",...,"2026-09"],   /* = fyExcelMonths(fy): Excel columns Oct … Sep, unchanged by 2j */ actual:{ pcu:{ code:{op:[12],pp:[12]} } }, plans:{ pcu:{code:[op,pp]} }, prices:{code:price} } },  // one entry per fy in actual_prev
   months: ["2026-10", ...],                                            // months having any request, newest first
   rounds: [RoundInfo],                                                 // union(currentRound, prevRound, months with requests, rounds rows) newest first
+  prices: { "2026-11": { code: price } },                              // 2p (admin + dispenser): key = every round of `rounds` + the 12 rounds of fy_current;
+                                                                       // value = codes whose priceFor(round) ≠ the price in `form` ({} when none) — §4.1
   users: [ ...adminUsersList ] , users_source: "table"|"env"           // admin only
 }
 RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, locked:bool, locked_at, locked_by, note }   // fy = monthFy(month); trial = month === config.trial_month
@@ -261,7 +273,29 @@ every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips t
   price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}]}`; stored in `audit_log` as `form_save`
   (`detail` = JSON `{id, note, diff}`; a very large diff is reduced to `{id, note, diff_counts, truncated:true}` to stay valid JSON inside the 2000-char cap).
 - `versions` = every row of `form_versions` newest first `[{id,fy,created_at,created_by,note}]` (same list as `adminBootstrap.form_versions`).
-- Nothing else changes (requests, lines, plans, limits untouched). New items have no plan/limit until an admin sets one.
+- Nothing else changes (requests, lines, plans, limits untouched) — except prices (2p, below). New items have no plan/limit until an admin sets one.
+
+**2p — price effective from a round** (spec 2o-2s §4, brief 2p). `price_from:{code:"YYYY-MM"}` (optional) = "เริ่มใช้ตั้งแต่รอบ" per changed price.
+- Validation before anything is written (`BAD_REQUEST`, Thai): not an object · a month outside `fyMonths(fy_current)` (before its first round or after its last;
+  future rounds of the year are allowed) · a code not in the new form · any key when the base is not a form of `fy_current`. Keys for items whose price did
+  not change are ignored. A "same" save writes nothing.
+- For every `diff.price_changed` item: `from_round = price_from[code]` (default `currentRound`, clamped into the fy's 12 rounds; a form of another fy → that fy's
+  first round) → upsert `price_history(fy, code, from_round, price)` (set_by = actor, note `form v<id>`). Base rows `INSERT OR IGNORE` at the fy's first round:
+  a changed item's old price, an added item's price — so an item always has a row from the first round.
+- **Back-date** = `from_round ≤ currentRound` (sent requests of the open round are re-priced too; the admin UI previews whenever from_round ≤ currentRound): `price_snapshot` of every line of the item on a **sent** request (`submitted`/`issued`) with
+  `from_round ≤ month < to_round` is set to the new price; `to_round` = the item's next `from_round` in `price_history`, else the round after the fy's last.
+  `price_print` is **never** touched (the printed sheet / PDF keeps the price it was sent with, §6b). One audit `price_backdate` per item
+  (`month` = from_round, `detail` = JSON `{code, old, new, from_round, to_round, requests, lines, delta, form_version}`); `form_save` detail gains `price_from`
+  (`{code: from_round}` of the changed prices). A non-back-dated change (current / future round) rewrites no sent line — a sent request takes the new price
+  when it is re-sent.
+- Response: `price_backdate:[{code, old, new, from_round, to_round, requests, lines, delta}]` (`[]` when nothing was back-dated) and `price_history` (fy_current).
+- No PCU notification.
+
+`adminPricePreview{changes:[{code, price, from_round}]}` (admin only) = exactly what `adminFormSave` will do to sent requests, computed by the same function
+(`price.js priceEffect`); no write. `code` must be in the latest form of fy_current (no duplicates), `price` number 0 … 1e9 (rounded to 2 decimals),
+`from_round` in `fyMonths(fy_current)` → else `BAD_REQUEST`. Counted = lines with `op+pp > 0` and a `price_snapshot` ≠ the new price in the item's range
+(the money that moves). `requests` = distinct requests · `months` = `[first, last]` round among them (`[]` when none) · `delta_baht` = Σ qty × (new − old snapshot),
+2 decimals · `per_code` one entry per change (`old` = priceFor(from_round) before the change, `backdate:false` + zeros for from_round ≥ currentRound).
 
 `adminExportSeed{fy?}` → `{seed}` in the `seed/FORMAT.md` shape: `format, fy, generated_at, generated_by:"adminExportSeed", sources:["D1 export"], pcus` (code,name,print_name,group),
 `form` (latest version of `fy`: `{fy,note,steps}` with every step incl. closed ones; key omitted if that fy has no version), `plans` / `prices_prev` / `actual_prev` / `stats`
@@ -347,7 +381,7 @@ After opening, re-previewing the same file gives `mode:"same_fy"` and (because t
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
 `month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2j: FY2570 = rounds `2026-11` … `2027-10`; the plan/form of the scope = that fy, form via `formForFy`).
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
-Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else form price) ·
+Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else the round's price priceFor — 2p) ·
 OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version · 2o (appended): ใช้ไป · ปรับยอด · เหตุผลปรับยอด (ได้รับเพิ่ม · ยืม/คืน · หมดอายุ/เสียหาย · นับใหม่ · อื่น ๆ); all statuses) ·
 **รพ.สต. × รายการ** (rows = items, columns = 15 PCUs + รวม; block 1 = ขอ, block 2 below = จ่ายจริง (Σ `issued_total`); submitted/issued only) ·
 **สรุปเงินต่อ รพ.สต.** (แผน OP/PP/รวม of the fy × form price · ขอ OP/PP/รวม (price_snapshot) · จ่ายจริง OP/PP/รวม · ส่วนต่าง = แผนรวม − ขอรวม; submitted/issued only).
@@ -369,7 +403,9 @@ next to `month` (`printOptsOf`). Absent / `null` / `""` → `null` (that header 
 any other type → `BAD_REQUEST`. `filename` is unchanged (still the round month).
 
 Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({lv:LAYOUT_VERSION, v:form_version_id,
-pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), (stock is not hashed — the sheet prints only OP/PP, so a 2o stock recalc keeps the key), dd:doc_date|null, sm:supply_month|null}))` → each distinct option set is
+pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), (stock is not hashed — the sheet prints only OP/PP, so a 2o stock recalc keeps the key), dd:doc_date|null, sm:supply_month|null,
+pr:{code: printed price} — 2p, only lines whose printed price (price_print ?? price_snapshot) differs from the bound form's price; the key is omitted when empty, so every
+sheet sent before 2p keeps its key}))` → each distinct option set is
 its own key / file (retention §6b.1 unchanged; `submitted_at` dropped from the key in 2h — a resend with identical content reuses the file) → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →
 else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<pcu>/<month>/<content_key>.pdf")` + `pdf_files` row + audit `pdf_create`
 (actor = PCU code or staff e-mail) in one D1 batch.
@@ -380,6 +416,10 @@ else render `<request origin>/print.html?k=<print token>` → `FILES.put("pdf/<p
   `printData` verifies it, requires type `print`, recomputes the content key with `{doc_date: dd ?? null, supply_month: sm ?? null}` and answers `CONFLICT` if
   the request changed since the token was minted (so a PDF is never cached under a wrong key). It returns `doc_date`, `supply_month` (`null` when absent).
   `form` = version bound to the request (`form_version_id`), else `formForFy` of the round's fy. Lines have the PCU shape (no price/issued fields).
+  **2p**: the sheet prints unit prices (`row.price`, money = qty × price), so `printData.form` item prices are replaced by the printed price — the line's
+  `price_print ?? price_snapshot`, or for an item with no line the round's price (priceFor; not part of the key). `price_print` is written at send only, so a
+  back-date (§5.2) changes neither the key nor the sheet (R2 keeps serving the PDF as sent); a re-send at a new round price changes `price_print` → new key → new PDF.
+  The admin reprint route (print.js `as=admin`, `adminGetRequest`) must apply the same rule from `lines[code].price_print` client-side.
 - Browser Rendering call (checked 2026-10-06 against the API reference; the guide page now writes the path as `.../browser-run/pdf`):
   `POST https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/browser-rendering/pdf`, `Authorization: Bearer ${CF_BR_TOKEN}`, body
   `{"url":"<print url>","viewport":{"width":794,"height":1123},"gotoOptions":{"waitUntil":"load","timeout":30000},"waitForSelector":{"selector":".print-ready","timeout":30000},"pdfOptions":{"format":"a4","landscape":false,"printBackground":true,"preferCSSPageSize":true}}`.
@@ -451,7 +491,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -468,7 +508,8 @@ requests(id PK 'PCU01_2026-10', pcu, month, status, form_version_id, submitter_n
          first_submitted_at, submitted_at, submit_count, admin_note, admin_note_at, issued_seen_at)   UNIQUE(pcu,month)
 request_lines(request_id, item_code, stock, op, pp, price_snapshot, updated_at,
               issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by,
-              used, adj, adj_reason, calc_from)    PK(request_id,item_code)   -- v4 (2o): used INTEGER · adj INTEGER · adj_reason TEXT · calc_from TEXT ('used'|'stock'|NULL)
+              used, adj, adj_reason, calc_from,    -- v4 (2o): used INTEGER · adj INTEGER · adj_reason TEXT · calc_from TEXT ('used'|'stock'|NULL)
+              price_print)   PK(request_id,item_code)   -- v5 (2p): REAL — price printed on the sheet, written with price_snapshot at send, never by a back-date
 issue_status(request_id, dispense_unit, done_at, done_by)   PK(request_id,dispense_unit)
 hidden_items(pcu, item_code, hidden_at, by)                 PK(pcu,item_code)
 limits(fy, pcu, item_code, limit_month, limit_year, source, updated_by, updated_at, note)   PK(fy,pcu,item_code)
@@ -476,6 +517,7 @@ limit_unlocks(pcu, item_code, month, reason, by, at)        PK(pcu,item_code,mon
 plans(fy, pcu, item_code, plan_op, plan_pp)                 PK(fy,pcu,item_code)
 actual_prev(fy, month, pcu, item_code, op, pp)              PK(fy,month,pcu,item_code)
 prices_prev(fy, item_code, price)                           PK(fy,item_code)
+price_history(fy, item_code, from_round, price, set_by, set_at, note)   PK(fy,item_code,from_round)   -- v5 (2p): price effective from a round
 stats(fy, pcu, item_code, median_m, p90_m, annual_qty)      PK(fy,pcu,item_code)
 pdf_files(request_id, content_key, r2_key, created_at, bytes)   PK(request_id,content_key)   -- bytes: v2, nullable (rows from before v2 = null)
 usage_counters(period, metric, n)                           PK(period,metric)   -- v2; period "YYYY-MM" | "YYYY-MM-DD" (UTC); metric r2_class_a|r2_class_b|pdf_render
@@ -490,6 +532,12 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   (a backfill error is not tolerated → migration fails and retries next request).
   **v4** (2o) = `ALTER TABLE pcus ADD COLUMN stock_mode TEXT NOT NULL DEFAULT 'A'` + `ALTER TABLE request_lines ADD COLUMN used INTEGER` / `adj INTEGER` /
   `adj_reason TEXT` / `calc_from TEXT` (same one-by-one / "duplicate column" rule; tested by re-running it with `devRerunMigration{v:4}`).
+  **v5** (2p) = `CREATE TABLE IF NOT EXISTS price_history …` + `ALTER TABLE request_lines ADD COLUMN price_print REAL` (same rule) + backfill
+  `UPDATE request_lines SET price_print = price_snapshot WHERE price_print IS NULL AND price_snapshot IS NOT NULL` + `INSERT OR IGNORE INTO price_history` one row
+  per item of the **latest form version of every fy that has one** (`json_each` over `form_versions.data`), `from_round = fyMonths(fy)[0]` (`printf('%04d-11', fy-544)`),
+  price = that form's price, `set_by 'migration v5'`. Re-runnable (`devRerunMigration{v:5}`; dev-only `clear_price_history:true` empties the table first to check the backfill).
+  `price_history` is in `TABLES`. Later fys: `adminImportApply` (2e, opening a fy) and `adminImportSeed` (first form of an fy) seed the same rows
+  (INSERT OR IGNORE, set_by = actor); `adminFormSave` maintains them (§5.2).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

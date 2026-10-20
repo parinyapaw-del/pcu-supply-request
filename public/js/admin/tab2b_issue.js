@@ -398,6 +398,14 @@ export function renderTab2b(container, ctx) {
     }
     lines.sort((a, b) => a.item.stepOrder - b.item.stepOrder || (cat.items.indexOf(a.item) - cat.items.indexOf(b.item)));
 
+    // 2p: a back-dated price change updates price_snapshot but not the price printed on the sent sheet (price_print)
+    const printDiffers = lines.some(({ l }) => l.price_print !== null && l.price_print !== undefined
+      && l.price_snapshot !== null && l.price_snapshot !== undefined && Number(l.price_print) !== Number(l.price_snapshot));
+    if (printDiffers) {
+      head.appendChild(el("div", { class: "notice notice-info", id: "t2b-price-print-diff" },
+        el("span", { class: "badge badge-warn" }, "ราคาในใบพิมพ์ต่างจากราคาคำนวณ (ปรับย้อนหลัง)")));
+    }
+
     // group by dispense unit, then page
     const unitOrder = DISPENSE_UNITS.concat(Array.from(new Set(lines.map((x) => x.item.dispenseUnit))).filter((u) => !DISPENSE_UNITS.includes(u)));
     const rowsAll = [];
@@ -553,7 +561,7 @@ export function renderTab2b(container, ctx) {
     const head = el("div", { class: "admin-card t2b-head", id: "t2b-item-head" });
     head.appendChild(el("h2", {}, `${item.code} ${item.name}`));
     head.appendChild(el("p", { class: "t2b-meta small" },
-      `${monthLong(ts.month)} · หน่วย ${item.unit || "–"} · ราคา ${formatMoney(item.price)} บาท · หน้า ${item.step || "–"}${item.step_title ? " " + item.step_title : ""} · หน่วยจ่าย ${item.dispense_unit || "–"}`));
+      `${monthLong(ts.month)} · หน่วย ${item.unit || "–"} · ราคา ${formatMoney(((state.bootstrap.prices || {})[ts.month] || {})[item.code] ?? item.price)} บาท · หน้า ${item.step || "–"}${item.step_title ? " " + item.step_title : ""} · หน่วยจ่าย ${item.dispense_unit || "–"}`));
     if (ts.expired) head.appendChild(el("div", { class: "notice notice-error", id: "t2b-expired" }, ts.expired + " — ดูได้อย่างเดียว"));
     host.appendChild(head);
     if (skipped && skipped.length) {

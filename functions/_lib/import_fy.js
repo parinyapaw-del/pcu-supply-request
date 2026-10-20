@@ -2,7 +2,8 @@
 // Contract: functions/API.md §5.3 · file format: seed/FORMAT.md. The write path is the idempotent importer (importer.js).
 // Both actions share ONE analysis (`analyse`) so the preview shows exactly what apply will do.
 import { err, isStr } from "./http.js";
-import { getConfigAll, latestForm, publicConfig } from "./db.js";
+import { batchChunked, getConfigAll, latestForm, publicConfig } from "./db.js";
+import { seedHistoryStmts } from "./price.js";
 import { canonSteps } from "./form_editor.js";
 import { adminImportSeed, formRecord, validateSeed } from "./importer.js";
 import { defaultLimit } from "./admin.js";
@@ -371,6 +372,8 @@ export async function adminImportApply(ctx, p) {
       .bind(ts, who.email || "", who.role || "", "fy_open", "", "", detail.slice(0, 2000)),
   ]);
   if (!res[0].meta || res[0].meta.changes !== 1) throw err("CONFLICT", `ปีงบ ${fy} เปิดแล้ว`);
+  // 2p: the new fy's price_history — every item at its first round (INSERT OR IGNORE; until it lands priceFor falls back to the same form price)
+  await batchChunked(DB, seedHistoryStmts(DB, fy, a.newSteps, who.email, `เปิดปีงบ ${fy}`));
   // (no per-isolate cache is keyed by fy: loadForm's cache is by immutable version id)
 
   const imported = { ...imp.imported, form: "inserted", config_set: [...new Set([...imp.imported.config_set, "fy_current"])] };

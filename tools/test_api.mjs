@@ -1714,7 +1714,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 4, "re-running migration v4 on existing columns succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 5, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5 re-runs too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -1939,6 +1939,183 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("price effective from a round (2p)");
+  {
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const findIt = (steps, code) => steps.flatMap((s) => s.rows).find((r) => r.type === "item" && r.code === code);
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const hrows = (h, code) => h.filter((x) => x.code === code).map((x) => [x.from_round, x.price]);
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    for (const m of [PREV, CUR, NEXT]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const T7 = (await mustOk("pcuLogin", { pcu: "PCU07", pin: "54321" })).token; // PCU07's PIN was changed in the PIN tests
+    const T8 = (await mustOk("pcuLogin", { pcu: "PCU08", pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-25T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, ...v, updated_at: tsn() }]));
+    const send = async (tok, month, lines, opts) => {
+      const r = await api("saveLines", { month, lines: L(lines), send: true }, tok, opts);
+      if (!r.ok) console.log("  saveLines error", JSON.stringify(r.error));
+      return r.ok ? r.data : null;
+    };
+    const AT_NEXT = { month: CUR }; // calendar = 2026-12 → the open round is NEXT (2027-01)
+    const ADM_LATER = { month: NEXT }; // admin acting in calendar 2027-01 → currentRound 2027-02
+    const line = async (pcu, month, code) => (await mustOk("adminGetRequest", { pcu, month }, ADM2)).request.lines[code];
+    const pp2 = (l) => l && [l.price_snapshot, l.price_print];
+    const bahtOf = async (pcu, month) => { const r = (await mustOk("adminRequests", { month }, ADM2)).requests.find((x) => x.pcu === pcu); return r ? r.progress.baht : null; };
+    const baht = async () => { let s = 0; for (const m of [PREV, CUR, NEXT]) for (const r of (await mustOk("adminRequests", { month: m }, ADM2)).requests) s += r.progress.baht; return r2(s); };
+
+    let F = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const p4 = F.steps.find((s) => s.code === "P4").rows.filter((r) => r.type === "item" && r.active !== false);
+    const X = p4[1].code, Y = p4[2].code, px0 = p4[1].price, py0 = p4[2].price;
+    const px1 = r2(px0 + 10), px2 = r2(px0 + 3), py2 = r2(py0 + 2);
+    const stepsWith = (code, price, base = F) => { const st = cl(base.steps); findIt(st, code).price = price; return st; };
+
+    // ---- history seeded by the import + the 2d edit ----
+    const g = await mustOk("adminFormGet", { id: F.id }, ADM2);
+    ok(Array.isArray(g.price_history) && g.price_history.length >= seedItems.length, "adminFormGet.price_history: a row per item (seeded by the import)");
+    eq(hrows(g.price_history, X), [[PREV, px0]], "price_history X = [[first round of FY2570, form price]]");
+    const hx = g.price_history.find((h) => h.code === X);
+    ok(hx.set_by === ADMIN_EMAIL && hx.set_at && "note" in hx, "price_history rows carry set_by / set_at / note");
+    const ha = hrows(g.price_history, A.code);
+    ok(ha.length === 2 && ha[0][0] === PREV && ha[0][1] === A.price && ha[1][0] === CUR, "2d price edit of A without price_from → a row from currentRound (2026-12); the import price stays from 2026-11");
+
+    // ---- sent requests at the import price ----
+    const s1 = [await send(T7, PREV, { [X]: { op: 2, pp: 1 }, [Y]: { op: 4, pp: 0 } }), await send(T7, CUR, { [X]: { op: 5, pp: 0 } }),
+      await send(T8, PREV, { [X]: { op: 1, pp: 0 } }), await send(T8, NEXT, { [X]: { op: 7, pp: 0 } }, AT_NEXT)];
+    ok(s1.every((r) => r && r.status === "submitted"), "setup: PCU07 sends 2026-11 (X 3, Y 4) + 2026-12 (X 5) · PCU08 sends 2026-11 (X 1) + 2027-01 (X 7)");
+    eq([pp2(await line("PCU07", PREV, X)), pp2(await line("PCU07", CUR, X))], [[px0, px0], [px0, px0]], "send: price_snapshot = price_print = the round's price (RequestObj admin lines carry price_print)");
+    ok(!("price_print" in (await mustOk("pcuGetMonth", { month: CUR }, T7)).request.lines[X]), "PCU view lines carry no price_print");
+
+    // ---- validation ----
+    const fsave = (price_from, extra = {}, opts) => api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, px1) }, price_from, ...extra }, ADM2, opts);
+    const r10 = await fsave({ [X]: "2026-10" });
+    expectErr(r10, "BAD_REQUEST", "price_from 2026-10 (FY2569, before the first round of fy_current)");
+    ok(r10.error && r10.error.message.includes("2570"), "price_from error names the fiscal year (Thai)");
+    expectErr(await fsave({ [X]: "2027-11" }), "BAD_REQUEST", "price_from 2027-11 (after the last round of fy_current)");
+    expectErr(await fsave({ [X]: "2026-13" }), "BAD_REQUEST", "price_from not a month");
+    expectErr(await fsave([X]), "BAD_REQUEST", "price_from as an array");
+    expectErr(await fsave({ "ZZ-01": CUR }), "BAD_REQUEST", "price_from for a code that is not in the form");
+    eq((await mustOk("adminBootstrap", {}, ADM2)).form.id, F.id, "rejected saves created no version");
+    const pvBad = async (changes, label, tok = ADM2) => expectErr(await api("adminPricePreview", { changes }, tok), tok === ADM2 ? "BAD_REQUEST" : "FORBIDDEN", label);
+    await pvBad([], "adminPricePreview: empty changes");
+    await pvBad([{ code: X, price: 1, from_round: "2026-10" }], "adminPricePreview: from_round outside fy_current");
+    await pvBad([{ code: "ZZ-01", price: 1, from_round: PREV }], "adminPricePreview: unknown code");
+    await pvBad([{ code: X, price: -1, from_round: PREV }], "adminPricePreview: negative price");
+    await pvBad([{ code: X, price: 1, from_round: PREV }, { code: X, price: 2, from_round: PREV }], "adminPricePreview: duplicate code");
+    const DSPP = (await mustOk("adminLoginGoogle", { id_token: "dev:disp.form@example.com" })).token;
+    await pvBad([{ code: X, price: 1, from_round: PREV }], "adminPricePreview: dispenser", DSPP);
+    await pvBad([{ code: X, price: 1, from_round: PREV }], "adminPricePreview: PCU token", T7);
+
+    // ---- a future price (from 2027-01) ----
+    const pv0 = await mustOk("adminPricePreview", { changes: [{ code: X, price: px1, from_round: NEXT }] }, ADM2);
+    eq([pv0.requests, pv0.months, pv0.delta_baht, pv0.per_code.map((x) => [x.code, x.n_lines, x.delta, x.backdate])], [0, [], 0, [[X, 0, 0, false]]], "preview of a future price: nothing sent is touched");
+    const fut = await mustOk("adminFormSave", { base_version_id: F.id, note: "ราคา X ใหม่ตั้งแต่ ม.ค. 70", form: { steps: stepsWith(X, px1) }, price_from: { [X]: NEXT, [Y]: PREV } }, ADM2);
+    ok(fut.saved && findIt(fut.form.steps, X).price === px1, "future price saved: the form holds the latest price");
+    eq(fut.price_backdate, [], "future price: price_backdate []");
+    eq(hrows(fut.price_history, X), [[PREV, px0], [NEXT, px1]], "adminFormSave.price_history: X old from 2026-11 · new from 2027-01");
+    eq(hrows(fut.price_history, Y), [[PREV, py0]], "price_from of an item whose price did not change is ignored");
+    F = fut.form;
+    const aud0 = (await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.find((e) => e.action === "form_save");
+    eq(aud0 && JSON.parse(aud0.detail).price_from, { [X]: NEXT }, "audit form_save detail carries price_from of the changed prices");
+    eq([pp2(await line("PCU07", CUR, X)), pp2(await line("PCU08", NEXT, X))], [[px0, px0], [px0, px0]], "future price: sent lines are not rewritten (only a back-date rewrites)");
+    const pbF = await mustOk("pcuBootstrap", {}, T7);
+    eq([pbF.prices[CUR][X], pbF.prices[PREV][X], findIt(pbF.form.steps, X).price], [px0, px0, px1], "pcuBootstrap.prices: both shown rounds price X at the old price (form = latest price)");
+    ok(!(Y in pbF.prices[CUR]) && !(Y in pbF.prices[PREV]), "pcuBootstrap.prices lists only prices that differ from the form");
+    const abF = await mustOk("adminBootstrap", {}, ADM2);
+    ok(fyRoundMonths(2570).every((m) => abF.prices[m] && typeof abF.prices[m] === "object"), "adminBootstrap.prices has a key for every round of fy_current");
+    eq([abF.prices[PREV][X], abF.prices[CUR][X], X in abF.prices[NEXT], X in abF.prices["2027-05"]], [px0, px0, false, false], "adminBootstrap.prices: X at the old price before 2027-01, nothing listed from 2027-01 (= form)");
+    const gmP = (await mustOk("pcuGetMonth", { month: PREV }, T7)).prices;
+    ok(gmP && gmP[PREV] && gmP[PREV][X] === px0 && gmP[PREV][A.code] === A.price, "pcuGetMonth.prices[month]: X old price · A at its 2026-11 (import) price");
+
+    // the current round re-sent after the future price → still the round's price; its PDF prints that price
+    ok(!!(await send(T7, CUR, { [X]: { op: 6, pp: 0 } })), "PCU07 re-sends 2026-12 (X 6) after the future price");
+    eq(pp2(await line("PCU07", CUR, X)), [px0, px0], "re-send in the current round: the round's price, not the form's latest");
+    const pdC = await mustOk("printData", { k: (await mustOk("devPrintToken", { pcu: "PCU07", month: CUR })).token });
+    eq([pdC.form.id, findIt(pdC.form.steps, X).price, findIt(pdC.form.steps, Y).price], [F.id, px0, py0], "printData: the latest form (X = new price) printed with the round's prices");
+    // the future round prints the new price once sent in it
+    const k8a = (await mustOk("devPrintToken", { pcu: "PCU08", month: NEXT })).content_key;
+    ok(!!(await send(T8, NEXT, { [X]: { op: 7, pp: 0 } }, AT_NEXT)), "PCU08 re-sends 2027-01");
+    eq(pp2(await line("PCU08", NEXT, X)), [px1, px1], "send in 2027-01: the new price (price_snapshot + price_print)");
+    const tk8 = await mustOk("devPrintToken", { pcu: "PCU08", month: NEXT });
+    ok(tk8.content_key !== k8a && findIt((await mustOk("printData", { k: tk8.token })).form.steps, X).price === px1, "PDF of 2027-01: new content_key, printed at the new price");
+
+    // ---- back-date (admin in calendar 2027-01 → currentRound 2027-02): X from 2026-12 (stops at its 2027-01 row) + Y from 2026-11 (to the end of the fy) ----
+    const chg = [{ code: X, price: px2, from_round: CUR }, { code: Y, price: py2, from_round: PREV }];
+    const pv = await api("adminPricePreview", { changes: chg }, ADM2, ADM_LATER);
+    ok(pv.ok, "adminPricePreview (admin)");
+    const P = pv.data;
+    const expX = r2(6 * (px2 - px0)), expY = r2(4 * (py2 - py0));
+    eq([P.requests, P.months, P.delta_baht], [2, [PREV, CUR], r2(expX + expY)], `preview: 2 requests, rounds 2026-11 … 2026-12, Δ ${r2(expX + expY)} บาท`);
+    eq(P.per_code.map((x) => [x.code, x.n_lines, x.delta, x.old, x.to_round, x.backdate]), [[X, 1, expX, px0, NEXT, true], [Y, 1, expY, py0, "2027-11", true]],
+      "preview per_code: X only in [2026-12, 2027-01) · Y in [2026-11, end of fy)");
+    const before = await baht();
+    const k7 = (await mustOk("devPrintToken", { pcu: "PCU07", month: CUR })).content_key;
+    const bd = await api("adminFormSave", { base_version_id: F.id, note: "แก้ราคาย้อนหลัง", form: { steps: stepsWith(Y, py2, { steps: stepsWith(X, px2) }) }, price_from: { [X]: CUR, [Y]: PREV } }, ADM2, ADM_LATER);
+    ok(bd.ok && bd.data.saved, "back-dated adminFormSave");
+    eq(bd.data.price_backdate.map((x) => [x.code, x.old, x.new, x.from_round, x.to_round, x.requests, x.lines, x.delta]), [[X, px0, px2, CUR, NEXT, 1, 1, expX], [Y, py0, py2, PREV, "2027-11", 1, 1, expY]],
+      "adminFormSave.price_backdate = the preview");
+    eq(r2((await baht()) - before), P.delta_baht, "preview = real effect: Σ adminRequests.progress.baht moved by exactly delta_baht");
+    eq([pp2(await line("PCU07", CUR, X)), pp2(await line("PCU07", PREV, Y))], [[px2, px0], [py2, py0]], "back-date: price_snapshot rewritten, price_print untouched");
+    eq([pp2(await line("PCU07", PREV, X)), pp2(await line("PCU08", PREV, X)), pp2(await line("PCU08", NEXT, X))], [[px0, px0], [px0, px0], [px1, px1]],
+      "back-date only inside its range: 2026-11 (before) and 2027-01 (next row) untouched");
+    const auds = (await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.filter((e) => e.action === "price_backdate");
+    const ax = auds.find((e) => JSON.parse(e.detail).code === X), axd = ax ? JSON.parse(ax.detail) : {};
+    ok(auds.length === 2 && ax.month === CUR && axd.old === px0 && axd.new === px2 && axd.from_round === CUR && axd.requests === 1 && axd.delta === expX,
+      "audit price_backdate per code (detail: code, old → new, from_round, n ใบ, Δ บาท)");
+    F = bd.data.form;
+    eq(hrows(bd.data.price_history, X), [[PREV, px0], [CUR, px2], [NEXT, px1]], "price_history X after the back-date");
+    eq(hrows(bd.data.price_history, Y), [[PREV, py2]], "Y back-dated to the first round replaces its first-round row");
+    expectErr(await api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, r2(px2 + 1)) }, price_from: { [X]: "2026-10" } }, ADM2, ADM_LATER), "BAD_REQUEST", "back-date before fy_current refused");
+
+    // ---- PDF after the back-date: same key + old price · re-send → new price + new key ----
+    const tk7 = await mustOk("devPrintToken", { pcu: "PCU07", month: CUR });
+    eq(tk7.content_key, k7, "back-date does not change the content_key (R2 keeps serving the sheet as sent)");
+    eq(findIt((await mustOk("printData", { k: tk7.token })).form.steps, X).price, px0, "printData after the back-date: the price as sent (price_print)");
+    ok(!!(await send(T7, CUR, { [X]: { op: 6, pp: 0 } })), "PCU07 re-sends 2026-12 after the back-date");
+    eq(pp2(await line("PCU07", CUR, X)), [px2, px2], "re-send: price_snapshot = price_print = the back-dated price");
+    const tk7b = await mustOk("devPrintToken", { pcu: "PCU07", month: CUR });
+    ok(tk7b.content_key !== k7 && findIt((await mustOk("printData", { k: tk7b.token })).form.steps, X).price === px2, "re-send → new content_key, printed at the new price");
+
+    // ---- an old round re-sent uses ITS round's price ----
+    ok(!!(await send(T8, PREV, { [X]: { op: 1, pp: 0 } })), "PCU08 re-sends 2026-11");
+    eq([pp2(await line("PCU08", PREV, X)), findIt(F.steps, X).price], [[px0, px0], px2], "re-sent 2026-11: X at the 2026-11 price although the form holds the latest");
+
+    // ---- drafts / export / dispenser screen use the round's price ----
+    ok((await api("saveLines", { month: NEXT, lines: L({ [X]: { op: 2, pp: 0 } }) }, T7, AT_NEXT)).ok, "PCU07 drafts 2027-01 (X 2, not sent)");
+    eq(await bahtOf("PCU07", NEXT), r2(2 * px1), "adminRequests.progress.baht of a draft = qty × the round's price (2027-01 → new), not the form's latest");
+    const xr = await get(`/api/export.xlsx?month=${NEXT}`, { authorization: "Bearer " + ADM2 });
+    const xs = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await xr.arrayBuffer()), { type: "buffer" }).Sheets["รายบรรทัด"], { header: 1 });
+    const x7 = xs.find((x) => x[1] === "PCU07" && x[4] === X), x8 = xs.find((x) => x[1] === "PCU08" && x[4] === X);
+    eq([x7 && x7[7], x7 && x7[11], x8 && x8[7]], [px1, r2(2 * px1), px1], "export: a draft line is priced by its round (2027-01), a sent line by price_snapshot");
+    const xr2 = await get(`/api/export.xlsx?month=${PREV}`, { authorization: "Bearer " + ADM2 });
+    const xs2 = XLSX.utils.sheet_to_json(XLSX.read(Buffer.from(await xr2.arrayBuffer()), { type: "buffer" }).Sheets["รายบรรทัด"], { header: 1 });
+    eq([(xs2.find((x) => x[1] === "PCU07" && x[4] === X) || [])[7], (xs2.find((x) => x[1] === "PCU07" && x[4] === Y) || [])[7]], [px0, py2], "export 2026-11: X at 2026-11 price, Y at the back-dated price");
+    eq((await mustOk("adminItemIssue", { month: PREV, item_code: X }, ADM2)).item.price, px0, "adminItemIssue.item.price = the round's price");
+
+    // ---- from_round = the open round (currentRound 2026-12): already-sent requests of that round are re-priced too (orchestrator decision) ----
+    const px3 = r2(px2 + 1);
+    const pvc = await mustOk("adminPricePreview", { changes: [{ code: X, price: px3, from_round: CUR }] }, ADM2);
+    eq([pvc.requests, pvc.months, pvc.per_code[0].backdate, pvc.delta_baht], [1, [CUR, CUR], true, r2(6 * (px3 - px2))], "preview from the open round: the sent 2026-12 request counts");
+    const sc = await mustOk("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, px3) }, price_from: { [X]: CUR } }, ADM2);
+    F = sc.form;
+    eq(pp2(await line("PCU07", CUR, X)), [px3, px2], "price from the open round: price_snapshot of the sent 2026-12 line rewritten, price_print kept");
+
+    // ---- migration v5: idempotent + backfill ----
+    const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
+    const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 5, "re-running migration v5 succeeds (duplicate column tolerated)");
+    eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
+      "…and changes nothing (price_history, price_snapshot / price_print)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 5, "migration v5 on an empty price_history (first deploy)");
+    const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
+    const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
+    eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, PREV, r.price].join("|")).sort(),
+      "backfill: one row per item of the latest form of the fy, from its first round (2026-11), at the form price");
+    ok(hb.every((h) => h.set_by === "migration v5"), "backfill rows: set_by 'migration v5'");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   section("open fiscal year (2e)");
   {
     const cl = (o) => JSON.parse(JSON.stringify(o));
@@ -2140,6 +2317,10 @@ async function main() {
     eq(ap.rollover.stats_rows, Object.keys(expStats).length, "apply: rollover.stats_rows");
     eq(ap.rollover.prices_rows, Object.keys(oldPrice).length, "apply: rollover.prices_rows = items of the old form");
     eq(ap.rollover.limits_rows, nLim, "apply: rollover.limits_rows = default limits generated");
+    const ph71 = (await mustOk("adminFormGet", { id: ap.rollover.form_version_id }, ADM2)).price_history; // 2p
+    const nf71 = itemsOfSteps((await mustOk("adminFormGet", { id: ap.rollover.form_version_id }, ADM2)).form.steps);
+    eq(ph71.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), nf71.map((i) => [i.code, fyRoundMonths(NEW)[0], i.price].join("|")).sort(),
+      "apply: price_history of FY2571 seeded — every item of the new form from 2027-11 at its new price (2p)");
 
     const boot3 = await mustOk("adminBootstrap", {}, ADM2);
     eq(boot3.config.fy_current, NEW, "adminBootstrap: config.fy_current 2571");

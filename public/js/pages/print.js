@@ -62,6 +62,12 @@ function browserPrintFallback() {
   window.print();
 }
 
+// 2p: a copy of `form` whose item rows carry priceOf(row) as price.
+function withPrices(form, priceOf) {
+  if (!form || !Array.isArray(form.steps)) return form;
+  return { ...form, steps: form.steps.map((st) => ({ ...st, rows: (st.rows || []).map((r) => (r.type === "item" ? { ...r, price: Number(priceOf(r)) || 0 } : r)) })) };
+}
+
 export async function renderPrint(container, app, params) {
   const asAdmin = params && params.get("as") === "admin";
   const isPreview = asAdmin && params.get("preview") === "1";
@@ -98,15 +104,18 @@ export async function renderPrint(container, app, params) {
       return;
     }
     pcu = data.pcu;
-    form = data.form;
     request = data.request || blankRequestFor(pcuParam, month);
+    // 2p: print the price the sheet was sent with (price_print), like the server PDF
+    const ls = request.lines || {};
+    form = withPrices(data.form, (r) => (ls[r.code] && (ls[r.code].price_print ?? ls[r.code].price_snapshot)) ?? r.price);
     hidden = data.hidden || [];
   } else {
     month = (params && params.get("month")) || app.monthKey;
     pcu = app.boot.pcu;
     request = requestOf(app, month) || blankRequestFor(pcu.code, month);
     // 2d: a sent request prints with the form version it was sent with; drafts print with the latest form.
-    form = formForRequest(app, request);
+    const rp = (app.boot.prices && app.boot.prices[month]) || {}; // 2p: price of this round
+    form = withPrices(formForRequest(app, request), (r) => rp[r.code] ?? r.price);
     hidden = app.boot.hidden || [];
   }
 

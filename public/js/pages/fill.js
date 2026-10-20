@@ -35,12 +35,18 @@ function stepLabel(step) {
   return step.sheet || step.title || step.code;
 }
 
+// 2p: price of an item in the shown round = boot.prices[round][code] (only listed when it differs from the form) ?? form price.
+function priceOf(app, month, item) {
+  const p = app.boot.prices && app.boot.prices[month] ? app.boot.prices[month][item.code] : null;
+  return p !== null && p !== undefined ? Number(p) : item.price;
+}
+
 function stepTotals(app, step, month) {
   let op = 0, pp = 0, qty = 0, money = 0;
   for (const it of activeStepItems(app, step)) {
     const line = sync.getLine(pcuCode(app), month, it.code);
     const o = Number(line.op) || 0, p = Number(line.pp) || 0;
-    op += o; pp += p; qty += o + p; money += (o + p) * it.price;
+    op += o; pp += p; qty += o + p; money += (o + p) * priceOf(app, month, it);
   }
   return { op, pp, qty, money };
 }
@@ -807,13 +813,13 @@ function buildItemTr(app, month, item, editable) {
       ${calcBlockHtml(app, month, item, line, editable)}
       <div class="limit-msg" data-limit-for="${esc(item.code)}"></div></td>
     <td class="col-unit">${esc(item.unit || "")}</td>
-    <td class="col-price">${formatMoney(item.price)}</td>
+    <td class="col-price">${formatMoney(priceOf(app, month, item))}</td>
     ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
     <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
     <td class="col-num">${inputHtml("op", line.op, editable)}</td>
     <td class="col-num">${inputHtml("pp", line.pp, editable)}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
-    <td class="col-money row-money">${formatMoney(total * item.price)}</td>
+    <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
     <td class="col-action">${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}</td>`;
   return tr;
 }
@@ -851,7 +857,7 @@ function buildItemCard(app, month, item, editable) {
       <span class="item-name">${esc(item.name)}</span>
       ${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}
     </div>
-    <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(item.price)}</div>
+    <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
     ${hintHtml(app, month, item)}
     ${calcBlockHtml(app, month, item, line, editable)}
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
@@ -860,7 +866,7 @@ function buildItemCard(app, month, item, editable) {
       <label>OP${inputHtml("op", line.op, editable)}</label>
       <label>PP${inputHtml("pp", line.pp, editable)}</label>
     </div>
-    <div class="item-card-total">รวม <span class="row-total">${formatInt(total)}</span> · เป็นเงิน <span class="row-money">${formatMoney(total * item.price)}</span></div>
+    <div class="item-card-total">รวม <span class="row-total">${formatInt(total)}</span> · เป็นเงิน <span class="row-money">${formatMoney(total * priceOf(app, month, item))}</span></div>
     <div class="limit-msg" data-limit-for="${esc(item.code)}"></div>`;
   return card;
 }
@@ -932,7 +938,7 @@ function wireStepEvents(app, month, step, editable) {
       const line = sync.getLine(pcuCode(app), month, code);
       const total = lineTotal(line);
       document.querySelectorAll(`[data-code="${code}"] .row-total`).forEach((el) => { el.textContent = formatInt(total); });
-      document.querySelectorAll(`[data-code="${code}"] .row-money`).forEach((el) => { el.textContent = formatMoney(total * item.price); });
+      document.querySelectorAll(`[data-code="${code}"] .row-money`).forEach((el) => { el.textContent = formatMoney(total * priceOf(app, month, item)); });
       refreshStepTotals(app, month, step);
       refreshRowLimit(app, month, item);
       refreshRowCalc(app, month, item);

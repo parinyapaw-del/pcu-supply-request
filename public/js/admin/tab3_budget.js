@@ -60,8 +60,9 @@ export function renderTab3(container, ctx) {
         const entries = data.entries.filter((e) => !trial.has(e.pcu));
         entries.forEach((e) => {
           if (e.form) addForm(cat, e.form);
-          const a = aggregateRequests(cat, [e]);
-          const iss = aggregateIssued(cat, [e]);
+          const popts = { round: m, prices: b.prices }; // 2p: per-round price fallback
+          const a = aggregateRequests(cat, [e], popts);
+          const iss = aggregateIssued(cat, [e], popts);
           op += a.bahtOp; pp += a.bahtPp;
           iop += iss.op; ipp += iss.pp; unrecorded += iss.unrecorded;
           const t = perPcu[e.pcu] || (perPcu[e.pcu] = { op: 0, pp: 0, iop: 0, ipp: 0 });

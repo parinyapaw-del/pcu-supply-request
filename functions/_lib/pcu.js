@@ -11,6 +11,7 @@ import {
   getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
+import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
 const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
@@ -180,13 +181,16 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
 
   // forms bound to the shown requests when they differ from the latest (submitted before a form edit) — PCU-stripped
   const forms = {};
-  for (const v of [curView.view, prevView.view]) {
+  const boundOf = {}; // 2p: round → [bound form] (prices that differ from it are listed too)
+  for (const [m, v] of [[cur, curView.view], [prev, prevView.view]]) {
     const fid = v.request && v.request.form_version_id;
-    if (fid && form && fid !== form.id && !forms[fid]) {
+    if (fid && form && fid !== form.id) {
       const f = await loadForm(DB, fid);
-      if (f) forms[fid] = formPublic(f, PCU_FORM);
+      if (f) { boundOf[m] = [f]; if (!forms[fid]) forms[fid] = formPublic(f, PCU_FORM); }
     }
   }
+  // 2p: price of each shown round (price_history) where it differs from the form price
+  const prices = await roundPriceOverrides(priceHistories(DB), form, [cur, prev], monthFy, boundOf);
 
   return {
     server_time: nowIso(), current_month: cal, current_round: cur,
@@ -204,6 +208,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     unlocks: { [cur]: curView.unlocks, [prev]: prevView.unlocks },
     byMonth: { [cur]: curView.view, [prev]: prevView.view },
     issue_notices: notices,
+    prices, // 2p: { round: {code: price} } — only codes whose round price differs from the form ({} per round when none)
   };
 }
 
@@ -222,13 +227,14 @@ export async function pcuGetMonth(ctx, p) {
   const out = { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month) };
   // the bound form version, only when it differs from the latest (2d)
   const fid = view.request && view.request.form_version_id;
-  if (fid) {
-    const latest = await latestForm(DB, cfg.fy_current);
-    if (latest && latest.id !== fid) {
-      const f = await loadForm(DB, fid);
-      if (f) out.form = formPublic(f, PCU_FORM);
-    }
+  const latest = await latestForm(DB, cfg.fy_current);
+  let bound = null;
+  if (fid && latest && latest.id !== fid) {
+    bound = await loadForm(DB, fid);
+    if (bound) out.form = formPublic(bound, PCU_FORM);
   }
+  // 2p: same shape as pcuBootstrap.prices, for this month only
+  out.prices = await roundPriceOverrides(priceHistories(DB), latest, [p.month], monthFy, bound ? { [p.month]: [bound] } : {});
   return out;
 }
 
@@ -366,12 +372,14 @@ export async function saveLines(ctx, p) {
       overLimit = await overLimitItems(DB, pcu.code, month, lines);
       if (cfg.limit_mode === "enforce" && overLimit.length) throw err("OVER_LIMIT", "มีรายการเกินเพดานเบิก", { items: overLimit });
     }
-    const prices = {};
-    if (bound) for (const [c, { item }] of bound.index) prices[c] = Number(item.price) || 0;
-    for (const [c, { item }] of latest.index) prices[c] = Number(item.price) || 0;
+    // 2p: the price of THIS round (price_history of the round's fy, fallback the form price) — both the calculation price (price_snapshot,
+    // later moved by a back-date) and the printed price (price_print, frozen until the next send)
+    const hist = await loadPriceHistory(DB, fy);
     const fin = [];
     for (const l of lines) {
-      fin.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ? WHERE request_id = ? AND item_code = ?`).bind(prices[l.item_code] ?? null, id, l.item_code));
+      const c = l.item_code;
+      const price = priceFor(hist, latest.index.has(c) ? latest : bound, c, month);
+      fin.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE request_id = ? AND item_code = ?`).bind(price, price, id, c));
     }
     fin.push(DB.prepare(
       `UPDATE requests SET status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'submitted' END, form_version_id = ?, submitted_at = ?, updated_at = ?,

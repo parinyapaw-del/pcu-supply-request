@@ -60,15 +60,20 @@ export function itemOrPlaceholder(cat, code) {
 export function isUsableStatus(status) { return status === "submitted" || status === "issued"; }
 
 // ---- per-request / per-month aggregation -----------------------------------------------------------
-// price used for a line: snapshot taken at submit, else the form price.
-export function linePrice(line, item) {
+// price used for a line: snapshot taken at submit, else (2p) the price effective in that round
+// (bootstrap.prices[round][code], only present when it differs from the form), else the form price.
+// opts = { round: "YYYY-MM", prices: bootstrap.prices }
+export function linePrice(line, item, opts) {
   const p = line && line.price_snapshot;
-  return p !== null && p !== undefined ? Number(p) : (item ? item.price : 0);
+  if (p !== null && p !== undefined) return Number(p);
+  const rp = opts && opts.prices && opts.round && item ? (opts.prices[opts.round] || {})[item.code] : null;
+  if (rp !== null && rp !== undefined) return Number(rp);
+  return item ? item.price : 0;
 }
 
-// requests: [{pcu, request:{status, lines}}] (only usable statuses are counted)
+// requests: [{pcu, request:{status, lines}}] (only usable statuses are counted) · opts = per-round price fallback, see linePrice
 // -> { byItem: { code: { op, pp, total, baht, issued: number|null, pcuCount, byPcu: {pcu:{op,pp}} } }, baht, op, pp, bahtOp, bahtPp }
-export function aggregateRequests(cat, entries) {
+export function aggregateRequests(cat, entries, opts) {
   const byItem = {};
   let op = 0, pp = 0, bahtOp = 0, bahtPp = 0;
   entries.forEach(({ pcu, request }) => {
@@ -78,7 +83,7 @@ export function aggregateRequests(cat, entries) {
       const issued = line.issued_total;
       if (lop === 0 && lpp === 0 && (issued === null || issued === undefined)) return;
       const item = itemOrPlaceholder(cat, code);
-      const price = linePrice(line, item);
+      const price = linePrice(line, item, opts);
       const r = byItem[code] || (byItem[code] = { op: 0, pp: 0, total: 0, baht: 0, issued: null, pcuCount: 0, byPcu: {} });
       r.op += lop; r.pp += lpp; r.total += lop + lpp; r.baht += (lop + lpp) * price;
       if (lop + lpp > 0) r.pcuCount += 1;
@@ -172,7 +177,7 @@ export function splitIssued(op, pp, issuedTotal) {
 // Issued baht of loaded requests (entries from requests.js loadMonth): Σ issued_op × price, issued_pp × price
 // (price = price_snapshot ?? form price). Lines without issued data count as 0.
 // -> { op, pp, total, recorded: n requests having ≥ 1 issued line, unrecorded: n requests with none }
-export function aggregateIssued(cat, entries) {
+export function aggregateIssued(cat, entries, opts) {
   let op = 0, pp = 0, recorded = 0, unrecorded = 0;
   entries.forEach(({ request }) => {
     if (!request || !isUsableStatus(request.status)) return;
@@ -181,7 +186,7 @@ export function aggregateIssued(cat, entries) {
       if ((Number(line.op) || 0) + (Number(line.pp) || 0) > 0) requested = true;
       if (line.issued_total === null || line.issued_total === undefined) return;
       any = true;
-      const price = linePrice(line, itemOrPlaceholder(cat, code));
+      const price = linePrice(line, itemOrPlaceholder(cat, code), opts);
       op += (Number(line.issued_op) || 0) * price;
       pp += (Number(line.issued_pp) || 0) * price;
     });

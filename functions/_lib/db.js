@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -88,16 +88,34 @@ const V4 = [
   `ALTER TABLE request_lines ADD COLUMN calc_from TEXT`,
 ];
 
+// Migration v5 (2p, price effective from a round): price_history + request_lines.price_print (spec 2o-2s §4.1). Same one-by-one rule.
+// Backfill (re-runnable): price_print = price_snapshot where still NULL · one price_history row per item of the LATEST form version of every fy
+// that has a form, from_round = the fy's first round (fyMonths(fy)[0] = "<fy-544>-11", e.g. FY2570 → 2026-11), INSERT OR IGNORE.
+const V5 = [
+  `CREATE TABLE IF NOT EXISTS price_history (
+     fy INTEGER NOT NULL, item_code TEXT NOT NULL, from_round TEXT NOT NULL, price REAL NOT NULL, set_by TEXT, set_at TEXT, note TEXT,
+     PRIMARY KEY (fy, item_code, from_round))`,
+  `ALTER TABLE request_lines ADD COLUMN price_print REAL`,
+  `UPDATE request_lines SET price_print = price_snapshot WHERE price_print IS NULL AND price_snapshot IS NOT NULL`,
+  `INSERT OR IGNORE INTO price_history (fy, item_code, from_round, price, set_by, set_at, note)
+     SELECT fv.fy, json_extract(r.value, '$.code'), printf('%04d-11', fv.fy - 544), COALESCE(json_extract(r.value, '$.price'), 0),
+            'migration v5', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'backfill: latest form of the fy'
+       FROM form_versions fv, json_each(fv.data, '$.steps') s, json_each(s.value, '$.rows') r
+      WHERE fv.id IN (SELECT MAX(id) FROM form_versions GROUP BY fy)
+        AND json_extract(r.value, '$.type') = 'item' AND json_extract(r.value, '$.code') IS NOT NULL`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
   { v: 2, statements: V2, oneByOne: true, tolerate: /duplicate column/i },
   { v: 3, statements: V3, oneByOne: true, tolerate: /duplicate column/i },
   { v: 4, statements: V4, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 5, statements: V5, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "stats", "pdf_files", "usage_counters", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "audit_log",
 ];
 
 let migrated = false;

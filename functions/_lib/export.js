@@ -5,6 +5,7 @@ import { formForFy, loadForm } from "./db.js";
 import { TRIAL_GROUP } from "./auth.js";
 import { bangkokDateTime, fyMonths, monthFy } from "./time.js";
 import { ADJ_REASON_TH } from "./stock.js";
+import { priceFor, priceHistories } from "./price.js";
 
 const STATUS_TH = { draft: "กำลังกรอก", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
 const REASON_TH = { out_of_stock: "ของหมด/รอจัดซื้อ" };
@@ -36,6 +37,9 @@ export async function buildExport(DB, { month, fy }) {
   const linesBy = new Map();
   for (const l of lineRes.results) { if (!linesBy.has(l.request_id)) linesBy.set(l.request_id, []); linesBy.get(l.request_id).push(l); }
 
+  // 2p: a line without price_snapshot (draft) is valued at the price of ITS round (price_history), not the form's latest price
+  const H = priceHistories(DB);
+  const linePrice = async (r, form, l) => l.price_snapshot ?? priceFor(await H(monthFy(r.month)), form, l.item_code, r.month) ?? 0;
   const formCache = new Map();
   const formOf = async (r) => {
     const k = r.form_version_id || "latest:" + monthFy(r.month);
@@ -57,7 +61,7 @@ export async function buildExport(DB, { month, fy }) {
       .sort((a, b) => (order.get(a.item_code) ?? 9999) - (order.get(b.item_code) ?? 9999));
     for (const l of lines) {
       const ent = form && form.index.get(l.item_code);
-      const price = l.price_snapshot ?? (ent ? Number(ent.item.price) || 0 : 0);
+      const price = await linePrice(r, form, l);
       const rowNo = rows1.length + 1;
       const op = nz(l.op), pp = nz(l.pp);
       const issued = l.issued_total !== null && l.issued_total !== undefined;
@@ -118,8 +122,7 @@ export async function buildExport(DB, { month, fy }) {
   for (const a of reqAgg) {
     const e = req.get(a.r.pcu) || { op: 0, pp: 0 }, ie = iss.get(a.r.pcu) || { op: 0, pp: 0 };
     for (const l of a.lines) {
-      const ent = a.form && a.form.index.get(l.item_code);
-      const price = l.price_snapshot ?? (ent ? Number(ent.item.price) || 0 : 0);
+      const price = await linePrice(a.r, a.form, l);
       e.op += nz(l.op) * price; e.pp += nz(l.pp) * price;
       ie.op += nz(l.issued_op) * price; ie.pp += nz(l.issued_pp) * price;
     }

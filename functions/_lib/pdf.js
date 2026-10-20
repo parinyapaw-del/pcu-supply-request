@@ -7,6 +7,7 @@ import { auditStmt, batchChunked, formForFy, formPublic, loadForm } from "./db.j
 import { signToken, verifyToken } from "./auth.js";
 import { currentRound, isDate, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
 import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
+import { formPrice, loadPriceHistory, priceFor } from "./price.js";
 import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
 // Bump whenever print.css / print.js change what the sheet looks like: it is part of the content key, so a changed layout is
@@ -49,13 +50,18 @@ async function loadBundle(DB, pcuCode, month) {
   const pcuRow = await getPcuRow(DB, pcuCode);
   if (!pcuRow) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้: " + pcuCode);
   const reqRow = await DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcuRow.code, month).first();
-  if (!reqRow) return { pcuRow, reqRow: null, lines: [], hidden: [] };
-  const [lines, hid] = await Promise.all([
+  if (!reqRow) return { pcuRow, reqRow: null, lines: [], hidden: [], form: null };
+  const [lines, hid, form] = await Promise.all([
     getLines(DB, reqRow.id),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcuRow.code).all(),
+    reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : null, // the version the sheet is printed with (immutable, cached)
   ]);
-  return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code) };
+  return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code), form };
 }
+
+// 2p: the unit price printed for a line = price_print (frozen at send; a back-date never moves it), fallback price_snapshot (rows from before
+// migration v5 that were never re-sent). null when the line has neither.
+const printPrice = (l) => l.price_print ?? l.price_snapshot ?? null;
 
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
 
@@ -72,13 +78,18 @@ export function printOptsOf(p, month) {
 
 // Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION + 2h print options). Same content → same key →
 // the cached PDF is reused; each distinct option set is its own file.
-export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }, opts = {}) {
-  const ls = {};
+// 2p: + `pr` {code: printed price} for the lines whose printed price differs from the bound form's price — omitted when empty, so the key of a
+// sheet printed at form prices (every request sent before 2p) is unchanged. A back-date never moves price_print → same key → R2 serves the old
+// PDF; a re-send at a new round price changes price_print → new key → new PDF.
+export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form }, opts = {}) {
+  const ls = {}, pr = {};
   for (const l of lines) {
     const op = Number(l.op) || 0, pp = Number(l.pp) || 0;
     if (op + pp > 0) ls[l.item_code] = [op, pp];
+    const p = printPrice(l);
+    if (p !== null && p !== formPrice(form, l.item_code)) pr[l.item_code] = p;
   }
-  return sha256Hex(stableStringify({
+  const key = {
     lv: LAYOUT_VERSION,
     v: reqRow.form_version_id ?? null,
     pn: pcuRow.print_name || pcuRow.name,
@@ -86,7 +97,9 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden }, opts = {})
     lines: ls,
     dd: opts.doc_date ?? null,
     sm: opts.supply_month ?? null,
-  }));
+  };
+  if (Object.keys(pr).length) key.pr = pr;
+  return sha256Hex(stableStringify(key));
 }
 
 export async function makePrintToken(env, pcu, month, contentKey, opts = {}) {
@@ -305,16 +318,31 @@ export async function printData(ctx, p) {
   const opts = { doc_date: payload.dd ?? null, supply_month: payload.sm ?? null };
   if ((await contentKeyOf(bundle, opts)) !== payload.ck) throw err("CONFLICT", "ใบเบิกถูกแก้ไขระหว่างสร้าง PDF กรุณาลองใหม่");
   const { pcuRow, reqRow, lines, hidden } = bundle;
-  const form = (reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null) || (await formForFy(DB, monthFy(payload.month)));
+  const form = bundle.form || (await formForFy(DB, monthFy(payload.month)));
   return {
     pcu: { code: pcuRow.code, name: pcuRow.name, print_name: pcuRow.print_name || pcuRow.name, group: pcuRow.grp },
     month: payload.month,
-    form: formPublic(form),
+    form: await printForm(DB, form, lines, payload.month),
     request: requestObj(reqRow, lines, false),
     hidden,
     doc_date: opts.doc_date,
     supply_month: opts.supply_month,
   };
+}
+
+// 2p: printData's form = the bound version with each item's price replaced by what the sheet must show — the line's printed price
+// (price_print ?? price_snapshot), or for an item without one the round's price (priceFor). print.js renders `row.price` unchanged.
+async function printForm(DB, form, lines, month) {
+  const pub = formPublic(form);
+  if (!pub) return pub;
+  const lp = new Map();
+  for (const l of lines) { const p = printPrice(l); if (p !== null) lp.set(l.item_code, p); }
+  const hist = await loadPriceHistory(DB, monthFy(month));
+  const steps = pub.steps.map((s) => ({
+    ...s,
+    rows: s.rows.map((r) => (r.type === "item" ? { ...r, price: lp.has(r.code) ? lp.get(r.code) : priceFor(hist, form, r.code, month) ?? r.price } : r)),
+  }));
+  return { ...pub, steps };
 }
 
 // dev only (router checks DEV_FAKE_GOOGLE): a fresh print token for (pcu, month[, 2h options]) — the tests cannot see the one the server generates.

@@ -5,6 +5,7 @@ import { err, isStr, sha256Hex, stableStringify } from "./http.js";
 import { auditStmt, batchChunked, configStmt, getConfigAll, insertStatements, normalizeForm } from "./db.js";
 import { DEFAULT_PIN, hashSecret, newSalt } from "./auth.js";
 import { isMonth, nowIso } from "./time.js";
+import { seedHistoryStmts } from "./price.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const num = (v, d = 0) => (typeof v === "number" && Number.isFinite(v) ? v : d);
@@ -98,6 +99,7 @@ export async function adminImportSeed(ctx, p) {
       await DB.prepare(`INSERT INTO form_versions (fy,created_at,created_by,note,data,data_hash) VALUES (?,?,?,?,?,?)`)
         .bind(formFy, ts, who.email, form.note ?? null, dataJson, hash).run();
       imported.form = "inserted";
+      await batchChunked(DB, seedHistoryStmts(DB, formFy, data.steps, who.email, "import")); // 2p: first form of the fy → its price_history
     } else if (existing.some((r) => r.data_hash === hash)) {
       imported.form = "same";
     } else {
