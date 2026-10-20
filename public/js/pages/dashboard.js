@@ -240,7 +240,7 @@ function kpiHtml(agg, data) {
     <div class="dash-kpi">
       <div class="dash-kpi-label">% ของแผนปี</div>
       <div class="dash-kpi-value">${esc(pctText(pctPlan))}</div>
-      <div class="dash-kpi-unit muted small">${pctPlan == null ? "ยังไม่มีแผนหรือราคาสำหรับคำนวณ" : `ขอเบิกเทียบแผนปี (${ui.mode === "baht" ? "บาท" : "จำนวน"})`}</div>
+      <div class="dash-kpi-unit muted small">${pctPlan == null ? "ยังไม่มีแผนหรือราคาสำหรับคำนวณ" : `ขอเบิกเทียบแผนปี (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · เฉพาะรายการที่มีแผน`}</div>
       ${pctPlan != null ? `<div class="dash-meter" role="img" aria-label="${esc(`ขอเบิกแล้ว ${pctText(pctPlan)} ของแผนปี`)}"><span style="width:${Math.min(100, pctPlan * 100).toFixed(1)}%"></span></div>` : ""}
     </div>`;
   const flagNote = flagged.size
