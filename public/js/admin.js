@@ -19,6 +19,7 @@ import { renderTab8 } from "./admin/tab8_users.js";
 import { renderTab9 } from "./admin/tab9_system.js";
 import { renderTab10 } from "./admin/tab10_form.js";
 import { renderTab11 } from "./admin/tab11_import.js";
+import { renderTab12 } from "./admin/tab12_dashboard.js";
 
 const root = document.getElementById("admin-root");
 
@@ -28,6 +29,7 @@ const TABS = [
   { id: "tab1", hash: "status", label: "สถานะรอบ", render: renderTab1, staff: true },
   { id: "tab2", hash: "totals", label: "ยอดรวม / ใบจัดของ", render: renderTab2, staff: true },
   { id: "tab2b", hash: "issue", label: "จ่ายจริง", render: renderTab2b, staff: true },
+  { id: "tab12", hash: "dashboard", label: "แดชบอร์ด", render: renderTab12 }, // admin only (brief 2s)
   { id: "tab3", hash: "budget", label: "งบ", render: renderTab3 },
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
   { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5 },
@@ -133,11 +135,11 @@ function showLogin(msg) {
 }
 
 // Every admin call goes through here: an expired token / removed user sends the person back to login.
-const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetRequest", "adminUsersList", "adminAuditLog", "adminFormGet"]);
+const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetRequest", "adminUsersList", "adminAuditLog", "adminFormGet", "adminDashboard", "issueShortage"]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 2c issue actions answer FORBIDDEN for business rules too (unit not the dispenser's, "หมดเวลาแก้ไขการจ่าย") —
 // those must not end the session; only the auth-level FORBIDDEN messages (auth.js) do.
-const ISSUE_ACTIONS = new Set(["issueLines", "issueAll", "issueDone", "issueItem", "adminItemIssue"]);
+const ISSUE_ACTIONS = new Set(["issueLines", "issueAll", "issueDone", "issueItem", "adminItemIssue", "issueShortage"]);
 function isSessionForbidden(action, err) {
   if (!ISSUE_ACTIONS.has(action)) return true;
   return /บัญชีนี้ไม่มีสิทธิ์|ไม่มีสิทธิ์เข้าถึง/.test(err.message || "");

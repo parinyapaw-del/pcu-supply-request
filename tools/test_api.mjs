@@ -2648,6 +2648,224 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("Admin dashboard + shortage (2s)");
+  {
+    // FY2571 (fy_current here, no request yet) = fully controlled data · trial round 2027-11 · PCU00 = group ทดลอง · PCU98 / PCU01 / PCU11 / PCU12
+    const FY = 2571, TRIAL = "2027-11", R1 = "2027-12", R2 = "2028-01";
+    const AT = { month: R2 }; // calendar 2028-01 → currentRound 2028-02: elapsed = 2027-12, 2028-01, 2028-02 (trial dropped) = 3
+    const r2 = (x) => Math.round(x * 100) / 100, r4 = (x) => Math.round(x * 10000) / 10000;
+    const patternOf = (vals) => { // thresholds.json rules (same order as the backend)
+      const annual = vals.reduce((a, v) => a + v, 0), act = vals.filter((v) => v > 0).length, s = vals.filter((v) => v > 0).sort((a, b) => b - a);
+      if (!(annual > 0)) return "ไม่เบิก";
+      if (act <= 3 && annual < 10000) return "เบาบาง";
+      if (s[0] / annual >= 0.8) return "เบิกครั้งเดียว";
+      if ((s[0] + (s[1] || 0) + (s[2] || 0)) / annual >= 0.6) return "กระจุกเป็นช่วง";
+      if (act >= 8 && s[0] / annual < 0.35) return "สม่ำเสมอ";
+      return "ผสม";
+    };
+    const ex0 = (await mustOk("adminExportSeed", {}, ADM2)).seed; // plans / stats / actual_prev of every fy — restored at the end
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    await mustOk("adminSetConfig", { key: "trial_month", value: TRIAL }, ADM2);
+    const F = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    eq(F.fy, FY, "setup: fy_current form = FY2571");
+    const its = F.steps.filter((s) => s.active !== false).flatMap((s) => s.rows.filter((r) => r.type === "item" && r.active !== false).map((r) => ({ ...r, unit_of: s.dispense_unit })));
+    const pk = its.filter((i) => i.unit_of === "พัสดุ");
+    const X = pk.find((i) => i.price >= 20 && i.price <= 500);
+    const W = pk.find((i) => i.price > 0 && i.price <= 30 && i !== X);
+    const Y = pk.find((i) => i.price >= 50 && ![X, W].includes(i));
+    const Z = pk.find((i) => i.price >= 10 && ![X, W, Y].includes(i));
+    const K = its.find((i) => i.unit_of === "จ่ายกลาง" && i.price > 0);
+    ok(X && W && Y && Z && K, "setup: items X (20–500 ฿), W (≤ 30 ฿), Y (≥ 50 ฿), Z, K (จ่ายกลาง) found in the FY2571 form");
+    const ordIdx = new Map(its.map((i, k) => [i.code, k]));
+    const byForm = (a, b) => ordIdx.get(a) - ordIdx.get(b);
+    const qx = Math.ceil(3000 / X.price), a = Math.ceil(qx * 0.6), b = qx - a;
+    const qy = Math.ceil(10000 / Y.price), qz = Math.ceil(1000 / Z.price);
+
+    // plans 2571 · stats 2570 (rule 1 basis = fy−1) · actual_prev 2570 (rule 3 + pattern_prev) — replaced per fy, restored at the end
+    const z12 = () => new Array(12).fill(0);
+    const xOp = z12(); xOp[9] = 1; xOp[10] = 1; xOp[11] = 1; // Excel ก.ค.–ก.ย. only → endyear
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: FY,
+      plans: { [FY]: { PCU98: { [X.code]: [a + b, 0], [Z.code]: [qz * 10, 0] }, PCU01: { [Y.code]: [qy * 10, 0] } } },
+      stats: { 2570: { PCU98: { [X.code]: [1, a - 1, 10], [Z.code]: [1, qz + 5, 10], [W.code]: [0, 0, 1] }, PCU01: { [X.code]: [0, 0.5, 1] } } },
+      actual_prev: { 2570: { months: fyExcelMonths(2570), data: { PCU98: { [X.code]: { op: xOp, pp: z12() } } } } },
+    } }, ADM2, "import controlled plans 2571 / stats 2570 / actual_prev 2570");
+
+    const tok = {};
+    for (const pc of ["PCU98", "PCU01", "PCU11", "PCU12", "PCU00"]) tok[pc] = (await mustOk("pcuLogin", { pcu: pc, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2028-01-05T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, q]) => [c, { stock: null, op: q, pp: 0, updated_at: tsn() }]));
+    const send = async (pc, month, lines) => {
+      const r = await api("saveLines", { month, lines: L(lines), send: true }, tok[pc], { month: shiftMonth(month, -1) });
+      if (!r.ok) console.log("  saveLines error", pc, month, JSON.stringify(r.error));
+      return r.ok && r.data.status === "submitted";
+    };
+    const sent = [
+      await send("PCU98", TRIAL, { [X.code]: 50 }), // trial round: never counted
+      await send("PCU98", R1, { [X.code]: a, [Z.code]: qz, [W.code]: 2 }),
+      await send("PCU98", R2, { [X.code]: b }),
+      await send("PCU01", R1, { [Y.code]: qy, [X.code]: 1, [W.code]: 1 }),
+      await send("PCU11", R1, { [Y.code]: qy, [X.code]: 1 }),
+      await send("PCU12", R2, { [Y.code]: qy, [W.code]: 1, [K.code]: 5 }),
+      await send("PCU00", R1, { [X.code]: 100 }), // group ทดลอง: never counted
+    ];
+    ok(sent.every(Boolean), "setup: 7 requests sent (PCU98 trial/R1/R2, PCU01 R1, PCU11 R1, PCU12 R2, PCU00 R1)");
+    // issuing (admin, no unit marked done): PCU98 X short 2 · PCU01 all full, then X → 0 (other) · PCU12 K 1 of 5 · trial cases short too
+    await mustOk("issueLines", { pcu: "PCU98", month: R1, lines: { [X.code]: { issued_total: a - 2, reason: "out_of_stock" } } }, ADM2);
+    await mustOk("issueAll", { pcu: "PCU01", month: R1 }, ADM2);
+    await mustOk("issueLines", { pcu: "PCU01", month: R1, lines: { [X.code]: { issued_total: 0, reason: "other", note: "ทดสอบ" } } }, ADM2);
+    await mustOk("issueLines", { pcu: "PCU12", month: R2, lines: { [K.code]: { issued_total: 1, reason: "out_of_stock" } } }, ADM2);
+    await mustOk("issueLines", { pcu: "PCU00", month: R1, lines: { [X.code]: { issued_total: 10, reason: "out_of_stock" } } }, ADM2);
+    await mustOk("issueLines", { pcu: "PCU98", month: TRIAL, lines: { [X.code]: { issued_total: 40, reason: "out_of_stock" } } }, ADM2);
+    // prices = price_snapshot of the lines (FY2571 price_history from 2027-11)
+    const P = {};
+    let samePrice = true;
+    for (const [pc, m] of [["PCU98", R1], ["PCU98", R2], ["PCU01", R1], ["PCU11", R1], ["PCU12", R2]]) {
+      const ls = (await mustOk("adminGetRequest", { pcu: pc, month: m }, ADM2)).request.lines;
+      for (const [c, l] of Object.entries(ls)) { if (c in P && P[c] !== l.price_snapshot) samePrice = false; P[c] = l.price_snapshot; }
+    }
+    ok(samePrice && [X, Y, Z, W, K].every((i) => typeof P[i.code] === "number"), "setup: one price_snapshot per item across the sent lines");
+    const px = P[X.code], py = P[Y.code], pz = P[Z.code], pw = P[W.code], pkk = P[K.code];
+    const T = { PCU98: (a + b) * px + qz * pz + 2 * pw, PCU01: qy * py + px + pw, PCU11: qy * py + px, PCU12: qy * py + pw + 5 * pkk };
+    const Tnet = Object.values(T).reduce((s, v) => s + v, 0);
+
+    // ---- permissions ----
+    expectErr(await api("adminDashboard", {}, null, AT), "AUTH_REQUIRED", "adminDashboard without a token");
+    expectErr(await api("adminDashboard", {}, tok.PCU98, AT), "FORBIDDEN", "adminDashboard with a PCU token");
+    const DSP = "dash2s.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSP, role: "dispenser", units: ["จ่ายกลาง"] }, ADM2);
+    const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSP })).token;
+    expectErr(await api("adminDashboard", {}, DT, AT), "FORBIDDEN", "adminDashboard with a dispenser token");
+    expectErr(await api("adminDashboard", { pcu: "PCU98" }, DT, AT), "FORBIDDEN", "adminDashboard{pcu} with a dispenser token");
+    expectErr(await api("adminDashboard", { fy: "abc" }, ADM2, AT), "BAD_REQUEST", "adminDashboard fy 'abc'");
+    expectErr(await api("adminDashboard", { fy: 2560 }, ADM2, AT), "NOT_FOUND", "adminDashboard fy 2560 (no form)");
+
+    // ---- network view ----
+    const nr = await api("adminDashboard", {}, ADM2, AT);
+    ok(nr.ok, "adminDashboard (network) at calendar 2028-01" + (nr.ok ? "" : ` (${nr.error.code}: ${nr.error.message})`));
+    const N = nr.data;
+    eq([N.fy, N.elapsed, N.rounds], [FY, 3, fyRoundMonths(FY).filter((m) => m !== TRIAL)], "network: fy = fy_current 2571, elapsed 3, rounds without the trial round");
+    ok(N.fys.includes(2571) && N.fys.includes(2570) && N.fys[0] === 2571, `network: fys newest first incl. 2571 + 2570 (${N.fys})`);
+    ok(!N.pcus.some((x) => x.code === "PCU00") && N.pcus.length === 16, "network: pcus = every PCU except group ทดลอง (16, PCU00 left out)");
+    const pc = Object.fromEntries(N.pcus.map((x) => [x.code, x]));
+    const expOrder = Object.entries(T).sort((u, v) => v[1] - u[1]).map(([k]) => k);
+    eq(N.pcus.slice(0, 4).map((x) => x.code), expOrder, "network: pcus sorted by req_baht (high → low)");
+    eq(N.pcus.slice(0, 4).map((x) => x.req_baht), expOrder.map((k) => r2(T[k])), "network: req_baht per pcu (trial round + trial group excluded)");
+    eq(["PCU98", "PCU01", "PCU11", "PCU12"].map((k) => pc[k].got_baht), [r2((a - 2) * px), r2(qy * py + pw), 0, r2(pkk)],
+      "network: got = staff view (issued_total of undone units counted; null → 0)");
+    eq(N.network.items[X.code], [a + b + 2, r2((a + b + 2) * px), a - 2, r2((a - 2) * px), 0, 0], "network.items[X] = V6 without PCU00 (100) and the trial round (50)");
+    eq(N.network.monthly["จ่ายกลาง"], { [R2]: [5, r2(5 * pkk), 1, r2(pkk), 0, 0] }, "network.monthly[จ่ายกลาง] = only R2 (K 5 → got 1)");
+    eq(N.network.monthly["พัสดุ"][R1][0], a + qz + 2 + qy + 2 + qy + 1, "network.monthly[พัสดุ][R1] req qty = Σ พัสดุ lines of R1");
+    ok(!Object.values(N.network.monthly).some((byR) => TRIAL in byR) && Object.keys(N.network.monthly.LAB).length === 0, "network.monthly: no trial-round key · LAB empty");
+    eq(N.items[X.code], { name: X.name, unit: X.unit || "", unit_group: "พัสดุ", net_plan_qty: a + b }, "items[X] = {name, unit, unit_group, net_plan_qty}");
+    eq(N.network.plan_baht, { "พัสดุ": r2((a + b) * X.price + qz * 10 * Z.price + qy * 10 * Y.price), "จ่ายกลาง": 0, LAB: 0 }, "network.plan_baht per unit = Σ plan × form price");
+    eq(N.network.req_baht_on_plan, { "พัสดุ": r2((a + b) * px + qz * pz + qy * py), "จ่ายกลาง": 0, LAB: 0 }, "network.req_baht_on_plan = req baht of planned (pcu,item)");
+    const netQ = { [X.code]: a + b + 2, [Y.code]: 3 * qy, [Z.code]: qz, [W.code]: 4, [K.code]: 5 };
+    const netB = { [X.code]: (a + b + 2) * px, [Y.code]: 3 * qy * py, [Z.code]: qz * pz, [W.code]: 4 * pw, [K.code]: 5 * pkk };
+    const top = (o) => Object.keys(o).sort((u, v) => o[v] - o[u] || byForm(u, v)).slice(0, 3);
+    eq(N.network.top3, { qty: top(netQ), baht: top(netB) }, "network.top3 by req qty / req baht");
+    const plan98 = (a + b) * X.price + qz * 10 * Z.price, on98 = (a + b) * px + qz * pz;
+    eq([pc.PCU98.plan_baht, pc.PCU98.pct_plan, pc.PCU01.pct_plan, pc.PCU11.pct_plan], [r2(plan98), r4(on98 / plan98), 0.1, null], "pcus: plan_baht + pct_plan (null without a plan)");
+    eq(pc.PCU98.units, { "พัสดุ": [r2(T.PCU98), r2((a - 2) * px), r2(plan98), r2(on98)], "จ่ายกลาง": [0, 0, 0, 0], LAB: [0, 0, 0, 0] }, "pcus[PCU98].units = [req, got, plan, req_on_plan] per unit");
+
+    // flags: rule 1 (p90 of stats 2570), rule 2 (pace), rule 4 (share) — ordered pcu → item → rule → round
+    const share98 = (a + b) * px / ((a + b + 2) * px), thr98 = 2 * T.PCU98 / Tnet;
+    const fShare = { pcu: "PCU98", code: X.code, rule: "share", value: r4(share98), threshold: r4(thr98) };
+    const fPace = { pcu: "PCU98", code: X.code, rule: "pace", value: a + b, threshold: r2((a + b) * 3 / 12 * 1.2) };
+    eq(N.flags, [
+      { pcu: "PCU01", code: X.code, rule: "p90", round: R1, value: 1, threshold: 0.5 },
+      { pcu: "PCU98", code: X.code, rule: "p90", round: R1, value: a, threshold: a - 1 },
+      fPace, fShare,
+    ], "network.flags: p90 X R1 (PCU01, PCU98) · pace X · share X (PCU98) — nothing else");
+    ok(!N.flags.some((f) => f.rule === "p90" && f.round === R2), `rule 1 non-trigger: PCU98 X R2 qty ${b} ≤ p90 ${a - 1}`);
+    ok(!N.flags.some((f) => f.code === Z.code), `rule 1 non-trigger Z (qty ${qz} ≤ p90 ${qz + 5}) · rule 2 non-trigger Z (${qz} ≤ plan ${qz * 10} × 3/12 × 1.2)`);
+    ok(!N.flags.some((f) => f.code === W.code && f.rule === "p90"), "rule 1: stats p90_m 0 → skipped (W qty 2 > 0 not flagged)");
+    ok(!N.flags.some((f) => f.code === Y.code), "rule 2 non-trigger: PCU01 Y within plan · rule 4 non-trigger: Y share 1/3 < 2 × pcu share");
+    const shareZ = 1, shareW = 2 / 4;
+    ok(shareZ > thr98 && !N.flags.some((f) => f.rule === "share" && f.code === Z.code), "rule 4 cut-off: Z (share 1 > threshold) requested by 1 PCU only (< 3) → no flag");
+    ok(4 * pw < 0.005 * Tnet && shareW > thr98 && !N.flags.some((f) => f.rule === "share" && f.code === W.code),
+      `rule 4 cut-off: W 3 PCUs, share ${shareW} > threshold ${r4(thr98)} but network ${r2(4 * pw)} ฿ < 0.5 % of ${r2(Tnet)} → no flag`);
+    ok(share98 > thr98 && (a + b + 2) * px >= 0.005 * Tnet, "rule 4 trigger case: X ≥ 0.5 % of the network, 3 PCUs, PCU98 share > 2 × its total share");
+    eq([pc.PCU98.n_flags, pc.PCU01.n_flags, pc.PCU11.n_flags, pc.PCU12.n_flags], [3, 1, 0, 0], "pcus[].n_flags");
+    eq(N.info_new, [Z.code, W.code].sort(byForm).map((c) => ({ pcu: "PCU98", code: c })),
+      "info_new (rule 3): PCU98 Z + W (not in its actual_prev 2570) · X was there · PCU01/11/12 have no actual_prev → none");
+    const b98 = [a * px + qz * pz + 2 * pw, b * px, 0];
+    eq([pc.PCU98.pattern, pc.PCU01.pattern, pc.PCU11.pattern, pc.PCU02 && pc.PCU02.pattern], [patternOf(b98), "เบิกครั้งเดียว", "เบิกครั้งเดียว", "ไม่เบิก"],
+      `pattern this year (req baht of the elapsed rounds): PCU98 ${patternOf(b98)} · one-month ≥ 10,000 ฿ → เบิกครั้งเดียว · nothing → ไม่เบิก`);
+    eq([pc.PCU98.pattern_prev, pc.PCU98.endyear_prev, pc.PCU01.pattern_prev, pc.PCU01.endyear_prev], ["เบาบาง", true, null, false],
+      "pattern_prev from actual_prev 2570 (3 months ก.ค.–ก.ย. → เบาบาง, endyear) · null/false without actual_prev");
+    ok(N.pcus.every((x) => x.pattern_note === "ข้อมูลยังน้อย"), "pattern_note ข้อมูลยังน้อย (3 elapsed rounds < 6)");
+    const N9 = await mustOk("adminDashboard", {}, ADM2); // calendar 2026-11: FY2571 not started → elapsed 0 → no pace flag
+    ok(N9.elapsed === 0 && !N9.flags.some((f) => f.rule === "pace"), "elapsed 0 (calendar 2026-11) → no pace flag");
+
+    // ---- one PCU (staff view) ----
+    const vr = await api("adminDashboard", { pcu: "pcu98" }, ADM2, AT);
+    ok(vr.ok, "adminDashboard{pcu:'pcu98'} (code upper-cased)" + (vr.ok ? "" : ` (${vr.error.code}: ${vr.error.message})`));
+    const V = vr.data;
+    eq([V.fy, V.pcu, V.elapsed, V.rounds.length], [FY, { code: "PCU98", name: pc.PCU98.name }, 3, 11], "pcu view: fy, pcu {code,name}, elapsed, rounds");
+    eq(V.monthly[X.code][R1], [a, r2(a * px), a - 2, r2((a - 2) * px), 0, 0], "pcu view monthly X R1: got = issued_total although the unit is not done (staff view)");
+    ok(!(TRIAL in V.monthly[X.code]), "pcu view: trial round not counted");
+    const pdA = await api("pcuDashboard", { fy: FY }, tok.PCU98, AT);
+    ok(pdA.ok && pdA.data.monthly[X.code][R1][2] === 0, "pcuDashboard (PCU view) of the same line: got 0 while the unit is not done");
+    eq(V.flags, [
+      { code: X.code, rule: "p90", round: R1, value: a, threshold: a - 1 },
+      { code: X.code, rule: "pace", value: a + b, threshold: fPace.threshold, cum_qty: a + b, plan_qty: a + b, elapsed: 3 },
+      { code: X.code, rule: "share", value: fShare.value, threshold: fShare.threshold },
+    ], "pcu view flags: every rule (no pcu field) · pace also carries cum_qty / plan_qty / elapsed");
+    const q98 = { [X.code]: a + b, [Z.code]: qz, [W.code]: 2 }, bb98 = { [X.code]: (a + b) * px, [Z.code]: qz * pz, [W.code]: 2 * pw };
+    eq(V.top3, { qty: top(q98), baht: top(bb98) }, "pcu view top3 (qty / baht)");
+    eq(V.info_new, [Z.code, W.code].sort(byForm), "pcu view info_new = [codes]");
+    eq([V.pattern, V.pattern_prev, V.pattern_note, V.endyear_prev], [pc.PCU98.pattern, "เบาบาง", "ข้อมูลยังน้อย", true], "pcu view pattern fields = the network row");
+    ok(V.prev_fy && V.prev_fy.qty.reduce((s, v) => s + v, 0) === 3 && V.used_coverage && V.items[X.code].plan_qty === a + b, "pcu view keeps the pcuDashboard fields (prev_fy, used_coverage, items.plan_qty)");
+    expectErr(await api("adminDashboard", { pcu: "PCU00" }, ADM2, AT), "NOT_FOUND", "adminDashboard{pcu: PCU00 (group ทดลอง)}");
+    expectErr(await api("adminDashboard", { pcu: "NOPE" }, ADM2, AT), "NOT_FOUND", "adminDashboard{pcu: unknown}");
+
+    // ---- issueShortage ----
+    const sh = (params, t = ADM2) => api("issueShortage", params, t, AT);
+    expectErr(await sh({ scope: "fy" }, null), "AUTH_REQUIRED", "issueShortage without a token");
+    expectErr(await sh({ scope: "fy" }, tok.PCU98), "FORBIDDEN", "issueShortage with a PCU token");
+    expectErr(await sh({ scope: "x" }), "BAD_REQUEST", "issueShortage scope 'x'");
+    expectErr(await sh({ scope: "fy", unit: "xx" }), "BAD_REQUEST", "issueShortage unit 'xx'");
+    expectErr(await sh({ scope: "round", month: "2028-13" }), "BAD_REQUEST", "issueShortage month 2028-13");
+    expectErr(await sh({ scope: "round", month: "2026-12", fy: FY }), "BAD_REQUEST", "issueShortage month outside the fy");
+    const S = (await sh({ scope: "fy" })).data;
+    const itK = { code: K.code, name: K.name, unit: K.unit || "", unit_group: "จ่ายกลาง", req_qty: 5, issued_qty: 1, short_qty: 4, short_baht: r2(4 * pkk), n_pcus: 1 };
+    const itX = { code: X.code, name: X.name, unit: X.unit || "", unit_group: "พัสดุ", req_qty: a + 1, issued_qty: a - 2, short_qty: 3, short_baht: r2(3 * px), n_pcus: 2 };
+    eq([S.fy, S.scope, S.month, S.unit, S.rounds.length], [FY, "fy", null, "all", 11], "shortage fy: {fy, scope, month null, unit all (admin default), rounds}");
+    eq(S.summary, { complete: 2, incomplete: 3, short_qty: 7, short_baht: r2(2 * px + px + 4 * pkk) },
+      "shortage summary: only lines with issued_total (PCU11 R1, PCU12 Y/W not issued → not counted) · trial round + PCU00 excluded");
+    eq(S.items, [itK, itX], "shortage items: short > 0 only, short_qty high → low, short = max(req − issued, 0)");
+    eq(S.by_pcu[X.code], [
+      { pcu: "PCU01", pcu_name: pc.PCU01.name, month: R1, req: 1, issued: 0, short: 1, short_baht: r2(px), reason: "other", note: "ทดสอบ" },
+      { pcu: "PCU98", pcu_name: pc.PCU98.name, month: R1, req: a, issued: a - 2, short: 2, short_baht: r2(2 * px), reason: "out_of_stock", note: null },
+    ], "shortage by_pcu[X]: req / issued / short / short_baht / reason / note per pcu × round");
+    eq(Object.keys(S.by_pcu).sort(), [X.code, K.code].sort(), "shortage by_pcu: only items with a short line");
+    const Sr = (await sh({ scope: "round" })).data;
+    eq([Sr.month, Sr.items.map((x) => x.code), Sr.summary], [R2, [K.code], { complete: 0, incomplete: 1, short_qty: 4, short_baht: r2(4 * pkk) }],
+      "shortage round (no month): latest sent round ≤ currentRound = 2028-01");
+    const S1 = (await sh({ scope: "round", month: R1 })).data;
+    eq([S1.fy, S1.items.map((x) => x.code), S1.summary.complete, S1.summary.incomplete], [FY, [X.code], 2, 2], "shortage round 2027-12 (fy derived from month)");
+    eq((await sh({ scope: "round", month: TRIAL })).data.summary, { complete: 0, incomplete: 0, short_qty: 0, short_baht: 0 }, "shortage of the trial round = nothing");
+    eq((await sh({ scope: "fy", unit: "LAB" })).data.items, [], "shortage unit LAB → none");
+    eq((await sh({ scope: "fy", unit: "พัสดุ" })).data.summary, { complete: 2, incomplete: 2, short_qty: 3, short_baht: r2(3 * px) }, "shortage unit พัสดุ");
+    const Sd = (await sh({ scope: "fy" }, DT)).data;
+    eq([Sd.unit, Sd.items.map((x) => x.code)], ["จ่ายกลาง", [K.code]], "dispenser: unit defaults to its own (จ่ายกลาง)");
+    eq((await sh({ scope: "fy", unit: "all" }, DT)).data.items.map((x) => x.code), [K.code, X.code], "dispenser may ask for unit all");
+
+    // restore: trial off, plans 2571 / stats 2570 / actual_prev 2570 as exported before, temporary dispenser removed
+    await mustOk("adminUsersRemove", { email: DSP }, ADM2);
+    await mustOk("adminSetConfig", { key: "trial_month", value: null }, ADM2);
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: FY,
+      plans: { [FY]: (ex0.plans && ex0.plans[String(FY)]) || {} },
+      stats: { 2570: (ex0.stats && ex0.stats["2570"]) || {} },
+      actual_prev: { 2570: (ex0.actual_prev && ex0.actual_prev["2570"]) || { months: fyExcelMonths(2570), data: {} } },
+    } }, ADM2, "restore plans 2571 / stats 2570 / actual_prev 2570");
+    const ex1 = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq([ex1.plans[String(FY)], ex1.stats["2570"], ex1.actual_prev["2570"]], [ex0.plans[String(FY)], ex0.stats["2570"], ex0.actual_prev["2570"]], "restore: plans / stats / actual_prev equal the export taken before");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }
 

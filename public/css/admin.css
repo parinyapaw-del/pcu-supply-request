@@ -433,3 +433,44 @@
 /* ---- trial round badge (brief 2j) ---- */
 .badge-trial { margin-left: 8px; font-size: 0.8rem; vertical-align: middle; }
 #t9-trial-card .admin-toolbar { margin-top: 8px; }
+
+/* ---- brief 2s: admin dashboard (tab12) + "จ่ายไม่พอ" (shortage.js). Chart colors/tokens (--dv-*) and .dash-* come from main.css. ---- */
+.adm-dash h2 { margin: 0 0 4px; overflow-wrap: anywhere; }
+.adm-dash .dash-back { margin: 0 0 8px; }
+.adm-two-col { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
+.adm-sub { margin: 0 0 6px; font-size: 0.95rem; color: var(--muted); }
+.dash-kpis.adm-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.adm-pattern { font-size: 1.3rem; line-height: 1.35; font-weight: 700; overflow-wrap: anywhere; }
+.adm-link { background: none; border: 0; padding: 4px 0; min-height: 32px; font: inherit; font-weight: 600; color: var(--accent); text-align: left; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.adm-link:focus-visible, .adm-sort:focus-visible, .sh-row-btn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.adm-sort { background: none; border: 0; padding: 2px 0; font: inherit; font-weight: 700; color: inherit; cursor: pointer; white-space: nowrap; }
+.dash-table .adm-name { text-align: left; min-width: 150px; max-width: 240px; white-space: normal; overflow-wrap: anywhere; }
+.dash-table thead .adm-name { white-space: nowrap; }
+.adm-chips { margin: 4px 0 10px; }
+.adm-anom td { white-space: normal; }
+.adm-anom .adm-detail { min-width: 220px; }
+.adm-rule { white-space: normal; }
+.adm-short-host, #adm-short-slot { min-width: 0; }
+.sh-controls { margin-top: 4px; }
+.sh-note { margin: -4px 0 10px; }
+.sh-sort { margin-bottom: 8px; }
+.sh-all { margin-top: 10px; }
+.sh-row-btn { background: none; border: 0; padding: 4px 0; min-height: 32px; font: inherit; color: var(--text); text-align: left; cursor: pointer; overflow-wrap: anywhere; }
+.sh-caret { display: inline-block; width: 1em; color: var(--muted); }
+.sh-row.is-open > th, .sh-row.is-open > td { background: var(--muted-bg); }
+.sh-detail > td { background: var(--muted-bg); padding: 6px 8px; }
+.sh-detail-table { min-width: 480px; background: var(--surface); }
+.sh-detail-table th, .sh-detail-table td { white-space: nowrap; }
+.sh-detail-table td.sh-reason { white-space: normal; min-width: 120px; }
+.sh-detail-table tbody th { text-align: left; }
+.t2b-shortage { margin-bottom: 14px; }
+@media (max-width: 720px) {
+  .adm-two-col { grid-template-columns: minmax(0, 1fr); }
+  .dash-kpis.adm-two { grid-template-columns: minmax(0, 1fr); }
+}
+.dash-table.adm-rank { min-width: 780px; }
+.dash-table.adm-anom { min-width: 680px; }
+.adm-anom .adm-rule { display: inline-block; border-radius: 10px; }
+.adm-rank td { white-space: nowrap; }
+.adm-rank td .small { white-space: normal; }
+.sh-table { min-width: 420px; }

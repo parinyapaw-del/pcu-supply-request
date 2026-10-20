@@ -9,6 +9,7 @@ import { el, escapeHtml, tableScroll, monthLong, formatBangkokDateTime, confirmD
 import { buildCatalog, addForm, DISPENSE_UNITS, ISSUE_REASONS, splitIssued, isUsableStatus, itemOrPlaceholder } from "./compute.js";
 import { clearRequestCache } from "./requests.js";
 import { unitStripHtml } from "./tab1_status.js";
+import { mountShortage } from "./shortage.js";
 
 const EXPIRED_MSG = "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนที่ขอเบิก)";
 const STATUS_LABEL = { draft: "แบบร่าง", submitted: "ส่งแล้ว", issued: "จ่ายแล้ว" };
@@ -213,7 +214,24 @@ export function renderTab2b(container, ctx) {
   toolbar.appendChild(filterInput);
   toolbar.appendChild(itemLabel);
   toolbar.appendChild(refreshBtn);
+  // brief 2s: "จ่ายไม่พอ" overview for dispensers (admins get it as a card in the แดชบอร์ด tab). Default unit = the dispenser's own
+  // (the server applies it when no `unit` is sent). Separate from the issue editor below, so it never touches unsaved edits.
+  const shortBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t2b-shortage-btn", "aria-expanded": "false", "aria-controls": "t2b-shortage" }, "จ่ายไม่พอ");
+  if (!state.isAdmin) toolbar.appendChild(shortBtn);
   container.appendChild(toolbar);
+  const shortHost = el("div", { id: "t2b-shortage", class: "t2b-shortage", hidden: true });
+  container.appendChild(shortHost);
+  let shortage = null;
+  shortBtn.addEventListener("click", () => {
+    const open = shortHost.hidden;
+    shortHost.hidden = !open;
+    shortBtn.setAttribute("aria-expanded", String(open));
+    shortBtn.classList.toggle("btn-primary", open);
+    shortBtn.classList.toggle("btn-secondary", !open);
+    if (!open) return;
+    if (!shortage) shortage = mountShortage(shortHost, { call: ctx.adminCall, fy: ctx.fySelected(), heading: "จ่ายไม่พอ" });
+    else shortage.reload();
+  });
   const host = el("div", { id: "t2b-host" });
   container.appendChild(host);
 

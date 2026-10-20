@@ -193,7 +193,7 @@ so a request line is already the (round, item) aggregate. Local bench (125 items
 
 ## 5. Admin / dispenser actions
 Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue`; own units + time window only),
-`GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN`.
+`issueShortage` (2s, §5.5; read-only, any unit), `GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN` (incl. `adminDashboard`).
 `adminLoginGoogle` / `adminLoginBackup` are public.
 
 | action | params | data |
@@ -237,6 +237,8 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminFormGet` | `id` | `{form:{id,fy,created_at,created_by,note,steps}, price_history:[{code,from_round,price,set_at,set_by,note}]}` of any version (steps incl. closed pages; price_history = fy_current, by code, from_round — 2p) · `NOT_FOUND` — §5.2 |
 | `adminFormSave` | `base_version_id:int, note?:string(≤200), form:{steps:[...]}, price_from?:{code:"YYYY-MM"}` | `{saved:true, form, versions, diff, price_backdate, price_history}` or `{saved:false, same:true, form, versions}` — new form version, §5.2 |
 | `adminPricePreview` (2p) | `changes:[{code, price, from_round}]` | `{requests, months:[first,last]\|[], delta_baht, per_code:[{code, n_lines, delta, old, price, from_round, to_round, requests, backdate}]}` — no write, §5.2 |
+| `adminDashboard` (2s, admin only) | `fy?`, `pcu?` | network view, or one PCU (staff view) — §5.5 |
+| `issueShortage` (2s, admin + dispenser) | `fy?`, `scope?:"round"\|"fy"`, `month?`, `unit?:"พัสดุ"\|"จ่ายกลาง"\|"LAB"\|"all"` | `{fy, scope, month, unit, rounds, summary, items, by_pcu}` — §5.5 |
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
@@ -406,6 +408,69 @@ plans:{rows, per_pcu:{pcu:{op,pp,total}}, network:{op,pp,total}}, limits:{in_fil
 Effect: `config.fy_current = seed.fy`; `adminBootstrap`/`pcuBootstrap` use the new form (`pcuBootstrap` always follows `fy_current`; requests sent earlier keep their bound old version in `forms`);
 `adminBootstrap.prev` gains the old fy (12 Excel months Oct … Sep), `stats.fy` = old fy, `plan_totals.fy` = new fy. Requests, lines, users, PINs, hidden items, unlocks are not touched.
 After opening, re-previewing the same file gives `mode:"same_fy"` and (because the stored form also carries the closed items) usually `version_action:"skipped_differs"`.
+
+### 5.5 Admin dashboard + "จ่ายไม่พอ" (2s — `functions/_lib/dashboard.js`, spec 2o-2s §6.2–§6.3, brief 2s §6)
+Common rules: **`submitted`/`issued` requests only**, never the trial round (`config.trial_month`), never PCUs of group `ทดลอง` (`TRIAL_GROUP`).
+`V6` = `[req_qty, req_baht, got_qty, got_baht, used_qty, used_baht]` · req = op+pp · **got = staff view**: `issued_total` when not null (no need for the unit to be done; null → 0)
+· used = `request_lines.used` (null → 0) · baht = qty × `price_snapshot` (fallback `priceFor(fy, code, round)`, 2p) · baht rounded to 2 decimals, ratios (`pct_plan`, share values) to 4.
+`fy` param: as `pcuDashboard` (absent = `fy_current`; not an integer 1–9999 → `BAD_REQUEST`; no form version of that fy → `NOT_FOUND`). `elapsed` = rounds of `rounds` ≤ currentRound.
+
+**`adminDashboard{fy?}`** — admin only (dispenser / PCU token → `FORBIDDEN`, no token → `AUTH_REQUIRED`). Network view:
+```
+{ fy, fys, rounds, elapsed,
+  // fys = fys with a sent request (non-trial round, non-trial pcu) that have a form version, + fy_current, newest first · rounds = fyMonths(fy) − trial round
+  items: { code: {name, unit, unit_group, net_plan_qty} },     // active items of the fy's latest form (form order) + every code with data · net_plan_qty = Σ plans(fy) of non-trial pcus
+  network: {
+    monthly: { unit_group: { round: V6 } },                    // keys พัสดุ / จ่ายกลาง / LAB always present; rounds whose V6 is all zero are omitted · unit = items[code].unit_group
+    items:   { code: V6 },                                     // fy-to-date per item (codes with a non-zero V6, item order)
+    plan_baht:        { unit_group: number },                  // Σ plan_qty × price in the fy's latest form (non-trial pcus)
+    req_baht_on_plan: { unit_group: number },                  // Σ req_baht of the (pcu,item) pairs with plan > 0
+    top3: { qty:[code…], baht:[code…] }                        // by fy-to-date req qty / req baht, all units (> 0 only; ties in item order)
+  },
+  pcus: [ { code, name, req_baht, got_baht, plan_baht, pct_plan,          // pct_plan = Σ req_baht_on_plan / plan_baht (null when plan_baht = 0)
+            units: { unit_group: [req_baht, got_baht, plan_baht, req_baht_on_plan] },   // all three unit keys
+            pattern, pattern_prev, pattern_note, endyear_prev, n_flags } ],   // every non-trial pcu, req_baht high → low (ties by code)
+  flags: [ { pcu, code, rule:"p90"|"pace"|"share", round?, value, threshold } ],    // ordered pcu → item order → rule (p90, pace, share) → round
+  info_new: [ { pcu, code } ]                                  // ordered pcu → item order
+}
+```
+- **Rule 1 `p90`** (one flag per pcu × item × round): qty of the round > `stats.p90_m` of (fy−1, pcu, item). `round`, `value` = qty, `threshold` = p90_m. **stats key = the data year**
+  (seed `stats["2569"]` = computed from FY2569 months, and the rollover stores the old fy's stats under the old fy, FORMAT.md) — so FY2570 compares against `stats` fy 2569.
+  No stats row, or `p90_m` ≤ 0 (an item requested in ≤ 1 month of 12 has p90 0 — every request would flag) → rule 1 skipped for that item. Compared inside SQL (JOIN stats).
+- **Rule 2 `pace`** (as 2q): `value` = cum req qty of the fy > `threshold` = plan_qty × elapsed/12 × 1.2 (rounded 2) · plan 0 → skipped · none when elapsed = 0.
+- **Rule 4 `share`**: `value` = pcu's req baht of the item / network req baht of the item (0–1) > `threshold` = 2 × pcu's req baht total / network req baht total — only for items whose
+  network fy-to-date req baht ≥ 0.5 % of the network total **and** requested (req > 0) by ≥ 3 PCUs (brief 2s §2). Network = non-trial pcus, all units.
+- **Rule 3 `info_new`** (not a flag, not in `n_flags`): req > 0 this fy but no `actual_prev` row with qty > 0 of (fy−1, pcu, item) — only for pcus that have ≥ 1 `actual_prev` fy−1 row with qty > 0.
+- **pattern** (constants copied from `output/data/thresholds.json`, evaluated in this order on the pcu's MONTHLY req baht, all items): sum 0 → `ไม่เบิก` · active months ≤ 3 and sum < 10,000 → `เบาบาง`
+  · top-1 month share ≥ 0.80 → `เบิกครั้งเดียว` · top-3 share ≥ 0.60 → `กระจุกเป็นช่วง` · active ≥ 8 and top-1 < 0.35 → `สม่ำเสมอ` · else `ผสม`.
+  `pattern` = this fy over the elapsed rounds; `pattern_note` = `"ข้อมูลยังน้อย"` when elapsed < 6, else `null`. `pattern_prev` = the 12 Excel months of `actual_prev` fy−1 × `prices_prev`
+  (fallback: price in the latest form of fy−1, else of fy — as `prev_fy`), `null` without actual_prev · `endyear_prev` = (ก.ค.+ส.ค.+ก.ย.) / year ≥ 0.40 (`false` without actual_prev).
+
+**`adminDashboard{fy?, pcu}`** — one PCU (code trimmed + upper-cased; unknown or group `ทดลอง` → `NOT_FOUND`). Same shape as `pcuDashboard` (§4.2: `fy, fys, rounds, items, monthly, prev_fy,
+used_coverage, flags`; `fys`/`items` computed for that pcu exactly as there, incl. its hidden items) **but got = staff view**, plus `elapsed`, `pcu:{code,name}`, `top3:{qty,baht}` (that pcu),
+`pattern`, `pattern_prev`, `pattern_note`, `endyear_prev` (same values as its network row) and `info_new:[code…]` (item order). `flags` = every rule, as above without `pcu`, ordered item → rule → round;
+a `pace` flag also carries `cum_qty, plan_qty, elapsed` (the 2q fields). The share rule uses the same network totals as the network view.
+
+**`issueShortage{fy?, scope?, month?, unit?}`** — admin + dispenser (PCU token → `FORBIDDEN`). Read-only, no time window.
+- `scope`: `"round"` (default) | `"fy"`, else `BAD_REQUEST`. `unit`: `พัสดุ` | `จ่ายกลาง` | `LAB` | `"all"`, else `BAD_REQUEST`; absent → dispenser: the first of its `users.units`, admin: `"all"` (a dispenser may ask for any unit, incl. `"all"`).
+- `month` (scope round): `YYYY-MM` else `BAD_REQUEST`; with `month` and no `fy` the fy is `monthFy(month)`; a month outside `fyMonths(fy)` → `BAD_REQUEST`. Absent → the latest round of the fy ≤ currentRound that has a
+  sent request (non-trial round, non-trial pcu); none → currentRound clamped into the fy. The trial round itself yields an empty result. Scope fy: every round of the fy except the trial round (`month: null`).
+- Counted lines = (pcu × round × item) with req > 0 **and `issued_total` not null** (lines without a figure are not counted, as IssueInfo); unit of a line = `dispense_unit` of its page in the request's bound form.
+  short = max(req − issued_total, 0) · short_baht = short × `price_snapshot` (fallback `priceFor`).
+```
+{ fy, scope, month|null, unit, rounds,                       // rounds = fyMonths(fy) − trial round
+  summary: { complete, incomplete, short_qty, short_baht },  // lines with issued ≥ req / issued < req
+  items: [ { code, name, unit, unit_group, req_qty, issued_qty, short_qty, short_baht, n_pcus } ],
+          // items with short_qty > 0 only, ALL of them (client cuts the top 5) · short_qty high → low, then short_baht, then form order · req_qty / issued_qty = Σ over the counted lines of the item
+          // · n_pcus = PCUs with a short line · name/unit from the fy's latest form (formForFy)
+  by_pcu: { code: [ { pcu, pcu_name, month, req, issued, short, short_baht, reason, note } ] }   // short lines only, ordered pcu → month · reason/note = issue_reason / issue_note
+}
+```
+CPU (free tier 10 ms): the network view never pulls raw lines — SQL GROUP BY (pcu,item), (round,item), (pcu,round) + the p90 JOIN stats + plans + actual_prev GROUP BY (pcu,month) / (pcu,item);
+only lines without `price_snapshot` (normally none) come back raw for the `priceFor` fallback. Local bench (`node:sqlite` as D1, 15 PCUs × 125 items × 12 rounds = 22,500 lines, every line requested +
+issued + used, 916 flags): network JS ≈ 3 ms warm / ≈ 12 ms cold (fresh process, incl. first-call compile), payload ≈ 105 K chars; one pcu ≈ 1.3 / 3 ms, ≈ 67 K chars; shortage scope fy (2,500 short lines)
+≈ 0.6 / 1.9 ms, ≈ 391 K chars; scope round ≈ 0.1 ms, ≈ 53 K chars (pcuDashboard reference ≈ 0.6 / 1.3 ms). SQL ≈ 80 ms (network) in node:sqlite = D1 time, not Worker CPU, but the network view
+reads the fy's lines ~5 times (D1 rows read ≈ 5 × lines + 2 × actual_prev rows per open).
 
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
 `month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2j: FY2570 = rounds `2026-11` … `2027-10`; the plan/form of the scope = that fy, form via `formForFy`).
