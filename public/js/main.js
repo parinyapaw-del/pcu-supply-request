@@ -10,6 +10,7 @@ import { renderChangePin } from "./pages/pin.js";
 import { renderFill } from "./pages/fill.js";
 import { renderPrint } from "./pages/print.js";
 import { renderIssue } from "./pages/issue.js";
+import { renderDashboard } from "./pages/dashboard.js";
 import { loadOlderMonth } from "./pages/common.js";
 
 // app.boot = pcuBootstrap (functions/API.md §4.1) · app.older = months loaded via pcuGetMonth · app.offline = running on the cached bootstrap
@@ -169,6 +170,9 @@ async function route() {
       await renderPrint(container, app, params);
     } else if (path === "issue") {
       await renderIssue(container, app, params);
+    } else if (path === "dashboard") {
+      app.monthKey = null;
+      await renderDashboard(container, app);
     } else {
       location.hash = "#/home";
     }

@@ -9,6 +9,7 @@ import { adminImportApply, adminImportPreview } from "../_lib/import_fy.js";
 import { adminExportSeed, adminFormGet, adminFormSave, adminPricePreview } from "../_lib/form_editor.js";
 import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
+import { pcuDashboard } from "../_lib/dashboard.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 
 const PUBLIC = {
@@ -26,6 +27,7 @@ const PCU = {
   setHidden: pcu.setHidden,
   pcuAck: pcu.pcuAck,
   pcuSetStockMode: pcu.pcuSetStockMode, // 2o
+  pcuDashboard, // 2q
   requestPdf: pdf.requestPdf,
 };
 // admin + dispenser

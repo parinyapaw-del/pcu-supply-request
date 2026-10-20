@@ -866,6 +866,8 @@ async function main() {
     // dev mock renderer (DEV_FAKE_GOOGLE=1, no CF_BR_TOKEN) + local R2 (--r2 FILES): the whole flow is real except Browser Rendering itself
     const P = "PCU11", Q = "PCU13";
     const pr = (await mustOk("pcuList")).pcus.find((x) => x.code === P);
+    const abD = await mustOk("adminBootstrap", {}, ADM2);
+    const FD = abD.form; // latest FY2570 form (prices edited by 2p)
     const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
     const TQ = (await mustOk("pcuLogin", { pcu: Q, pin: "12345" })).token;
     const T3b = (await mustOk("pcuLogin", { pcu: "PCU03", pin: "12345" })).token; // another PCU
@@ -2508,6 +2510,141 @@ async function main() {
     eq(gd.pcu, { code: "PCU98", name: "ปกติ", print_name: "ปกติ", group: "ทั่วไป" }, "add without group / print_name → ทั่วไป, print_name = name");
     eq((await mustOk("adminPcuEdit", { code: "PCU98", name: "ปกติ2", print_name: "" }, ADM2)).pcu.print_name, "ปกติ2", "edit print_name \"\" → = (new) name");
     eq((await mustOk("adminPcuEdit", { code: "PCU98", name: "ปกติ3" }, ADM2)).pcu.print_name, "ปกติ2", "edit name only leaves print_name untouched");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("PCU dashboard (2q)");
+  {
+    // PCU98 (added in 2n, no data yet) · trial round = 2026-11 (inside FY2570 here, so it must be dropped) · rounds 2026-12 / 2027-01 sent, 2027-02 draft
+    const P = "PCU98", TRIAL = "2026-11", R1 = "2026-12", R2 = "2027-01", R3 = "2027-02";
+    const AT_R2 = { month: R2 }; // calendar 2027-01 → currentRound 2027-02, prevRound 2027-01
+    const r2 = (x) => Math.round(x * 100) / 100;
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
+    for (const m of [TRIAL, R1, R2, R3]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    await mustOk("adminSetConfig", { key: "trial_month", value: TRIAL }, ADM2);
+    const fItem = (code) => FD.steps.flatMap((s) => s.rows).find((r) => r.type === "item" && r.code === code);
+    const unitOf = (code) => FD.steps.find((s) => s.rows.some((r) => r.type === "item" && r.code === code)).dispense_unit;
+    // plans 2570 + actual_prev 2569 for PCU98 (import replaces a whole fy → the seed's rows are re-sent, restored at the end)
+    const ap69 = (seed.actual_prev && seed.actual_prev["2569"]) || { months: fyExcelMonths(2569), data: {} };
+    const z = () => new Array(12).fill(0);
+    const aOp = z(), aPp = z(), bOp = z();
+    aOp[0] = 4; aOp[1] = 3; aPp[1] = 1; bOp[11] = 2; // Excel 2025-10 (↔ trial round 2026-11: dropped) · 2025-11 (↔ 2026-12) · 2026-09 (↔ 2026-10)
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570,
+      plans: { 2570: { ...seed.plans["2570"], [P]: { [A.code]: [100, 20], [B.code]: [10, 2] } } },
+      actual_prev: { 2569: { months: ap69.months, data: { ...ap69.data, [P]: { [A.code]: { op: aOp, pp: aPp }, [B.code]: { op: bOp, pp: z() } } } } },
+    }, set_current_fy: true }, ADM2, "import PCU98 plans + actual_prev (+ fy_current back to 2570; the 2e section left 2571)");
+
+    const abD = await mustOk("adminBootstrap", {}, ADM2);
+    const FD = abD.form; // latest FY2570 form (prices edited by 2p)
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2027-01-05T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, ...v, updated_at: tsn() }]));
+    const save = async (month, lines, send, opts) => {
+      const r = await api("saveLines", { month, lines: L(lines), ...(send ? { send: true } : {}) }, TP, opts);
+      if (!r.ok) console.log("  saveLines error", JSON.stringify(r.error));
+      return r.ok ? r.data : null;
+    };
+    const dash = async (params = {}, tok = TP, opts) => api("pcuDashboard", params, tok, opts);
+
+    // empty pcu first
+    const d0 = await mustOk("pcuDashboard", {}, TP);
+    eq([d0.fy, d0.fys, d0.monthly, d0.flags, d0.used_coverage], [2570, [2570], {}, [], { items_with_used: 0, items_total: 0 }], "empty: fy = fy_current, fys [2570], monthly {}, flags [], coverage 0/0");
+    eq(d0.rounds, fyRoundMonths(2570).filter((m) => m !== TRIAL), "rounds = fyMonths(2570) without the trial round (11)");
+
+    const sends = [
+      await save(TRIAL, { [A.code]: { op: 50, pp: 0, used: 7 } }, true), // trial: never counted
+      await save(R1, { [A.code]: { op: 4, pp: 1, used: 2 }, [B.code]: { op: 2, pp: 0 }, [CSI.code]: { op: 3, pp: 0 }, [LABI.code]: { op: 1, pp: 0 } }, true),
+      await save(R2, { [A.code]: { op: 1, pp: 0, used: 3 }, [B.code]: { op: 10, pp: 0, used: 0 } }, true, AT_R2),
+      await save(R3, { [A.code]: { op: 99, pp: 0 }, [B.code]: { op: 99, pp: 0 } }, false, AT_R2), // draft: never counted
+    ];
+    ok(sends.every(Boolean) && sends[3].status === "draft" && sends.slice(0, 3).every((s) => s.status === "submitted"), "setup: PCU98 sends trial 2026-11, 2026-12, 2027-01 · draft 2027-02");
+    // issue 2026-12: A short (3 of 5) + CSI figure, then only A's unit is marked done
+    await mustOk("issueLines", { pcu: P, month: R1, lines: { [A.code]: { issued_total: 3, reason: "out_of_stock" }, [CSI.code]: { issued_total: 3 } } }, ADM2);
+    await mustOk("issueDone", { pcu: P, month: R1, unit: unitOf(A.code), done: 1 }, ADM2);
+    const g1 = (await mustOk("adminGetRequest", { pcu: P, month: R1 }, ADM2)).request.lines;
+    const g2 = (await mustOk("adminGetRequest", { pcu: P, month: R2 }, ADM2)).request.lines;
+    const ps = (l) => l.price_snapshot;
+    ok([A, B, CSI, LABI].every((x) => typeof ps(g1[x.code]) === "number") && typeof ps(g2[A.code]) === "number", "setup: sent lines carry price_snapshot");
+    const bGot = unitOf(B.code) === unitOf(A.code) ? 2 : 0; // issueDone fills the still-null lines of the done unit with the request
+
+    const dr = await dash({}, TP, AT_R2);
+    ok(dr.ok, "pcuDashboard at calendar 2027-01" + (dr.ok ? "" : ` (${dr.error.code}: ${dr.error.message})`));
+    const d = dr.data;
+    eq(d.fy, 2570, "pcuDashboard default fy = fy_current 2570");
+    eq(d.monthly[A.code] && Object.keys(d.monthly[A.code]).sort(), [R1, R2], "A: only rounds 2026-12 + 2027-01 (trial 2026-11 and draft 2027-02 not counted)");
+    ok(!Object.values(d.monthly).some((byR) => TRIAL in byR || R3 in byR), "no item has a trial-round or draft-round entry");
+    const pA1 = ps(g1[A.code]), pB1 = ps(g1[B.code]), pC1 = ps(g1[CSI.code]), pL1 = ps(g1[LABI.code]), pA2 = ps(g2[A.code]), pB2 = ps(g2[B.code]);
+    eq(d.monthly[A.code][R1], [5, r2(5 * pA1), 3, r2(3 * pA1), 2, r2(2 * pA1)], "A 2026-12 = [req 5, ×snapshot, got 3 (unit done, short), ×snapshot, used 2, ×snapshot]");
+    eq(d.monthly[A.code][R2], [1, r2(pA2), 0, 0, 3, r2(3 * pA2)], "A 2027-01 = [1, …, got 0 (not issued), used 3 × snapshot]");
+    eq(d.monthly[B.code][R1], [2, r2(2 * pB1), bGot, r2(bGot * pB1), 0, 0], `B 2026-12 got ${bGot} (done unit default = requested)`);
+    eq(d.monthly[B.code][R2], [10, r2(10 * pB2), 0, 0, 0, 0], "B 2027-01 (used 0 → used columns 0)");
+    eq(d.monthly[CSI.code][R1], [3, r2(3 * pC1), 0, 0, 0, 0], "CSI: issued_total set but its unit is not done → got 0 (no leak)");
+    eq(d.monthly[LABI.code][R1], [1, r2(pL1), 0, 0, 0, 0], "LAB item: requested, nothing issued");
+    ok(near(d.monthly[A.code][R1][1], 5 * pA1) && pA1 !== A.price, `baht = qty × price_snapshot (${pA1}; ≠ the import price ${A.price} — 2p repriced A from 2026-12)`);
+    eq(d.used_coverage, { items_with_used: 2, items_total: 4 }, "used_coverage: 2 items with a used line (A, B used 0) of 4 requested");
+    eq(d.fys, [2570], "fys = [2570] (the trial round does not add a fy)");
+
+    // items
+    const ia = d.items[A.code];
+    eq(ia, { name: fItem(A.code).name, unit: fItem(A.code).unit || "", unit_group: unitOf(A.code), plan_qty: 120 }, "items[A] = {name, unit, unit_group = step.dispense_unit, plan_qty = plan_op + plan_pp}");
+    eq([d.items[B.code].plan_qty, d.items[CSI.code].plan_qty, d.items[CSI.code].unit_group, d.items[LABI.code].unit_group], [12, 0, "จ่ายกลาง", "LAB"], "items: plan_qty 12 / 0 (no plan) · unit_group จ่ายกลาง / LAB");
+    const activeCodes = FD.steps.filter((s) => s.active !== false).flatMap((s) => s.rows.filter((r) => r.type === "item" && r.active !== false).map((r) => r.code));
+    eq(Object.keys(d.items).sort(), [...new Set([...activeCodes, A.code, B.code, CSI.code, LABI.code])].sort(), "items = active items of the FY2570 form (+ any with data)");
+
+    // flags (rule 2 "pace"): elapsed = rounds ≤ currentRound without the trial
+    eq(d.flags, [{ code: B.code, rule: "pace", cum_qty: 12, plan_qty: 12, elapsed: 3 }],
+      "calendar 2027-01: elapsed 3 (2026-12, 2027-01, 2027-02) · B 12 > 12×3/12×1.2 → pace · A 6 ≤ 36 no flag · CSI has no plan → skipped");
+    const dE1 = await mustOk("pcuDashboard", {}, TP);
+    eq(dE1.flags.map((f) => [f.code, f.elapsed]), [[B.code, 1]], "calendar 2026-11: elapsed 1 (trial 2026-11 not counted)");
+
+    // prev_fy: actual_prev 2569 aligned to rounds (round X ↔ Excel month X−1 a year earlier)
+    const pp69 = abD.prev && abD.prev["2569"] ? abD.prev["2569"].prices : {};
+    const pa = pp69[A.code] ?? fItem(A.code).price, pb = pp69[B.code] ?? fItem(B.code).price;
+    const pv = d.prev_fy;
+    ok(pv && pv.months.length === 11 && pv.qty.length === 11 && pv.baht.length === 11, "prev_fy arrays aligned to rounds (11 entries)");
+    eq([pv.months[0], pv.months[10]], ["2025-11", "2026-09"], "prev_fy.months[i] = Excel month of rounds[i] one year earlier (2026-12 ↔ 2025-11)");
+    const qx = z().slice(0, 11); qx[0] = 4; qx[10] = 2;
+    eq(pv.qty, qx, "prev_fy.qty: 2025-11 → 4 (OP 3 + PP 1) · 2026-09 → 2 · 2025-10 (↔ trial round) dropped");
+    ok(near(pv.baht[0], r2(4 * pa)) && near(pv.baht[10], r2(2 * pb)) && pv.baht.slice(1, 10).every((x) => x === 0), `prev_fy.baht = qty × prices_prev 2569 (${pa}, ${pb})`);
+
+    // CSI's unit marked done later → got appears
+    await mustOk("issueDone", { pcu: P, month: R1, unit: "จ่ายกลาง", done: 1 }, ADM2);
+    eq((await mustOk("pcuDashboard", {}, TP)).monthly[CSI.code][R1].slice(2, 4), [3, r2(3 * pC1)], "CSI unit done → got 3 shows up");
+
+    // hidden: no data → dropped · with data → kept
+    const H = activeCodes.find((c) => ![A.code, B.code, CSI.code, LABI.code].includes(c));
+    await mustOk("setHidden", { codes: [H, LABI.code] }, TP);
+    const dH = await mustOk("pcuDashboard", {}, TP);
+    ok(!(H in dH.items) && LABI.code in dH.items, "hidden item without data excluded · hidden item with data kept");
+    await mustOk("setHidden", { codes: [] }, TP);
+
+    // fy param
+    expectErr(await dash({ fy: "abc" }), "BAD_REQUEST", "fy 'abc'");
+    expectErr(await dash({ fy: 2570.5 }), "BAD_REQUEST", "fy 2570.5");
+    expectErr(await dash({ fy: -1 }), "BAD_REQUEST", "fy -1");
+    expectErr(await dash({ fy: 2560 }), "NOT_FOUND", "fy 2560 (no form)");
+    const d71 = await mustOk("pcuDashboard", { fy: "2571" }, TP);
+    eq([d71.fy, d71.rounds.length, d71.monthly, d71.prev_fy, d71.flags, d71.fys], [2571, 12, {}, null, [], [2570]],
+      "fy '2571' (form from the rollover): 12 rounds, no data, prev_fy null (no actual_prev 2570 for PCU98), fys [2570]");
+    eq(await mustOk("pcuDashboard", { fy: 2570 }, TP), await mustOk("pcuDashboard", {}, TP), "fy 2570 explicit = the default");
+
+    // auth: PCU token only, always the token's own pcu
+    expectErr(await dash({}, null), "AUTH_REQUIRED", "pcuDashboard without a token");
+    expectErr(await dash({}, ADM2), "FORBIDDEN", "pcuDashboard with an admin token");
+    const DSPD = "dash.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSPD, role: "dispenser", units: ["LAB"] }, ADM2);
+    expectErr(await dash({}, (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSPD })).token), "FORBIDDEN", "pcuDashboard with a dispenser token");
+    await mustOk("adminUsersRemove", { email: DSPD }, ADM2);
+    const T00d = (await mustOk("pcuLogin", { pcu: "PCU00", pin: "12345" })).token;
+    const d00 = await mustOk("pcuDashboard", { pcu: P }, T00d);
+    ok(d00.monthly[A.code] && d00.monthly[A.code][R1][0] === 4 && !d00.monthly[B.code], "a pcu param is ignored: PCU00 sees only its own request (A 4 in 2026-12), never PCU98's");
+
+    // restore: trial off, seed plans / actual_prev, fy_current 2571 (as the 2e section left it)
+    await mustOk("adminSetConfig", { key: "trial_month", value: null }, ADM2);
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570, plans: { 2570: seed.plans["2570"] }, actual_prev: { 2569: ap69 } } }, ADM2, "restore seed plans + actual_prev");
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2571 }, set_current_fy: true }, ADM2, "restore fy_current 2571");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

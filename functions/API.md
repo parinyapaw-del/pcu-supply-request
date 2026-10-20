@@ -64,6 +64,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `pcuGetMonth` | `month` (`> currentRound` → `BAD_REQUEST` "เดือนนี้ยังไม่ถึง") | one `byMonth` entry (§4.1) + `round` + `unlocks` — for "older months" · + `form` (the request's bound version, PCU-stripped) **only when** it differs from the latest of `fy_current` (2d) · + `prices:{<month>:{code:price}}` (2p, same rule as `pcuBootstrap.prices`) |
 | `saveLines` | `month, lines:{code:{stock,op,pp,used?,adj?,adj_reason?,calc_from?,updated_at}}, last_step?, submitter_name?, send?:true` | `{saved_at, status, request, submitted:bool, over_limit:[...], recalc:{code:{stock,used}} }` (2o `recalc` below) |
 | `pcuSetStockMode` (2o) | `mode:'A'\|'B'` | `{stock_mode}` — stored in `pcus.stock_mode` (A = กรอกคงเหลือเอง, B = คำนวณคงเหลือจากยอดใช้ไป); switching never touches line values · other mode → `BAD_REQUEST` · audit `pcuSetStockMode` (detail = mode) |
+| `pcuDashboard` (2q) | `fy?` (int or digit string; default `config.fy_current`) | the PCU's own dashboard — §4.2 · loaded when `#/dashboard` opens (not part of `pcuBootstrap`) · `fy` not an integer 1–9999 → `BAD_REQUEST` · no form version of exactly that fy → `NOT_FOUND` · admin / dispenser token → `FORBIDDEN` |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
 | `requestPdf` | `month, doc_date?, supply_month?` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}`; 2h print options §6b |
@@ -161,6 +162,34 @@ version of `fy_current`, else the newest version of any fy (so the trial round 2
 - **`request.issued`** (PCU view only; present only when the request has >= 1 `issue_status` row): `{ code: {total, op, pp, reason, note} }` for requested lines of **done units** that have a figure
   (`op`/`pp` = the OP-first split of `total`). `request.lines` stays exactly as the PCU filled it (Q78); issued figures never feed limits / `used_fy`.
   2o exception: `prev_lines[code].received` uses `issued_total` — of **done units only** (same no-leak rule).
+
+### 4.2 `pcuDashboard` data (2q — `functions/_lib/dashboard.js`, spec 2o-2s §5.1)
+Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` requests only** (never drafts) and **never the trial round** (`config.trial_month`).
+```
+{ fy: 2570,
+  fys: [2570, …],              // fys with a submitted/issued non-trial request of this pcu that have a form version, + fy_current always; newest first
+  rounds: ["2026-11", …],      // fyMonths(fy) minus the trial round (12, or 11 when the trial round falls inside fy)
+  items: { code: {name, unit, unit_group:"พัสดุ"|"จ่ายกลาง"|"LAB", plan_qty} },
+           // items of the latest form version of fy (form order); dropped: items hidden by this pcu (hidden_items), inactive items / items of
+           // soft-deleted pages — unless the item has data in `monthly` (then kept; a code missing from the latest form is looked up in the bound
+           // versions). unit_group = step.dispense_unit · plan_qty = plans.plan_op + plan_pp of (fy, pcu), 0 when none
+  monthly: { code: { "2026-12": [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht] } },
+           // only code × round entries that are not all zero · req = op+pp · got = issued_total when the line's dispense unit (bound form) has an
+           // issue_status row and issued_total is not null (PCU view, Q78 — undone units never leak), else 0 · used = request_lines.used (null → 0)
+           // baht = qty × price_snapshot (fallback priceFor(fy, code, round), 2p) — same price for req/got/used · baht rounded to 2 decimals
+  prev_fy: { months:["2025-11", …], qty:[…], baht:[…] } | null,
+           // actual_prev of fy−1 for this pcu, ALIGNED TO `rounds` (same length, index i ↔ rounds[i]): months[i] = the Excel/calendar month of the
+           // same round one year earlier = monthMinus(rounds[i], 13) (round X ↔ Excel month X−1, as tab 4 / fyExcelMonths). qty = Σ op+pp,
+           // baht = qty × prices_prev(fy−1) (fallback: price in the latest form of fy−1, else of fy) · null when this pcu has no actual_prev row in fy−1
+  used_coverage: { items_with_used, items_total },   // codes with ≥ 1 counted line whose used is not null · codes with req > 0 in fy
+  flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
+           // rule 2 only (Q25): cum_qty (Σ req of fy) > plan_qty × elapsed/12 × 1.2 · elapsed = rounds of `rounds` ≤ currentRound
+           // · items with plan_qty 0 skipped · none when elapsed = 0 · ordered as `items`
+}
+```
+CPU: 7 parallel queries (+ price_history / the fy−1 form only when a snapshot / prices_prev price is missing) and one JS pass; one request per pcu × round,
+so a request line is already the (round, item) aggregate. Local bench (125 items × 12 rounds, everything filled): ~0.5 ms JS warm, ~3–5 ms cold
+(form JSON parse), payload ≈ 69 K chars worst case.
 
 ## 5. Admin / dispenser actions
 Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `adminItemIssue`; own units + time window only),
