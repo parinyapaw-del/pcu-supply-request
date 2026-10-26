@@ -437,9 +437,17 @@ export async function setHidden(ctx, p) {
   const form = await latestForm(DB, cfg.fy_current);
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];
-  const stmts = [DB.prepare(`DELETE FROM hidden_items WHERE pcu = ?`).bind(pcu.code)];
+  // Full replacement in the contract, but write only the diff: the UI sends the whole list on every toggle, and
+  // DELETE-all + re-INSERT cost ~400 D1 rows written per click at ~100 hidden items (2026-10-26: 90k/day of the 100k free tier).
+  const { results: curRows } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcu.code).all();
+  const cur = new Set(curRows.map((r) => r.item_code));
+  const want = new Set(uniq);
+  const removed = [...cur].filter((c) => !want.has(c));
+  const added = uniq.filter((c) => !cur.has(c));
+  const stmts = removed.map((c) => DB.prepare(`DELETE FROM hidden_items WHERE pcu = ? AND item_code = ?`).bind(pcu.code, c));
   const ts = nowIso();
-  stmts.push(...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], uniq.map((c) => [pcu.code, c, ts, pcu.code])));
+  stmts.push(...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], added.map((c) => [pcu.code, c, ts, pcu.code]),
+    { prefix: "INSERT OR IGNORE INTO" }));
   stmts.push(auditStmt(DB, pcu.code, "pcu", "setHidden", pcu.code, "", `count=${uniq.length}`));
   await batchChunked(DB, stmts);
   return { hidden: uniq };
