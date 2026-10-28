@@ -1,7 +1,7 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
 import { err, assertQty, isStr } from "./http.js";
 import {
-  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, loadForm, publicConfig,
+  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, loadForm, publicConfig,
 } from "./db.js";
 import {
   PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
@@ -145,8 +145,9 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   // never_prev: active items this PCU never withdrew last fy (only meaningful when we have history for the PCU)
   let neverPrev = [];
   if (form && actualRes.results.length) {
-    const had = new Set(actualRes.results.map((r) => r.item_code));
-    const known = pricesRes.results.length ? new Set(pricesRes.results.map((r) => r.item_code)) : null;
+    const lm = linkMap(form); // 2v: history of a linked old code is the history of the item that replaces it
+    const had = new Set(actualRes.results.map((r) => linkedCode(lm, r.item_code)));
+    const known = pricesRes.results.length ? new Set(pricesRes.results.map((r) => linkedCode(lm, r.item_code))) : null;
     for (const [c, { item }] of form.index) {
       if (item.active === false || had.has(c)) continue;
       if (known && !known.has(c)) continue; // brand-new item: no history, not "never withdrawn"

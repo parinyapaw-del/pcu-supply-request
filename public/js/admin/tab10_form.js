@@ -8,7 +8,7 @@ import { clearRequestCache } from "./requests.js";
 import {
   DISPENSE_UNITS, MAX_ACTIVE_STEPS, MAX_ACTIVE_ITEMS, MAX_SECTIONS, STEP_CODE_RE,
   deepCopy, normalizeForm, formSignature, validateForm, diffForms, diffIsEmpty, summaryThai, diffDetailsThai,
-  nextItemCode, suggestStepCode, stepCounts, isActive
+  nextItemCode, suggestStepCode, stepCounts, isActive, linksOf
 } from "./form_diff.js";
 
 const PREVIEW_KEY = "pcuSupply2:formPreview";
@@ -329,7 +329,7 @@ export function renderTab10(container, ctx) {
     if (ts.draft.steps.filter(isActive).length >= MAX_ACTIVE_STEPS) { toast(`เปิดได้ไม่เกิน ${MAX_ACTIVE_STEPS} หน้า`, "err"); return; }
     const used = new Set(ts.draft.steps.map((s) => s.code).concat(ts.base.steps.map((s) => s.code)));
     const res = await formDialog("เพิ่มหน้าใหม่", [
-      { key: "code", label: "รหัสหน้า (A–Z, 0–9 ไม่เกิน 6 ตัว — ใช้นำหน้ารหัสรายการ เช่น S08-01)", required: true, maxlength: 6, value: suggestStepCode(ts.draft, ts.base) }
+      { key: "code", label: "รหัสหน้า (A–Z, 0–9 ไม่เกิน 6 ตัว — รายการใหม่ได้รหัส M-xxx ไม่ขึ้นกับหน้า)", required: true, maxlength: 6, value: suggestStepCode(ts.draft, ts.base) }
     ], {
       okText: "เพิ่มหน้า", intro: "รหัสหน้าแก้ภายหลังไม่ได้",
       validate: (v) => {
@@ -479,7 +479,7 @@ export function renderTab10(container, ctx) {
         }
         tr = el("tr", { class: "t10-item-row" + (active ? "" : " t10-closed") + (baseCodes.has(r.code) ? "" : " t10-new"), "data-idx": String(i), "data-code": r.code }, [
           el("td", { class: "num" }, String(seq)),
-          el("td", { class: "code-cell" }, r.code),
+          linkCell(r),
           el("td", { class: "left" }, histText(r.code)
             ? [name, el("div", { class: "t10-hist muted small", title: (ts.hist[r.code] || []).map((x) => `${formatMoney(x.price)} ตั้งแต่ ${monthShort(x.from_round)}${x.set_by ? " โดย " + x.set_by : ""}`).join("\n") }, histText(r.code))]
             : name),
@@ -508,6 +508,37 @@ export function renderTab10(container, ctx) {
     addSec.addEventListener("click", () => addSection(s));
     const hint = el("span", { class: "muted small" }, "หัวหมวดจะแทรกก่อนแถวที่เลือกอยู่ (ไม่ได้เลือก = บนสุด) · รายการลบไม่ได้ ให้ปิดแทน");
     rowsCard.appendChild(el("div", { class: "admin-toolbar t10-row-actions" }, [addItem, addSec, hint]));
+  }
+
+  // 2v: code cell + "เชื่อมรหัสเดิม" — link closed items (same thing, old code) so prior-year data counts under this item
+  function linkCell(r) {
+    const td = el("td", { class: "code-cell t10-code-cell" }, r.code);
+    const links = linksOf(r);
+    const takenBy = new Map();
+    ts.draft.steps.forEach((x) => (x.rows || []).forEach((y) => { if (y.type === "item" && y !== r) linksOf(y).forEach((c) => takenBy.set(c, y.code)); }));
+    links.forEach((c) => {
+      const x = el("button", { type: "button", class: "t10-link-x", title: `ยกเลิกการเชื่อม ${c}`, "aria-label": `ยกเลิกการเชื่อม ${c}` }, "×");
+      x.addEventListener("click", (ev) => { ev.stopPropagation(); r.links = links.filter((k) => k !== c); if (!r.links.length) delete r.links; touch(); drawAll(); });
+      td.appendChild(el("div", { class: "t10-link muted small", title: "ข้อมูลปีก่อน/สถิติของรหัสเดิมนับรวมเป็นรายการนี้" }, ["← " + c + " ", x]));
+    });
+    const closed = [];
+    ts.draft.steps.forEach((x) => (x.rows || []).forEach((y) => {
+      if (y.type === "item" && y !== r && !(isActive(y) && isActive(x)) && !links.includes(y.code) && !takenBy.has(y.code)) closed.push(y);
+    }));
+    if (closed.length && links.length < 10) {
+      const sel = el("select", { class: "select-input t10-link-sel", "aria-label": "เชื่อมรหัสเดิมของ " + r.code });
+      sel.appendChild(el("option", { value: "" }, "เชื่อมรหัสเดิม…"));
+      closed.forEach((y) => sel.appendChild(el("option", { value: y.code }, `${y.code} · ${String(y.name || "").slice(0, 40)}`)));
+      sel.addEventListener("click", (ev) => ev.stopPropagation());
+      sel.addEventListener("change", () => {
+        if (!sel.value) return;
+        r.links = [...links, sel.value].sort();
+        touch(); drawAll();
+        toast(`เชื่อม ${r.code} ← ${sel.value} แล้ว (ยังไม่บันทึก)`);
+      });
+      td.appendChild(sel);
+    }
+    return td;
   }
 
   function setFocusRow(i) {

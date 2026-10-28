@@ -3,9 +3,9 @@
 // Contract: functions/API.md §5.3 · file format: seed/FORMAT.md. The write path is the idempotent importer (importer.js).
 // Both actions share ONE analysis (`analyse`) so the preview shows exactly what apply will do.
 import { err, isStr } from "./http.js";
-import { auditStmt, batchChunked, getConfigAll, insertStatements, latestForm, publicConfig } from "./db.js";
+import { auditStmt, batchChunked, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, publicConfig, withLinkedRows } from "./db.js";
 import { backdateStmts, loadPriceHistory, priceEffect, seedHistoryStmts } from "./price.js";
-import { canonSteps, diffSteps, rebindStmt } from "./form_editor.js";
+import { assertLinks, canonSteps, diffSteps, rebindStmt } from "./form_editor.js";
 import { sha256Hex, stableStringify } from "./http.js";
 import { adminImportSeed, formRecord, validateSeed } from "./importer.js";
 import { defaultLimit } from "./admin.js";
@@ -77,6 +77,7 @@ function assertFormRules(steps) {
   });
   if (activeSteps < 1) throw bad("ต้องมีหน้าที่เปิดใช้อย่างน้อย 1 หน้า");
   if (activeSteps > MAX_ACTIVE_STEPS) throw bad(`มีหน้าที่เปิดใช้ได้ไม่เกิน ${MAX_ACTIVE_STEPS} หน้า (ตอนนี้ ${activeSteps})`);
+  assertLinks(steps, bad);
 }
 
 // Items of a steps list: code -> {item, step}
@@ -94,6 +95,12 @@ function buildNewSteps(fileSteps, oldForm) {
   if (oldForm) {
     const have = itemIndex(steps);
     const byCode = new Map(steps.map((s) => [s.code, s]));
+    // 2v: a file row without `links` keeps the links of the same code in the old form (an import never drops a link; tab แบบฟอร์ม does)
+    const oldIdx = itemIndex(oldForm.steps);
+    for (const [code, { item }] of have) {
+      const o = oldIdx.get(code);
+      if (o && Array.isArray(o.item.links) && o.item.links.length && !(Array.isArray(item.links) && item.links.length)) item.links = [...o.item.links];
+    }
     for (const os of oldForm.steps) {
       const lost = os.rows.filter((r) => r.type === "item" && !have.has(r.code)).map((r) => ({ ...r, active: false }));
       if (!lost.length) continue;
@@ -120,7 +127,8 @@ const median = (sorted) => { const n = sorted.length, h = n >> 1; return n % 2 ?
 // 2j: the requests counted are the 12 ROUND months of `o` (fyMonths, Nov … Oct); the block is written in Excel shape (months =
 // fyExcelMonths(o), Oct … Sep) — round m lands in the column of its submission month prevMonth(m) (slot i ↔ round fyMonths(o)[i]).
 // actual_months are reported in those Excel labels too (they are what the "ปีก่อน" tab will show).
-async function deriveFromRequests(DB, o) {
+// 2v: `lm` (linkMap of the closing fy's form) — lines of a linked old code count under the code that replaces it.
+async function deriveFromRequests(DB, o, lm) {
   const months = fyMonths(o);
   const excel = fyExcelMonths(o);
   const idx = new Map(months.map((m, i) => [m, i]));
@@ -133,11 +141,12 @@ async function deriveFromRequests(DB, o) {
       .bind(months[0], months[11]).all(),
   ]);
   const data = {};
-  for (const [month, pcu, code, op, pp] of lineRes) {
+  for (const [month, pcu, code0, op, pp] of lineRes) {
     const i = idx.get(month);
     if (i === undefined) continue;
+    const code = linkedCode(lm, code0);
     const e = ((data[pcu] ||= {})[code] ||= { op: new Array(12).fill(0), pp: new Array(12).fill(0) });
-    e.op[i] = op; e.pp[i] = pp;
+    e.op[i] += op; e.pp[i] += pp;
   }
   const stats = {};
   for (const [pcu, items] of Object.entries(data)) {
@@ -268,7 +277,7 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
   const limitsInFile = limitsFile ? Object.values(limitsFile).reduce((a, o) => a + (isObj(o) ? Object.keys(o).length : 0), 0) : 0;
   if (mode === "rollover") {
     const o = fyCur;
-    const d = await deriveFromRequests(DB, o);
+    const d = await deriveFromRequests(DB, o, linkMap(oldForm));
     const has = (k) => isObj(seed[k]) && isObj(seed[k][String(o)]);
     const src = { actual_prev: has("actual_prev") ? "file" : "db", prices_prev: has("prices_prev") ? "file" : "db", stats: has("stats") ? "file" : "db" };
     const pricesPrev = src.prices_prev === "file" ? seed.prices_prev[String(o)]
@@ -347,7 +356,7 @@ async function overridePlan(DB, o) {
   for (const [pcu, c] of planRes) if (!filePairs.has(key(pcu, c))) planDelete.push([pcu, c]);
   // limits
   const oldLim = new Map(limRes.map(([pcu, c, lm, ly, src]) => [key(pcu, c), { lm, ly, src }]));
-  const p90 = new Map(statRes.map(([pcu, c, v]) => [key(pcu, c), num(v)]));
+  const p90 = new Map(withLinkedRows(statRes, linkMap({ steps: newSteps })).map(([pcu, c, v]) => [key(pcu, c), num(v)]));
   const want = [];
   if (limitsFile) {
     for (const [pcu, items] of Object.entries(limitsFile)) if (known.has(pcu) && isObj(items)) {

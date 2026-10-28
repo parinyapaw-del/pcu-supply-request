@@ -312,6 +312,37 @@ export function formPublic(form, opts) {
   return { id: form.id, fy: form.fy, created_at: form.created_at, note: form.note, steps };
 }
 
+// 2v: {old code -> code of the item that replaces it} from item rows' `links` (chains A→B→C resolve to C). Cached on the form object.
+// Prior-year data (actual_prev / stats / prices_prev / plans fy−1) and lines of a linked closed code count under the new code.
+export function linkMap(form) {
+  if (!form) return new Map();
+  if (form.linkMap) return form.linkMap;
+  const direct = new Map();
+  for (const s of form.steps || []) for (const r of s.rows || []) if (r.type === "item" && Array.isArray(r.links)) for (const c of r.links) if (c !== r.code) direct.set(c, r.code);
+  const m = new Map();
+  for (const k of direct.keys()) {
+    let c = direct.get(k), n = 0;
+    while (direct.has(c) && c !== k && n++ < 50) c = direct.get(c);
+    m.set(k, c);
+  }
+  form.linkMap = m;
+  return m;
+}
+export const linkedCode = (lm, code) => (lm && lm.get(code)) || code;
+// 2v: rows [pcu, code, ...values] of prior-year data (stats …) + a copy under the linking code for every (pcu, old code) whose new
+// code has no row of its own (first old code wins). Rows of the old code stay (closed items still resolve).
+export function withLinkedRows(rows, lm) {
+  if (!lm || !lm.size) return rows;
+  const k = (pcu, code) => pcu + "\u0000" + code;
+  const have = new Set(rows.map((r) => k(r[0], r[1])));
+  const extra = [];
+  for (const r of rows) {
+    const n = lm.get(r[1]);
+    if (n && !have.has(k(r[0], n))) { have.add(k(r[0], n)); extra.push([r[0], n, ...r.slice(2)]); }
+  }
+  return extra.length ? rows.concat(extra) : rows;
+}
+
 // item price map {code: price} of a form
 export function priceMap(form) {
   const m = {};

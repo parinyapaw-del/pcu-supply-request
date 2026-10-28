@@ -409,7 +409,7 @@ function currentItems(form) {
     (s.rows || []).forEach((r) => {
       if (r.type === "section") { section = r.title; return; }
       if (r.type !== "item") return;
-      out.push({ code: r.code, name: r.name, unit: r.unit, price: r.price, active: r.active !== false && s.active !== false, step: s.code, stepIdx: si, section });
+      out.push({ code: r.code, name: r.name, unit: r.unit, price: r.price, active: r.active !== false && s.active !== false, step: s.code, stepIdx: si, section, links: Array.isArray(r.links) && r.links.length ? [...r.links] : null });
     });
   });
   return out;
@@ -423,15 +423,17 @@ function guessDispenseUnit(title) {
   return "พัสดุ";
 }
 
-// Next free item code with `prefix` (max number among `used` + 1, 2 digits, 3 when > 99).
-export function nextCode(prefix, used) {
+// Next free item code with `prefix` (max number among `used` + 1, `width` digits (default 2), 3 when > 99).
+// 2v: new items of the import get NEW_ITEM_PREFIX "M-001…" (not the page) — see resolveMapping.
+export const NEW_ITEM_PREFIX = "M";
+export function nextCode(prefix, used, width = 2) {
   let max = 0;
   for (const c of used) {
     const m = ITEM_CODE_RE.exec(c);
     if (m && m[1] === prefix) max = Math.max(max, Number(m[2]));
   }
   const n = max + 1;
-  return n > 999 ? null : `${prefix}-${String(n).padStart(n > 99 ? 3 : 2, "0")}`;
+  return n > 999 ? null : `${prefix}-${String(n).padStart(n > 99 ? 3 : width, "0")}`;
 }
 
 // parsed = {form: parseFormWorkbook(), plan: parsePlanWorkbook()|null}; currentForm = latest form of fy_current (closed rows incl.).
@@ -564,9 +566,7 @@ export function resolveMapping(mapping) {
   }
   for (const it of mapping.items) {
     if (it.choice && it.choice.code) continue;
-    const page = mapping.pages[it.page];
-    const prefix = page.step_code;
-    const c = nextCode(prefix, used);
+    const c = nextCode(NEW_ITEM_PREFIX, used, 3);
     codes[it.key] = c;
     used.add(c);
   }
@@ -590,7 +590,10 @@ export function buildImportJson({ fy, parsed, mapping, pcus, sources, currentFor
     for (const r of src.rows) {
       if (r.type === "section") { if (++nSec <= MAX_SECTIONS) rows.push({ type: "section", title: r.title }); continue; }
       const it = pageItems[k++];
-      rows.push({ type: "item", code: res.codes[it.key], seq: 0, name: it.name, unit: it.unit, price: round2(it.price), active: true });
+      // 2v: an existing code keeps its links; a new row linked to an old code (it.link) gets links [old]
+      const curRow = it.choice && it.choice.code ? mapping.current.find((c) => c.code === it.choice.code) : null;
+      const links = curRow && curRow.links ? curRow.links : !(it.choice && it.choice.code) && it.link ? [it.link] : null;
+      rows.push({ type: "item", code: res.codes[it.key], seq: 0, name: it.name, unit: it.unit, price: round2(it.price), active: true, ...(links ? { links } : {}) });
     }
     return { code: pg.step_code, order: pi + 1, sheet: pg.sheet, page_no: pi + 1, title: pg.title || pg.sheet, subject: pg.subject, to: pg.to, dispense_unit: pg.dispense_unit, active: true, rows };
   });
@@ -603,7 +606,7 @@ export function buildImportJson({ fy, parsed, mapping, pcus, sources, currentFor
       target = { code: cs.code, order: 0, sheet: cs.sheet || "", page_no: null, title: cs.title || cs.code, subject: cs.subject || "", to: cs.to || "", dispense_unit: cs.dispense_unit || "พัสดุ", active: false, rows: [] };
       steps.push(target);
     }
-    for (const r of leftovers) { target.rows.push({ type: "item", code: r.code, seq: 0, name: r.name, unit: r.unit, price: round2(r.price || 0), active: false }); placed.add(r.code); }
+    for (const r of leftovers) { target.rows.push({ type: "item", code: r.code, seq: 0, name: r.name, unit: r.unit, price: round2(r.price || 0), active: false, ...(Array.isArray(r.links) && r.links.length ? { links: [...r.links] } : {}) }); placed.add(r.code); }
   }
   // numbering as the server does: order by array, page_no among active pages, seq global (active pages first)
   let page = 0, seq = 0;
@@ -774,6 +777,7 @@ export function buildFromJson(obj, mapping) {
       if (r.type !== "item" || r.active === false) continue;
       const it = mapping.items[k++];
       r.code = res.codes[it.key];
+      if (it.link && !(it.choice && it.choice.code) && !(Array.isArray(r.links) && r.links.length)) r.links = [it.link]; // 2v
       if (r.seq !== undefined && r.seq !== null) bySeq["#" + r.seq] = r.code;
     }
   }

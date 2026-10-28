@@ -8,6 +8,11 @@ export const MAX_SECTIONS = 2;
 export const DISPENSE_UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
 export const STEP_CODE_RE = /^[A-Z0-9]{1,6}$/;
 export const ITEM_CODE_RE = /^[A-Z0-9]+-\d{2,3}$/;
+// 2v: a new item gets "M-<next>" — one sequence for the whole form, not tied to a page (admin moves items / pages freely)
+export const NEW_ITEM_PREFIX = "M";
+
+// 2v: `links` = old codes this item replaces (sorted, unique) — [] when none
+export const linksOf = (r) => [...new Set(((r && Array.isArray(r.links)) ? r.links : []).map((c) => String(c).trim()).filter(Boolean))].sort();
 
 const isItem = (r) => r && r.type === "item";
 const isSection = (r) => r && r.type === "section";
@@ -31,9 +36,10 @@ export function normalizeForm(form) {
       if (isSection(r)) return { type: "section", title: str(r.title).trim() };
       seq += 1;
       const price = typeof r.price === "number" ? r.price : (str(r.price).trim() === "" ? NaN : Number(r.price));
+      const links = linksOf(r);
       return {
         type: "item", code: str(r.code).trim(), seq, name: str(r.name).trim(), unit: str(r.unit).trim(),
-        price: isFinite(price) ? round2(price) : price, active: r.active !== false
+        price: isFinite(price) ? round2(price) : price, active: r.active !== false, ...(links.length ? { links } : {})
       };
     });
     return {
@@ -49,7 +55,7 @@ export function normalizeForm(form) {
 export function formSignature(form) {
   const n = normalizeForm(form);
   return JSON.stringify(n.steps.map((s) => [s.code, s.sheet, s.title, s.subject, s.to, s.dispense_unit, s.active,
-    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active]))]));
+    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active, (r.links || []).join(",")]))]));
 }
 
 function stepLabel(s, idx) {
@@ -109,6 +115,21 @@ export function validateForm(form, baseForm) {
     if (!isActive(s) && activeItems > 0) return fail(`${label}: ปิดหน้าไม่ได้เพราะยังมีรายการที่เปิดอยู่ ${activeItems} รายการ`, s.code);
   }
 
+  // 2v: links — same rules as the server (form_editor.js assertLinks)
+  const openCodes = new Set();
+  steps.forEach((s) => (s.rows || []).forEach((r) => { if (isItem(r) && isActive(r) && isActive(s)) openCodes.add(str(r.code).trim()); }));
+  const linkedBy = new Map();
+  for (const s of steps) for (const r of s.rows || []) {
+    if (!isItem(r)) continue;
+    for (const c of linksOf(r)) {
+      if (!ITEM_CODE_RE.test(c)) return fail(`รายการ ${r.code}: รหัสเดิมที่เชื่อม "${c}" ไม่ถูกรูปแบบ`, s.code, r.code);
+      if (c === r.code) return fail(`รายการ ${r.code}: เชื่อมกับรหัสตัวเองไม่ได้`, s.code, r.code);
+      if (openCodes.has(c)) return fail(`รายการ ${r.code}: เชื่อมกับ ${c} ไม่ได้ เพราะ ${c} ยังเปิดใช้อยู่ — ปิด ${c} ก่อน`, s.code, r.code);
+      if (linkedBy.has(c) && linkedBy.get(c) !== r.code) return fail(`รหัสเดิม ${c} ถูกเชื่อมกับหลายรายการ (${linkedBy.get(c)}, ${r.code})`, s.code, r.code);
+      linkedBy.set(c, r.code);
+    }
+  }
+
   if (baseForm) {
     for (const bs of baseForm.steps || []) {
       if (!stepCodes.has(bs.code)) return fail(`หน้า ${bs.code} หายไป — ลบหน้าไม่ได้ ให้ปิดหน้าแทน`, bs.code);
@@ -135,7 +156,7 @@ export function diffForms(oldForm, newForm) {
   const a = indexForm(oldForm), b = indexForm(newForm);
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: []
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: []
   };
   Object.values(b.steps).forEach((s) => {
     const o = a.steps[s.code];
@@ -153,6 +174,10 @@ export function diffForms(oldForm, newForm) {
     if (str(o.name).trim() !== str(it.name).trim()) d.renamed.push({ code: it.code, old: o.name, new: it.name });
     if (str(o.unit).trim() !== str(it.unit).trim()) d.unit_changed.push(it.code);
     if (o.stepCode !== it.stepCode) d.moved.push({ code: it.code, from: o.stepCode, to: it.stepCode });
+  });
+  Object.values(b.items).forEach((it) => {
+    const was = linksOf(a.items[it.code]), now = linksOf(it);
+    if (was.join(",") !== now.join(",")) d.linked.push({ code: it.code, old: was, new: now });
   });
   return d;
 }
@@ -177,6 +202,7 @@ export function summaryThai(d) {
   if (d.renamed.length) parts.push(`แก้ชื่อ ${d.renamed.length} รายการ`);
   if (d.unit_changed.length) parts.push(`แก้หน่วย ${d.unit_changed.length} รายการ`);
   if (d.moved.length) parts.push(`ย้ายหน้า ${d.moved.length} รายการ`);
+  if ((d.linked || []).length) parts.push(`เชื่อมรหัสเดิม ${d.linked.length} รายการ`);
   if (d.items_closed.length) parts.push(`ปิด ${d.items_closed.length} รายการ`);
   if (d.items_reopened.length) parts.push(`เปิดอีกครั้ง ${d.items_reopened.length} รายการ`);
   return parts.length ? parts.join(" · ") : "ไม่มีการเปลี่ยนแปลง";
@@ -195,25 +221,17 @@ export function diffDetailsThai(d, nameOf = () => "") {
     ["แก้ชื่อรายการ", d.renamed.map((x) => `${x.code}: "${x.old}" → "${x.new}"`)],
     ["แก้หน่วย", d.unit_changed.map(nm)],
     ["ย้ายหน้า", d.moved.map((x) => `${nm(x.code)}: หน้า ${x.from} → หน้า ${x.to}`)],
+    ["เชื่อมรหัสเดิม", (d.linked || []).map((x) => `${nm(x.code)}: ${x.new.length ? "← " + x.new.join(", ") : "ยกเลิกการเชื่อม"}${x.old.length ? ` (เดิม ← ${x.old.join(", ")})` : ""}`)],
     ["รายการที่ปิด", d.items_closed.map(nm)],
     ["รายการที่เปิดอีกครั้ง", d.items_reopened.map(nm)]
   ];
   return groups.filter(([, lines]) => lines.length).map(([label, lines]) => ({ label, lines }));
 }
 
-// Next item code for a step: prefix = most common prefix of the step's items (else the step code),
-// number = max used anywhere (draft + base) for that prefix + 1, zero-padded to 2 (3 above 99).
+// Next item code (2v): "M-<n>", n = max M number used anywhere (draft + base) + 1, zero-padded to 3 — the page is not part of the
+// code (old codes P1-01 … keep their names; they are opaque ids now). `stepCode` is kept for the call sites, unused.
 export function nextItemCode(form, stepCode, baseForm) {
-  const step = (form.steps || []).find((s) => s.code === stepCode);
-  const counts = {};
-  ((step && step.rows) || []).forEach((r) => {
-    if (!isItem(r)) return;
-    const p = str(r.code).split("-")[0];
-    if (p) counts[p] = (counts[p] || 0) + 1;
-  });
-  let prefix = stepCode;
-  let best = 0;
-  Object.entries(counts).forEach(([p, n]) => { if (n > best || (n === best && p === stepCode)) { prefix = p; best = n; } });
+  const prefix = NEW_ITEM_PREFIX;
   let max = 0;
   [form, baseForm].forEach((f) => (f && f.steps ? f.steps : []).forEach((s) => (s.rows || []).forEach((r) => {
     if (!isItem(r)) return;
@@ -222,7 +240,7 @@ export function nextItemCode(form, stepCode, baseForm) {
   })));
   const n = max + 1;
   if (n > 999) return null;
-  return `${prefix}-${String(n).padStart(n > 99 ? 3 : 2, "0")}`;
+  return `${prefix}-${String(n).padStart(3, "0")}`;
 }
 
 // Suggested code for a new page: "S" + two digits, starting at (number of steps + 1), first unused.

@@ -2,7 +2,7 @@
 import { err, assertLimitValue, isStr, jparse } from "./http.js";
 import {
   SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, insertStatements,
-  formForFy, latestForm, loadForm, priceMap, publicConfig, TABLES,
+  formForFy, latestForm, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
 } from "./db.js";
 import {
   BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, DEFAULT_PIN, PCU_GROUPS, PIN_LENGTH, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
@@ -220,7 +220,7 @@ export async function adminBootstrap(ctx) {
   out.plan_totals = { fy, op: round2(op), pp: round2(pp), total: round2(op + pp) };
 
   const statsData = {};
-  for (const [pcu, code, med, p90, ann] of statRes) (statsData[pcu] ||= {})[code] = [med || 0, p90 || 0, ann || 0];
+  for (const [pcu, code, med, p90, ann] of withLinkedRows(statRes, linkMap(form))) (statsData[pcu] ||= {})[code] = [med || 0, p90 || 0, ann || 0];
   out.stats = { fy: fy - 1, data: statsData };
 
   const limits = {};
@@ -492,11 +492,14 @@ export async function adminResetLimit(ctx, p) {
   const code = itemCodeParam(p);
   const fy = ctxFy(await getConfigAll(DB));
   await assertPcu(DB, p.pcu);
-  await assertItem(DB, fy, code);
-  const [plan, st] = await Promise.all([
+  const form = await assertItem(DB, fy, code);
+  // 2v: no stats row of its own → the stats of the old code(s) it links (first one found)
+  const olds = [...linkMap(form)].filter(([, n]) => n === code).map(([o]) => o).sort();
+  const [plan, stRes] = await Promise.all([
     DB.prepare(`SELECT plan_op, plan_pp FROM plans WHERE fy = ? AND pcu = ? AND item_code = ?`).bind(fy, p.pcu, code).first(),
-    DB.prepare(`SELECT p90_m FROM stats WHERE fy = ? AND pcu = ? AND item_code = ?`).bind(fy - 1, p.pcu, code).first(),
+    DB.prepare(`SELECT item_code, p90_m FROM stats WHERE fy = ? AND pcu = ? AND item_code IN (${[code, ...olds].map(() => "?").join(",")})`).bind(fy - 1, p.pcu, code, ...olds).all(),
   ]);
+  const st = stRes.results.find((r) => r.item_code === code) || olds.map((o) => stRes.results.find((r) => r.item_code === o)).find(Boolean);
   const d = defaultLimit(plan && plan.plan_op, plan && plan.plan_pp, st && st.p90_m, fy);
   const ts = nowIso();
   const stmts = [];

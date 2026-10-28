@@ -326,8 +326,12 @@ export function renderTab11(container, ctx) {
       selCell.appendChild(el("span", { class: "t11-kind badge" }));
       selCell.appendChild(sel);
       selCell.appendChild(info);
+      // 2v: a "new" row that is really an old item under a new code → link it to the old (closing) code so its history follows
+      const linkSel = el("select", { class: "select-input t11-link", "aria-label": `เชื่อมรหัสเดิม ลำดับ ${it.seq}` });
+      linkSel.addEventListener("change", () => { it.link = linkSel.value || null; refresh(); });
+      selCell.appendChild(linkSel);
       tr.querySelector(".t11-ok-cell").appendChild(cb);
-      rowEls.set(it.key, { tr, sel, cb, info, badge: selCell.querySelector(".t11-kind") });
+      rowEls.set(it.key, { tr, sel, cb, info, linkSel, badge: selCell.querySelector(".t11-kind") });
       return tr;
     }
 
@@ -350,7 +354,22 @@ export function renderTab11(container, ctx) {
         if (c.step !== m.pages[it.page].step_code) bits.push(`ย้ายจากหน้า ${c.step}`);
         if (!c.active) bits.push("เปิดใช้อีกครั้ง");
         r.info.textContent = bits.join(" · ");
-      } else r.info.textContent = it.choice.new ? "ยังไม่มีในฟอร์มปัจจุบัน — ไม่มีแผน/เพดานเดิม" : "";
+      } else r.info.textContent = it.choice.new ? (it.link ? `รหัสใหม่ เชื่อมกับ ${it.link} — ข้อมูลปีก่อน/สถิติของ ${it.link} นับเป็นรายการนี้` : "ยังไม่มีในฟอร์มปัจจุบัน — ไม่มีแผน/เพดานเดิม") : "";
+      // 2v: link select — only for a new row, options = old codes that will be closed and are not linked by another row
+      if (!it.choice.new) it.link = null;
+      const takenLinks = new Set(m.items.filter((x) => x !== it && x.choice.new && x.link).map((x) => x.link));
+      const opts = it.choice.new ? res.missing.filter((c) => !takenLinks.has(c.code)) : [];
+      if (it.link && !opts.some((c) => c.code === it.link)) it.link = null;
+      r.linkSel.hidden = !opts.length;
+      const sig = opts.map((c) => c.code).join(",");
+      if (r.linkSel.dataset.sig !== sig) {
+        r.linkSel.dataset.sig = sig;
+        r.linkSel.innerHTML = "";
+        r.linkSel.appendChild(el("option", { value: "" }, "ไม่เชื่อมรหัสเดิม"));
+        opts.map((c) => ({ c, sim: similarity(it.name, c.name) })).sort((a, b) => b.sim - a.sim)
+          .forEach(({ c }) => r.linkSel.appendChild(el("option", { value: c.code }, `เชื่อมกับ ${optLabel(c.code)}`)));
+      }
+      r.linkSel.value = it.link || "";
       const dup = it.choice.code && dupSet.has(it.choice.code);
       r.tr.classList.toggle("t11-dup", !!dup);
       r.tr.classList.toggle("t11-todo", !it.confirmed);
@@ -390,7 +409,7 @@ export function renderTab11(container, ctx) {
       let html = "";
       if (res.missing.length) {
         html += `<div class="notice warn-card" id="t11-missing"><strong>รายการที่หายไป (จะถูกปิด) — ${res.missing.length} รายการ</strong>
-          <p class="small">มีในฟอร์มปัจจุบันแต่ไม่มีในไฟล์ใหม่: จะเก็บรหัสไว้เป็นรายการที่ปิดแล้ว (รพ.สต. ไม่เห็น) — ถ้าจริง ๆ คือรายการเดียวกับแถวด้านบน ให้เลือกจับคู่แทน</p>
+          <p class="small">มีในฟอร์มปัจจุบันแต่ไม่มีในไฟล์ใหม่: จะเก็บรหัสไว้เป็นรายการที่ปิดแล้ว (รพ.สต. ไม่เห็น) — ถ้าจริง ๆ คือรายการเดียวกับแถวด้านบน ให้เลือกจับคู่ (ใช้รหัสเดิม) หรือเลือก "รายการใหม่" แล้ว "เชื่อมกับ" รหัสเดิม (ได้รหัสใหม่ แต่เทียบปีก่อนด้วยรหัสเดิม)</p>
           <ul>${res.missing.map((c) => `<li><code>${escapeHtml(c.code)}</code> ${escapeHtml(c.name)} · ${escapeHtml(c.unit || "")} · ${fmt(c.price)} บาท (หน้า ${escapeHtml(c.step)})</li>`).join("")}</ul></div>`;
       }
       if (m.plan_unmatched.length) {

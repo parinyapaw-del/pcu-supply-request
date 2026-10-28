@@ -21,6 +21,13 @@ const text = (v) => (typeof v === "string" ? v.trim() : v === null || v === unde
 //   step.order = 1..n by array order · step.page_no = running number among ACTIVE steps (null for closed pages)
 //   item.seq   = running number over every item row (active or closed) of the active steps in order, then of the closed steps —
 //                one global sequence, as in the seed (P2 continues where P1 stops), so an unedited form keeps its numbers.
+// 2v: `links` only when non-empty (sorted, unique) — an unlinked item keeps the exact shape (and hash) it had before 2v
+function canonLinks(r) {
+  if (!Array.isArray(r.links)) return {};
+  const l = [...new Set(r.links.map(text).filter(Boolean))].sort();
+  return l.length ? { links: l } : {};
+}
+
 export function canonSteps(stepsIn) {
   const steps = (Array.isArray(stepsIn) ? stepsIn : []).map((s, i) => ({
     code: text(s.code),
@@ -34,7 +41,7 @@ export function canonSteps(stepsIn) {
     active: s.active !== false,
     rows: (Array.isArray(s.rows) ? s.rows : []).map((r) => (r.type === "section"
       ? { type: "section", title: text(r.title) }
-      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false })),
+      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false, ...canonLinks(r) })),
   }));
   let page = 0, seq = 0;
   for (const s of steps) if (s.active) s.page_no = ++page;
@@ -116,7 +123,28 @@ function validateInput(formIn) {
   });
   if (activeSteps < 1) throw err("BAD_REQUEST", "ต้องมีหน้าที่เปิดใช้อย่างน้อย 1 หน้า");
   if (activeSteps > MAX_ACTIVE_STEPS) throw err("BAD_REQUEST", `มีหน้าที่เปิดใช้ได้ไม่เกิน ${MAX_ACTIVE_STEPS} หน้า (ตอนนี้ ${activeSteps})`);
+  assertLinks(clean, (m) => err("BAD_REQUEST", m));
   return clean;
+}
+
+// 2v: item `links` = old codes this item replaces (same thing, new code) — its prior-year data / lines count under this item.
+// A linked code: valid item code, not the item itself, linked from one item only, and not an OPEN item of the form (a closed row or
+// a code that only exists in older data). Shared by the editor and the import (import_fy.js assertFormRules). `bad(msg)` → Error.
+export function assertLinks(steps, bad) {
+  const active = new Set(), seen = new Map();
+  for (const s of steps) for (const r of s.rows || []) if (r && r.type === "item" && r.active !== false && s.active !== false) active.add(r.code);
+  for (const s of steps) for (const r of s.rows || []) {
+    if (!r || r.type !== "item" || r.links === undefined || r.links === null) continue;
+    if (!Array.isArray(r.links) || r.links.length > 10) throw bad(`รายการ ${r.code}: links ต้องเป็นรายการรหัสเดิม (ไม่เกิน 10)`);
+    for (const c0 of r.links) {
+      const c = text(c0);
+      if (!isStr(c0) || !ITEM_CODE_RE.test(c)) throw bad(`รายการ ${r.code}: รหัสเดิมที่เชื่อม "${String(c0).slice(0, 20)}" ไม่ถูกต้อง`);
+      if (c === r.code) throw bad(`รายการ ${r.code}: เชื่อมกับรหัสตัวเองไม่ได้`);
+      if (active.has(c)) throw bad(`รายการ ${r.code}: เชื่อมกับ ${c} ไม่ได้ เพราะ ${c} ยังเปิดใช้อยู่ — ปิด ${c} ก่อน`);
+      if (seen.has(c) && seen.get(c) !== r.code) throw bad(`รหัสเดิม ${c} ถูกเชื่อมกับหลายรายการ (${seen.get(c)}, ${r.code})`);
+      seen.set(c, r.code);
+    }
+  }
 }
 
 // ---- diff of two canonical step lists --------------------------------------------------------------------------------------------
@@ -128,7 +156,7 @@ function indexOf(steps) {
 export function diffSteps(baseSteps, newSteps) {
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: [],
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [],
   };
   const bs = new Map(baseSteps.map((s) => [s.code, s]));
   for (const s of newSteps) {
@@ -147,6 +175,12 @@ export function diffSteps(baseSteps, newSteps) {
     if (o.item.name !== item.name) d.renamed.push({ code, old: o.item.name, new: item.name });
     if (o.item.unit !== item.unit) d.unit_changed.push(code);
     if (o.step.code !== step.code) d.moved.push({ code, from: o.step.code, to: step.code });
+  }
+  // 2v: links added / removed per item
+  for (const [code, { item }] of indexOf(newSteps)) {
+    const o = bi.get(code);
+    const was = (o && o.item.links) || [], now = item.links || [];
+    if (was.join(",") !== now.join(",")) d.linked.push({ code, old: was, new: now });
   }
   return d;
 }

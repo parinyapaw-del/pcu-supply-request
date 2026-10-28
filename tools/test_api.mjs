@@ -2968,6 +2968,77 @@ async function main() {
     devMonth = devMonth0;
   }
 
+  section("item links: a new code keeps the history of an old one (2v)");
+  {
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const findRow = (steps, code) => steps.flatMap((x) => x.rows).find((r) => r.type === "item" && r.code === code);
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    const FY = (await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, PF = FY - 1;
+    const devMonth0 = devMonth;
+    devMonth = `${FY - 544}-12`; // calendar Dec → round Jan of FY
+    const F0 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const openSteps = F0.steps.filter((x) => x.active !== false);
+    const act = openSteps.flatMap((x) => x.rows.filter((r) => r.type === "item" && r.active !== false));
+    const O = act[act.length - 1], X = act[act.length - 2], Y = act[act.length - 3]; // O = the old code, X = its new code
+    const P = "PCU05";
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const R = (await mustOk("pcuBootstrap", {}, TP)).current_round;
+    await mustOk("adminLockRound", { month: R, locked: 0 }, ADM2);
+    // fy−1 history only under O · this round: O (old code, before the switch) + X
+    const z12 = () => new Array(12).fill(0);
+    const oOp = z12(); oOp[2] = 6;
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: FY,
+      stats: { [PF]: { [P]: { [O.code]: [3, 7, 30] } } },
+      actual_prev: { [PF]: { months: fyExcelMonths(PF), data: { [P]: { [O.code]: { op: oOp, pp: z12() } } } } },
+    } }, ADM2, "2v fixture: stats / actual_prev fy−1 under the old code only");
+    const sent = await api("saveLines", { month: R, lines: { [O.code]: { op: 4 }, [X.code]: { op: 10 } }, send: true }, TP);
+    ok(sent.ok, "2v fixture: PCU05 sends O + X in the current round");
+
+    // ---- validation ----
+    const save = (steps, note) => api("adminFormSave", { base_version_id: F0.id, note, form: { steps } }, ADM2);
+    const withLink = (links, closeO) => {
+      const st = cl(F0.steps);
+      findRow(st, X.code).links = links;
+      if (closeO) findRow(st, O.code).active = false;
+      return st;
+    };
+    expectErr(await save(withLink([O.code], false), "x"), "BAD_REQUEST", "2v: link to an OPEN item → BAD_REQUEST");
+    expectErr(await save(withLink([X.code], true), "x"), "BAD_REQUEST", "2v: link to itself → BAD_REQUEST");
+    expectErr(await save(withLink(["bad code"], true), "x"), "BAD_REQUEST", "2v: malformed linked code → BAD_REQUEST");
+    { const st = withLink([O.code], true); findRow(st, Y.code).links = [O.code];
+      expectErr(await save(st, "x"), "BAD_REQUEST", "2v: one old code linked from two items → BAD_REQUEST"); }
+
+    // ---- save: X ← O (O closed) ----
+    const sv = await mustOk("adminFormSave", { base_version_id: F0.id, note: "2v link", form: { steps: withLink([O.code], true) } }, ADM2);
+    eq(sv.diff.linked, [{ code: X.code, old: [], new: [O.code] }], "2v: diff.linked");
+    eq(findRow(sv.form.steps, X.code).links, [O.code], "2v: links stored on the item");
+    ok(!("links" in findRow(sv.form.steps, Y.code)), "2v: unlinked items have no links field");
+    const same = await mustOk("adminFormSave", { base_version_id: sv.form.id, note: "again", form: { steps: cl(sv.form.steps) } }, ADM2);
+    ok(same.same === true, "2v: re-saving the linked form = same (stable canonical links)");
+
+    // ---- prior-year data follows the link ----
+    const b1 = await mustOk("adminBootstrap", {}, ADM2);
+    eq([b1.stats.data[P] && b1.stats.data[P][X.code], b1.stats.data[P] && b1.stats.data[P][O.code]], [[3, 7, 30], [3, 7, 30]], "2v: bootstrap stats of X = stats of O (O kept)");
+    const rl = await mustOk("adminResetLimit", { pcu: P, item_code: X.code }, ADM2);
+    eq([rl.limit && rl.limit.limit_month, rl.limit && rl.limit.source], [7, `stat${String(PF % 100).padStart(2, "0")}`], "2v: default limit of X uses O's p90");
+    const dv = await mustOk("adminDashboard", { pcu: P }, ADM2);
+    eq(dv.monthly[X.code] && dv.monthly[X.code][R] && dv.monthly[X.code][R][0], 14, "2v: lines of O this fy count under X (4 + 10)");
+    ok(!dv.monthly[O.code] && !dv.items[O.code], "2v: O no longer listed on its own");
+    ok(dv.flags.some((f) => f.code === X.code && f.rule === "p90" && f.round === R && f.value === 10 && f.threshold === 7), "2v: p90 flag of X against O's stats");
+    ok(!dv.info_new.includes(X.code), "2v: X is not 'new this year' (O was requested last year)");
+    const net = await mustOk("adminDashboard", {}, ADM2);
+    ok(net.network.items[X.code] && !net.network.items[O.code] && net.flags.some((f) => f.pcu === P && f.code === X.code && f.rule === "p90"), "2v: network view: O merged into X + p90 flag");
+    ok(!net.info_new.some((x) => x.pcu === P && x.code === X.code), "2v: network info_new skips X");
+
+    // ---- unlink ----
+    const st3 = cl(sv.form.steps); delete findRow(st3, X.code).links;
+    const sv3 = await mustOk("adminFormSave", { base_version_id: sv.form.id, note: "2v unlink", form: { steps: st3 } }, ADM2);
+    eq(sv3.diff.linked, [{ code: X.code, old: [O.code], new: [] }], "2v: unlink diff");
+    const b3 = await mustOk("adminBootstrap", {}, ADM2);
+    ok(!(b3.stats.data[P] && b3.stats.data[P][X.code]), "2v: after unlink X has no stats");
+    devMonth = devMonth0;
+  }
+
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }

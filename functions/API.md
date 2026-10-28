@@ -293,7 +293,13 @@ lines keep their prices. `forms` then only lists versions of another fy (e.g. re
 - `base_version_id` must be the **latest** version of its fy, else `CONFLICT` ("มีการบันทึกฟอร์ม version ใหม่ไปแล้ว — โหลดใหม่ก่อนแก้"); unknown id → `NOT_FOUND`.
   The check is atomic in SQL (two simultaneous saves → the second gets `CONFLICT`).
 - Input per step: `{code, title, sheet?, subject?, to?, dispense_unit?, active?, rows:[...]}`; per row `{type:"section",title}` or
-  `{type:"item",code,name,unit,price,active?}`. `order`, `page_no`, `seq` are ignored and recomputed. Unknown fields are dropped; strings are trimmed.
+  `{type:"item",code,name,unit,price,active?,links?}`. `order`, `page_no`, `seq` are ignored and recomputed. Unknown fields are dropped; strings are trimmed.
+- 2v `links` = old codes this item replaces (same thing under a new code; stored sorted/unique, omitted when empty): each `^[A-Z0-9]+-\d{2,3}$`, ≤ 10,
+  not the item itself, not an **open** item of the form (close the old code first), one old code linked from one item only (`BAD_REQUEST` otherwise).
+  Effect (read-time, no D1 rows copied): stats fy−1 of the old code serve the new one when it has none (`adminBootstrap.stats`, `adminResetLimit`, same-fy import
+  limits, dashboard p90) · actual_prev / prices_prev fy−1 (never_prev, info_new) · this fy's lines of the old code count under the new code in
+  `pcuDashboard` / `adminDashboard` · stock baseline (2o) · rollover (`adminImportApply`) writes the closing fy's actual_prev/stats under the new code.
+  Imports keep the links of a code the file lists without `links`. Admin UI: new items get `M-<nnn>` (one sequence, not the page).
 - Validation (first error wins → `BAD_REQUEST`, Thai message names the page/item): 1 ≤ active steps ≤ 10 (≤ 60 steps in all) · step `code` `^[A-Z0-9]{1,6}$`, unique ·
   `title` non-empty ≤ 120 · `sheet`/`subject`/`to` ≤ 120 · `dispense_unit` ∈ {พัสดุ, จ่ายกลาง, LAB} (default by step code) · `active` boolean · ≤ 200 rows per step ·
   sections: title non-empty ≤ 80, ≤ 2 per step · items: `code` `^[A-Z0-9]+-\d{2,3}$` unique across the whole form · `name` non-empty ≤ 200 · `unit` ≤ 30 ·
@@ -305,7 +311,7 @@ lines keep their prices. `forms` then only lists versions of another fy (e.g. re
   the seed numbers items globally (P2 continues after P1), so an unedited form keeps its numbers · defaults `active:true`, `dispense_unit`.
 - "Same" = the normalised `{fy, steps}` equals the base's (note ignored; the base is normalised the same way) → `{saved:false, same:true, form:<base>, versions}`, no row.
 - `diff` (vs. the base): `{steps_added:[code], steps_closed:[code], steps_reopened:[code], items_added:[code], items_closed:[code], items_reopened:[code],
-  price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}]}`; stored in `audit_log` as `form_save`
+  price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}], linked:[{code,old:[code],new:[code]}]}`; stored in `audit_log` as `form_save`
   (`detail` = JSON `{id, note, diff}`; a very large diff is reduced to `{id, note, diff_counts, truncated:true}` to stay valid JSON inside the 2000-char cap).
 - `versions` = every row of `form_versions` newest first `[{id,fy,created_at,created_by,note}]` (same list as `adminBootstrap.form_versions`).
 - Nothing else changes (lines, plans, limits untouched) — except prices (2p, below) and the re-bind of the fy's requests (2t, above). New items have no plan/limit until an admin sets one.

@@ -6,7 +6,7 @@
 // so a line IS the (round, item) aggregate). The network view never pulls raw lines: SQL GROUP BY (pcu,item) / (round,item) / (pcu,round),
 // p90 compared inside SQL (JOIN stats), only lines without price_snapshot (normally none) come back raw for the priceFor fallback.
 import { err } from "./http.js";
-import { DEFAULT_UNIT_BY_STEP, formForFy, getConfigAll, loadForm, publicConfig } from "./db.js";
+import { DEFAULT_UNIT_BY_STEP, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig } from "./db.js";
 import { TRIAL_GROUP, UNITS } from "./auth.js";
 import { currentRound, fyExcelMonths, fyMonths, isMonth, monthFy, monthMinus } from "./time.js";
 import { formPrice, loadPriceHistory, priceFor } from "./price.js";
@@ -151,21 +151,25 @@ async function pcuCore(DB, c, pcu, staff) {
   // ---- monthly (one pass) ----
   const monthly = {}, cum = new Map(), withUsed = new Set(), withReq = new Set();
   const roundBaht = new Map(); // round → unrounded req baht (2s pattern)
-  for (const [m, fv, code, q, it, u, ps] of lineRes) {
-    const price = ps !== null && ps !== undefined ? ps : priceFor(hist, form.index.has(code) ? form : formOf(fv), code, m) ?? 0;
+  const lm = linkMap(form); // 2v: lines of a linked old code count under the code that replaces it
+  for (const [m, fv, code0, q, it, u, ps] of lineRes) {
+    const price = ps !== null && ps !== undefined ? ps : priceFor(hist, form.index.has(code0) ? form : formOf(fv), code0, m) ?? 0;
     let got = 0;
     if (q > 0 && it !== null && it !== undefined) {
       if (staff) got = it; // staff view (2s): every unit, no need to wait for done
       else { // PCU view rule (Q78): figures of DONE units only
-        const ent = formOf(fv).index.get(code);
+        const ent = formOf(fv).index.get(code0);
         if (ent && done.has(m + "|" + ent.step.dispense_unit)) got = it;
       }
     }
+    const code = linkedCode(lm, code0);
     const used = u ?? 0;
     if (u !== null && u !== undefined) withUsed.add(code);
     if (q > 0) { withReq.add(code); cum.set(code, (cum.get(code) || 0) + q); roundBaht.set(m, (roundBaht.get(m) || 0) + q * price); }
     if (!q && !got && !used) continue;
-    (monthly[code] ||= {})[m] = [q, r2(q * price), got, r2(got * price), used, r2(used * price)];
+    const t = ((monthly[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0]);
+    const add = [q, q * price, got, got * price, used, used * price];
+    for (let i = 0; i < 6; i++) t[i] = i % 2 ? r2(t[i] + add[i]) : t[i] + add[i];
   }
 
   // ---- items ----
@@ -217,7 +221,7 @@ async function pcuCore(DB, c, pcu, staff) {
       used_coverage: { items_with_used: withUsed.size, items_total: withReq.size },
       flags,
     },
-    form, prevRes, pricer, cum, roundBaht,
+    form, lm, prevRes, pricer, cum, roundBaht,
   };
 }
 
@@ -241,9 +245,9 @@ const addTo = (map, k1, k2) => {
   if (!v) m.set(k2, (v = [0, 0, 0, 0, 0, 0]));
   return v;
 };
-const rowsToMap = (rows) => {
+const rowsToMap = (rows, lm) => {
   const out = new Map();
-  for (const [a, b, ...v] of rows) { const t = addTo(out, a, b); for (let i = 0; i < 6; i++) t[i] += Number(v[i]) || 0; }
+  for (const [a, b, ...v] of rows) { const t = addTo(out, a, linkedCode(lm, b)); for (let i = 0; i < 6; i++) t[i] += Number(v[i]) || 0; }
   return out;
 };
 
@@ -257,7 +261,8 @@ async function networkData(DB, c, formP, full) {
     DB.prepare(`SELECT r.pcu, r.month, r.form_version_id, l.item_code, ${Q}, l.issued_total, l.used ${LINES}
                  WHERE ${LINES_WHERE} AND l.price_snapshot IS NULL`).bind(...bind).raw(),
   ]);
-  const pi = rowsToMap(piRes), ri = rowsToMap(riRes);
+  const lm = linkMap(await formP);
+  const pi = rowsToMap(piRes, lm), ri = rowsToMap(riRes, lm);
   const pr = new Map();
   for (const [pcu, m, b] of prRes) { if (!pr.has(pcu)) pr.set(pcu, new Map()); pr.get(pcu).set(m, Number(b) || 0); }
   if (nullRes.length) { // priceFor fallback (as pcuDashboard): the latest form when it has the code, else the line's bound form
@@ -270,9 +275,9 @@ async function networkData(DB, c, formP, full) {
       const price = priceFor(hist, f, code, m) ?? 0;
       const got = q > 0 && it !== null && it !== undefined ? it : 0, used = u ?? 0;
       const add = (t) => { t[1] += q * price; t[3] += got * price; t[5] += used * price; };
-      add(addTo(pi, pcu, code));
+      add(addTo(pi, pcu, linkedCode(lm, code)));
       if (full) {
-        add(addTo(ri, m, code));
+        add(addTo(ri, m, linkedCode(lm, code)));
         if (!pr.has(pcu)) pr.set(pcu, new Map());
         pr.get(pcu).set(m, (pr.get(pcu).get(m) || 0) + q * price);
       }
@@ -283,12 +288,24 @@ async function networkData(DB, c, formP, full) {
 
 // rule 1 rows [pcu, code, round, qty, p90_m]: qty of the pcu × item in a round > its stats p90_m (stats of fy−1 = the data year).
 // No stats row (or p90_m ≤ 0) → the item is skipped.
-function p90Query(DB, c, pcu) {
-  return DB.prepare(
+// 2v: an item with no stats row of its own uses the stats of the old code(s) it links (highest p90) · flags of a linked old code's
+// lines are reported under the new code.
+async function p90Query(DB, c, pcu, formP) {
+  const lm = linkMap(await formP);
+  const pairs = [...lm];
+  const src = pairs.length
+    ? `(SELECT fy, pcu, item_code, p90_m FROM stats
+        UNION ALL
+        SELECT s.fy, s.pcu, lk.n, MAX(s.p90_m) FROM stats s JOIN (${pairs.map(() => "SELECT ? AS o, ? AS n").join(" UNION ALL ")}) lk ON lk.o = s.item_code
+         WHERE NOT EXISTS (SELECT 1 FROM stats s2 WHERE s2.fy = s.fy AND s2.pcu = s.pcu AND s2.item_code = lk.n) GROUP BY s.fy, s.pcu, lk.n)`
+    : "stats";
+  const rows = await DB.prepare(
     `SELECT r.pcu, l.item_code, r.month, ${Q}, s.p90_m ${LINES}
-       JOIN stats s ON s.fy = ? AND s.pcu = r.pcu AND s.item_code = l.item_code
+       JOIN ${src} s ON s.fy = ? AND s.pcu = r.pcu AND s.item_code = l.item_code
       WHERE ${LINES_WHERE} AND s.p90_m > 0 AND ${Q} > s.p90_m${pcu ? " AND r.pcu = ?" : ""}`
-  ).bind(c.fy - 1, c.all[0], c.all[11], c.trialArg, ...(pcu ? [pcu] : [])).raw();
+  ).bind(...pairs.flat(), c.fy - 1, c.all[0], c.all[11], c.trialArg, ...(pcu ? [pcu] : [])).raw();
+  for (const r of rows) r[1] = linkedCode(lm, r[1]);
+  return rows;
 }
 
 // rule 4: share of the pcu in the item's network req baht > 2 × the pcu's share of the network req baht total,
@@ -333,10 +350,10 @@ async function adminPcuView(DB, c, code) {
   const formP = strictForm(DB, c.fy);
   const [core, p90Res, net] = await Promise.all([
     pcuCore(DB, c, row.code, true),
-    p90Query(DB, c, row.code),
+    p90Query(DB, c, row.code, formP),
     networkData(DB, c, formP, false),
   ]);
-  const { out, prevRes, pricer, cum, roundBaht } = core;
+  const { out, lm, prevRes, pricer, cum, roundBaht } = core;
   const codes = Object.keys(out.items), ord = orderBy(codes), cmp = cmpCode(ord);
 
   // flags: every rule, ordered as items, then p90 → pace → share, then round
@@ -362,7 +379,7 @@ async function adminPcuView(DB, c, code) {
     const xm = fyExcelMonths(c.fy - 1), idx = new Map(xm.map((m, i) => [m, i]));
     const vals = new Array(12).fill(0);
     for (const [m, code2, q, pr] of prevRes) {
-      prevCodes.add(code2);
+      prevCodes.add(linkedCode(lm, code2));
       const i = idx.get(m);
       if (i !== undefined) vals[i] += q * pricer.price(code2, pr);
     }
@@ -385,7 +402,7 @@ async function adminNetwork(DB, c) {
   const [form, net, p90Res, planRes, pcuRes, prevMonRes, prevItemRes, monthRes, fyRes] = await Promise.all([
     formP,
     networkData(DB, c, formP, true),
-    p90Query(DB, c, null),
+    p90Query(DB, c, null, formP),
     DB.prepare(`SELECT pl.pcu, pl.item_code, COALESCE(pl.plan_op,0) + COALESCE(pl.plan_pp,0) AS q FROM plans pl JOIN pcus p ON p.code = pl.pcu
                  WHERE pl.fy = ? AND ${NOT_TRIAL} AND COALESCE(pl.plan_op,0) + COALESCE(pl.plan_pp,0) > 0`).bind(fy).raw(),
     DB.prepare(`SELECT p.code, p.name FROM pcus p WHERE ${NOT_TRIAL} ORDER BY p.code`).raw(),
@@ -482,7 +499,8 @@ async function adminNetwork(DB, c) {
       if (i !== undefined && prevVals.has(pcu)) prevVals.get(pcu)[i] += q * pricer.price(code, null);
     }
   }
-  const prevItems = new Set(prevItemRes.map(([pcu, code]) => pcu + "\u0000" + code));
+  const lmNet = linkMap(form);
+  const prevItems = new Set(prevItemRes.map(([pcu, code]) => pcu + "\u0000" + linkedCode(lmNet, code)));
   const info_new = [];
 
   // ---- pcus ----

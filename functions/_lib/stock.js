@@ -2,7 +2,7 @@
 //   baseline (pcu, round M, item) = the stock of the item on the pcu's prevMonth(M) request, when that request is submitted/issued and stock is not null
 //   received = issued_total when the item's dispense unit is done (issue_status row) and issued_total is not null, else op+pp of that request
 //   available = baseline + received + (adj ?? 0) · calc_from 'used' → stock = available − used · 'stock' → used = available − stock · negative → null
-import { formForFy, loadForm } from "./db.js";
+import { formForFy, linkMap, loadForm } from "./db.js";
 import { currentRound, monthFy, nextMonth, prevMonth } from "./time.js";
 
 export const CALC_FROM = ["used", "stock"];
@@ -37,6 +37,9 @@ export async function baselineFor(DB, pcu, month) {
       received: issued ? r.issued_total : r.op + r.pp, received_src: issued ? "issued" : "requested",
     };
   }
+  // 2v: last round's line of a linked old code is the baseline of the item that replaces it (when that item has none of its own)
+  const lf = form || (rows[0].fv ? await loadForm(DB, rows[0].fv) : await formForFy(DB, monthFy(pm)));
+  for (const [o, n] of linkMap(lf)) if (out[o] && !out[n]) out[n] = out[o];
   return out;
 }
 
