@@ -481,7 +481,9 @@ async function main() {
   await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 3, pp: 2, updated_at: t(2) } } }, T3);
   eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "enforce: 15 + 5 = limit (boundary) is allowed");
   await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 4, limit_year: null }, ADM);
-  expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "enforce: monthly limit 4 < total 5");
+  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "enforce: monthly limit 4 < total 5 is NOT checked (yearly ceiling only)");
+  await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 4, limit_year: 19 }, ADM);
+  expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "enforce: 15 used + 5 > limit_year 19");
   expectErr(await api("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: CUR, reason: "  " }, ADM), "BAD_REQUEST", "unlock needs a reason");
   const ul = await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: CUR, reason: "โรคระบาด" }, ADM);
   eq(ul.unlock.reason, "โรคระบาด", "adminUnlockLimit");

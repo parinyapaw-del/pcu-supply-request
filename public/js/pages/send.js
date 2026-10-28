@@ -96,7 +96,7 @@ export async function trySend(app, month) {
       // The server says these are not unlocked (an admin may have removed the unlock) — drop the stale client copy.
       const cur = app.boot.unlocks && app.boot.unlocks[month];
       if (cur) items.forEach((i) => { delete cur[i.code]; });
-      const rows = items.map((i) => `<li>${esc(itemName(app, i.code))} (${esc(i.code)}): ขอ ${i.total}${i.limit_month != null ? ` · เพดานเดือน ${i.limit_month}` : ""}${i.limit_year != null ? ` · เพดานปี ${i.limit_year} (เบิกแล้ว ${i.used_fy})` : ""}</li>`).join("");
+      const rows = items.map((i) => `<li>${esc(itemName(app, i.code))} (${esc(i.code)}): ขอ ${i.total}${i.limit_year != null ? ` · เพดานปี ${i.limit_year} (เบิกแล้ว ${i.used_fy})` : ""}</li>`).join("");
       await alertDialog("ส่งไม่ได้ — เกินเพดานการเบิก", `<ul>${rows}</ul>`);
       const first = items[0] && findStepOf(app, items[0].code);
       if (first) gotoItem(month, first, items[0].code, "op");

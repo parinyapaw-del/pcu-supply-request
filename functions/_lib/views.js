@@ -197,7 +197,8 @@ export async function pcuMonthView(DB, pcu, month, fallbackFy) {
 }
 
 // ---- limit check (send:true, enforce / warn) -------------------------------------------------------------------------------
-// Returns [{code,total,limit_month,limit_year,used_fy}] for lines over their limits, skipping unlocked items.
+// Returns [{code,total,limit_month,limit_year,used_fy}] for lines over their YEARLY limit, skipping unlocked items.
+// limit_month is stored/shown to the admin but no longer checked (Save 2026-10-28: warn only when the year ceiling is hit).
 export async function overLimitItems(DB, pcu, month, lines) {
   const fy = monthFy(month);
   const codes = lines.filter((l) => (l.op || 0) + (l.pp || 0) > 0).map((l) => l.item_code);
@@ -217,7 +218,7 @@ export async function overLimitItems(DB, pcu, month, lines) {
     if (!r) continue;
     const lm = r.limit_month ?? null, ly = r.limit_year ?? null;
     const u = used[l.item_code] || 0;
-    if ((lm !== null && total > lm) || (ly !== null && u + total > ly)) {
+    if (ly !== null && u + total > ly) {
       over.push({ code: l.item_code, total, limit_month: lm, limit_year: ly, used_fy: u });
     }
   }

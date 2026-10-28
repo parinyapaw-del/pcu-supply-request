@@ -59,7 +59,7 @@ export function renderTab5(container, ctx) {
   async function setMode(mode) {
     if (mode === b().config.limit_mode) return;
     if (mode === "enforce") {
-      const ok = await confirmDialog("เปลี่ยนเป็นโหมด \"บังคับ\"?\nรพ.สต. จะส่งใบเบิกที่เกินเพดานรายเดือน/รายปีไม่ได้ (ยกเว้นรายการที่ปลดล็อกชั่วคราว)", { title: "บังคับเพดาน", okText: "บังคับ", danger: true });
+      const ok = await confirmDialog("เปลี่ยนเป็นโหมด \"บังคับ\"?\nรพ.สต. จะส่งใบเบิกที่เกินเพดานรายปีไม่ได้ (ยกเว้นรายการที่ปลดล็อกชั่วคราว)", { title: "บังคับเพดาน", okText: "บังคับ", danger: true });
       if (!ok) return;
     }
     try {
@@ -235,7 +235,7 @@ export function renderTab5(container, ctx) {
   bar.appendChild(el("label", { class: "admin-inline-check" }, [onlyCb, "เฉพาะรายการที่มีแผนหรือเพดาน"]));
   bar.appendChild(qInput);
   tblCard.appendChild(bar);
-  tblCard.appendChild(el("p", { class: "admin-note" }, "เพดานนับ OP+PP รวม · แก้ช่องแล้วออกจากช่อง (หรือกด Enter) เพื่อบันทึก · เว้นว่าง = ไม่มีเพดาน · \"แผนปี 70\" = แผน OP + PP"));
+  tblCard.appendChild(el("p", { class: "admin-note" }, "เพดานนับ OP+PP รวม · ระบบเตือน/บังคับเฉพาะเพดานรายปี (เพดาน/เดือน เก็บไว้ดูเท่านั้น ไม่ใช้ตรวจ) · แก้ช่องแล้วออกจากช่อง (หรือกด Enter) เพื่อบันทึก · เว้นว่าง = ไม่มีเพดาน · \"แผนปี 70\" = แผน OP + PP"));
   const tblHost = el("div", { id: "t5-table" });
   tblCard.appendChild(tblHost);
   container.appendChild(tblCard);

@@ -81,7 +81,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   `last_step` / `submitter_name` are stored when present.
 - Autosave is **not** written to `audit_log` (would flood it); `send:true` is (`submit`).
 - `send:true`, in order: round locked → `CONFLICT` · `config.stock_required=1` → every non-hidden **active** item of the latest form needs `stock`
-  else `INCOMPLETE{missing}` · `limit_mode="enforce"` → per line `total=op+pp`: over if `total > limit_month` or `used_fy + total > limit_year`
+  else `INCOMPLETE{missing}` · `limit_mode="enforce"` → per line `total=op+pp`: over if `used_fy + total > limit_year` (`limit_month` is stored but **not checked** since 2026-10-28 — yearly ceiling only)
   (limits of the round's fy — a round whose fy has no `limits` rows, e.g. the trial round 2026-10 = FY2569, never warns; skipped for items with a
   `limit_unlocks` row for (pcu,item,month)) → `OVER_LIMIT{items}`.
   Lines saved earlier in the same call stay saved (it is autosave + submit). `warn` mode: submit succeeds and the same list is returned as `over_limit`.
