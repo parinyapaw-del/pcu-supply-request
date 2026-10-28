@@ -1,10 +1,12 @@
-// import_fy.js — phase 2e: open a new fiscal year. adminImportPreview (read-only report) + adminImportApply (rollover).
+// import_fy.js — phase 2e: open a new fiscal year. adminImportPreview (read-only report) + adminImportApply (rollover)
+// + adminImportOverride (same fiscal year: the file replaces the form / plans / limits of fy_current — 2t).
 // Contract: functions/API.md §5.3 · file format: seed/FORMAT.md. The write path is the idempotent importer (importer.js).
 // Both actions share ONE analysis (`analyse`) so the preview shows exactly what apply will do.
 import { err, isStr } from "./http.js";
-import { batchChunked, getConfigAll, latestForm, publicConfig } from "./db.js";
-import { seedHistoryStmts } from "./price.js";
-import { canonSteps } from "./form_editor.js";
+import { auditStmt, batchChunked, getConfigAll, insertStatements, latestForm, publicConfig } from "./db.js";
+import { backdateStmts, loadPriceHistory, priceEffect, seedHistoryStmts } from "./price.js";
+import { canonSteps, diffSteps, rebindStmt } from "./form_editor.js";
+import { sha256Hex, stableStringify } from "./http.js";
 import { adminImportSeed, formRecord, validateSeed } from "./importer.js";
 import { defaultLimit } from "./admin.js";
 import { currentRound, fyExcelMonths, fyMonths, monthFy, nowIso, prevMonth } from "./time.js";
@@ -196,20 +198,23 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
   if (pcus.missing_in_file.length) warnings.push(`รพ.สต. ที่มีในระบบแต่ไม่อยู่ในไฟล์ ${pcus.missing_in_file.length} แห่ง (${pcus.missing_in_file.slice(0, 5).join(", ")}) — ข้อมูลเดิมไม่ถูกลบ`);
 
   // ---- form ----
-  // rollover: file form + closed carry-over of dropped items; same_fy: the file form as it is (what adminImportSeed would see)
-  const oldFormOk = oldForm && (mode === "rollover");
+  // Both modes: file form + closed carry-over of the items the file dropped (rollover: from the form of the old fy; same_fy (2t override):
+  // from the latest form of this fy — pages and items are never deleted, so every request line keeps resolving its code).
   if (mode === "rollover" && !oldForm) warnings.push("ยังไม่มีฟอร์มของปีงบปัจจุบันในระบบ — เปรียบเทียบรายการ/ราคาไม่ได้");
-  const fileSteps = canonSteps(seed.form.steps);
-  const newSteps = mode === "rollover" ? buildNewSteps(seed.form.steps, oldFormOk ? oldForm : null) : fileSteps;
+  const newSteps = buildNewSteps(seed.form.steps, oldForm);
   assertFormRules(newSteps);
-  // rollover: the canonical merged form is what gets stored. same_fy: hashed exactly as adminImportSeed does (raw normalised file form),
-  // so "same" / "skipped_differs" agree with what the importer would report.
-  const note = isStr(seed.form.note) && seed.form.note.trim() ? seed.form.note.trim().slice(0, 200) : `เปิดปีงบ ${fy}`;
-  const rec = mode === "rollover" ? await formRecord({ fy, note, steps: newSteps }, fy) : await formRecord(seed.form, fy);
+  const note = isStr(seed.form.note) && seed.form.note.trim() ? seed.form.note.trim().slice(0, 200) : mode === "rollover" ? `เปิดปีงบ ${fy}` : `นำเข้าไฟล์แทนที่ฟอร์มปีงบ ${fy}`;
+  const rec = await formRecord({ fy, note, steps: newSteps }, fy);
   let version_action = "insert";
   if (versRes.results.length) {
-    version_action = versRes.results.some((r) => r.data_hash === rec.hash) ? "same" : "skipped_differs";
-    if (mode === "rollover") warnings.push(`ปีงบ ${fy} มีฟอร์มอยู่แล้ว — เปิดปีงบไม่ได้ (apply จะตอบ CONFLICT)`);
+    if (mode === "rollover") {
+      version_action = versRes.results.some((r) => r.data_hash === rec.hash) ? "same" : "skipped_differs";
+      warnings.push(`ปีงบ ${fy} มีฟอร์มอยู่แล้ว — เปิดปีงบไม่ได้ (apply จะตอบ CONFLICT)`);
+    } else {
+      // same_fy: "same" = identical structure to the latest version (the note is ignored), as in the form editor; else "override"
+      const h = (steps) => sha256Hex(stableStringify({ fy, steps }));
+      version_action = (await h(newSteps)) === (await h(canonSteps(oldForm.steps))) ? "same" : "override";
+    }
   }
   const newIdx = itemIndex(newSteps);
   const oldIdx = oldForm ? itemIndex(oldForm.steps) : new Map();
@@ -224,7 +229,7 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
   }
   if (oldForm) {
     const carried = [...newIdx.keys()].filter((c) => oldIdx.has(c) && !fileHas(seed.form.steps, c)).length;
-    if (mode === "rollover" && carried) warnings.push(`รายการ ${carried} รายการที่มีในฟอร์มเดิมแต่ไม่อยู่ในไฟล์ จะถูกเก็บไว้เป็นรายการที่ปิดแล้ว (active:false)`);
+    if (carried) warnings.push(`รายการ ${carried} รายการที่มีในฟอร์มเดิมแต่ไม่อยู่ในไฟล์ จะถูกเก็บไว้เป็นรายการที่ปิดแล้ว (active:false)`);
   }
 
   // ---- plans (baht = qty × price of the file's form) ----
@@ -301,8 +306,85 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
   } else {
     limits = { in_file: limitsInFile, will_default: 0 };
   }
-  out.summary = { pcus, form, plans, limits, config: { will_set }, rollover };
+  let override = null;
+  if (mode === "same_fy") {
+    out.override = await overridePlan(DB, { fy, oldForm, newSteps, planFile, known, limitsFile, priceChanged: form.price_changed, version_action });
+    override = out.override.summary;
+    limits = { in_file: limitsInFile, will_default: limitsInFile ? 0 : override.limits.upsert };
+    if (pcus.new.length) warnings.push(`รพ.สต. ใหม่ในไฟล์ ${pcus.new.join(", ")} — การนำเข้าแทนที่ไม่เพิ่ม รพ.สต. (เพิ่มที่แท็บ รพ.สต.) แผนของแห่งนั้นจะถูกข้าม`);
+  }
+  out.summary = { pcus, form, plans, limits, config: { will_set: mode === "same_fy" ? [] : will_set }, rollover, override };
   return out;
+}
+
+// ---- 2t: same-fy override — what the file changes, as statements (only rows that change: D1 write quota, plan 1A) ----------------
+// form: a new version of fy (old requests are re-bound to it) · prices that changed: effective for the WHOLE fy (price_history of the item =
+// one row at the fy's first round; price_snapshot of every sent line of the fy back-dated; price_print untouched) · plans: upsert changed
+// pairs, delete pairs the file no longer has · limits: the file's block, else the default rule (Q81) per plan pair; rows set by an admin are kept.
+async function overridePlan(DB, o) {
+  const { fy, oldForm, newSteps, planFile, known, limitsFile, priceChanged, version_action } = o;
+  const first = fyMonths(fy)[0];
+  const [planRes, limRes, statRes, reqRes, hist] = await Promise.all([
+    DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(fy).raw(),
+    DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, source FROM limits WHERE fy = ?`).bind(fy).raw(),
+    DB.prepare(`SELECT pcu, item_code, p90_m FROM stats WHERE fy = ?`).bind(fy - 1).raw(),
+    DB.prepare(`SELECT COUNT(*) AS n FROM requests WHERE form_version_id IN (SELECT id FROM form_versions WHERE fy = ?)`).bind(fy).first(),
+    loadPriceHistory(DB, fy),
+  ]);
+  const key = (pcu, code) => pcu + "\u0000" + code;
+  // plans
+  const oldPlans = new Map(planRes.map(([pcu, c, op, pp]) => [key(pcu, c), [num(op), num(pp)]]));
+  const planUpsert = [], planDelete = [], filePairs = new Set();
+  for (const [pcu, items] of Object.entries(planFile)) {
+    if (!known.has(pcu)) continue;
+    for (const [code, v] of Object.entries(items || {})) {
+      const op = num(v && v[0]), pp = num(v && v[1]);
+      filePairs.add(key(pcu, code));
+      const was = oldPlans.get(key(pcu, code));
+      if (!was || was[0] !== op || was[1] !== pp) planUpsert.push([fy, pcu, code, op, pp]);
+    }
+  }
+  for (const [pcu, c] of planRes) if (!filePairs.has(key(pcu, c))) planDelete.push([pcu, c]);
+  // limits
+  const oldLim = new Map(limRes.map(([pcu, c, lm, ly, src]) => [key(pcu, c), { lm, ly, src }]));
+  const p90 = new Map(statRes.map(([pcu, c, v]) => [key(pcu, c), num(v)]));
+  const want = [];
+  if (limitsFile) {
+    for (const [pcu, items] of Object.entries(limitsFile)) if (known.has(pcu) && isObj(items)) {
+      for (const [code, v] of Object.entries(items)) if (Array.isArray(v)) want.push([pcu, code, v[0] ?? null, v[1] ?? null, v[2] || "file"]);
+    }
+  } else {
+    for (const [pcu, items] of Object.entries(planFile)) if (known.has(pcu)) for (const [code, v] of Object.entries(items || {})) {
+      const l = defaultLimit(num(v && v[0]), num(v && v[1]), p90.get(key(pcu, code)) || 0, fy);
+      if (l.lm !== null || l.ly !== null) want.push([pcu, code, l.lm, l.ly, l.source]);
+    }
+  }
+  let keptAdmin = 0;
+  const limUpsert = [];
+  for (const [pcu, code, lm, ly, src] of want) {
+    const was = oldLim.get(key(pcu, code));
+    if (was && was.src === "admin") { keptAdmin++; continue; }
+    if (was && was.lm === lm && was.ly === ly && was.src === src) continue;
+    limUpsert.push([fy, pcu, code, lm, ly, src]);
+  }
+  // prices: whole fy (the item's later from_round rows are dropped, so the range runs to the end of the fy)
+  const changes = priceChanged.map((c) => ({ code: c.code, price: round2(c.new), from_round: first }));
+  const flat = new Map(hist);
+  for (const c of changes) flat.delete(c.code);
+  const effect = changes.length && oldForm ? await priceEffect(DB, fy, flat, oldForm, changes, currentRound()) : null;
+  const backdated = effect ? effect.per_code.filter((x) => x.backdate) : [];
+  const diff = oldForm && version_action !== "insert" ? diffSteps(canonSteps(oldForm.steps), newSteps) : null;
+  return {
+    planUpsert, planDelete, limUpsert, changes, backdated, diff, first,
+    summary: {
+      version_action,
+      requests_rebound: version_action === "override" ? (reqRes ? reqRes.n : 0) : 0,
+      diff_counts: diff ? Object.fromEntries(Object.entries(diff).map(([k, v]) => [k, v.length])) : null,
+      price_backdate: { items: changes.length, requests: effect ? effect.requests : 0, lines: backdated.reduce((a, x) => a + x.n_lines, 0), delta_baht: effect ? effect.delta_baht : 0, months: effect ? effect.months : [] },
+      plans: { upsert: planUpsert.length, delete: planDelete.length },
+      limits: { upsert: limUpsert.length, kept_admin: keptAdmin, source: limitsFile ? "file" : "default" },
+    },
+  };
 }
 
 const fileHas = (steps, code) => steps.some((s) => s.rows.some((r) => r.type === "item" && r.code === code));
@@ -322,6 +404,66 @@ export async function adminImportPreview(ctx, p) {
   const mode = modeOf(seed, fyCur);
   const a = await analyse(DB, seed, fyCur, cfgAll, mode);
   return { fy: seed.fy, fy_current: fyCur, mode, summary: a.summary, warnings: a.warnings };
+}
+
+// 2t: the file of the CURRENT fiscal year replaces its form (new version, every request of the fy re-bound to it), prices (whole fy),
+// plans and limits — see overridePlan. pcus / config / actual_prev / stats / prices_prev of the file are not touched here.
+export async function adminImportOverride(ctx, p) {
+  const { DB, who } = ctx;
+  const seed = p.seed;
+  validateSeed(seed);
+  const { cfgAll, fyCur } = await currentFy(DB);
+  const fy = seed.fy;
+  if (fy !== fyCur) throw err("BAD_REQUEST", `นำเข้าแทนที่ได้เฉพาะปีงบปัจจุบัน (${fyCur}) — ไฟล์เป็นปีงบ ${fy}`);
+  if (p.confirm !== `แทนที่ปีงบ ${fy}`) throw err("BAD_REQUEST", `ต้องพิมพ์ยืนยัน "แทนที่ปีงบ ${fy}"`);
+  const a = await analyse(DB, seed, fyCur, cfgAll, "same_fy");
+  const o = a.override, s = o.summary;
+  const ts = nowIso(), by = who.email || "";
+
+  // 1. the form version — guarded on the latest version of the fy still being the one analysed (two admins at once → CONFLICT)
+  let formId = null;
+  if (a.version_action === "override" || a.version_action === "insert") {
+    const latest = await DB.prepare(`SELECT MAX(id) AS id FROM form_versions WHERE fy = ?`).bind(fy).first();
+    const baseId = latest ? latest.id : null;
+    const res = await DB.prepare(
+      `INSERT INTO form_versions (fy,created_at,created_by,note,data,data_hash)
+       SELECT ?,?,?,?,?,? WHERE (SELECT MAX(id) FROM form_versions WHERE fy = ?) IS ?`
+    ).bind(fy, ts, by, a.rec.data.note, a.rec.dataJson, a.rec.hash, fy, baseId).run();
+    if (!res.meta || !res.meta.changes) throw err("CONFLICT", "มีการบันทึกฟอร์ม version ใหม่ไปแล้ว — ตรวจสอบไฟล์ใหม่อีกครั้ง");
+    formId = res.meta.last_row_id;
+  }
+  // 2. everything else in one chunked batch
+  const stmts = [];
+  const HCOLS = ["fy", "item_code", "from_round", "price", "set_by", "set_at", "note"], hnote = `นำเข้าแทนที่${formId ? ` form v${formId}` : ""}`;
+  if (formId && a.version_action === "insert") stmts.push(...seedHistoryStmts(DB, fy, a.newSteps, by, hnote));
+  if (formId && o.diff) {
+    const added = o.diff.items_added.map((c) => [fy, c, o.first, itemIndex(a.newSteps).get(c).item.price, by, ts, hnote]);
+    stmts.push(...insertStatements(DB, "price_history", HCOLS, added, { prefix: "INSERT OR IGNORE INTO" }));
+  }
+  for (const c of o.changes) {
+    stmts.push(DB.prepare(`DELETE FROM price_history WHERE fy = ? AND item_code = ? AND from_round > ?`).bind(fy, c.code, o.first));
+    stmts.push(DB.prepare(`INSERT INTO price_history (fy,item_code,from_round,price,set_by,set_at,note) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(fy,item_code,from_round) DO UPDATE SET price=excluded.price, set_by=excluded.set_by, set_at=excluded.set_at, note=excluded.note`)
+      .bind(fy, c.code, o.first, c.price, by, ts, hnote));
+  }
+  stmts.push(...backdateStmts(DB, o.backdated));
+  stmts.push(...insertStatements(DB, "plans", ["fy", "pcu", "item_code", "plan_op", "plan_pp"], o.planUpsert,
+    { suffix: "ON CONFLICT(fy,pcu,item_code) DO UPDATE SET plan_op=excluded.plan_op, plan_pp=excluded.plan_pp" }));
+  for (const [pcu, c] of o.planDelete) stmts.push(DB.prepare(`DELETE FROM plans WHERE fy = ? AND pcu = ? AND item_code = ?`).bind(fy, pcu, c));
+  stmts.push(...insertStatements(DB, "limits", ["fy", "pcu", "item_code", "limit_month", "limit_year", "source", "updated_by", "updated_at"],
+    o.limUpsert.map((r) => [...r, "import", ts]),
+    { suffix: "ON CONFLICT(fy,pcu,item_code) DO UPDATE SET limit_month=excluded.limit_month, limit_year=excluded.limit_year, source=excluded.source, updated_by=excluded.updated_by, updated_at=excluded.updated_at WHERE limits.source IS NOT 'admin'" }));
+  if (formId) stmts.push(rebindStmt(DB, fy, formId));
+  stmts.push(auditStmt(DB, by, who.role, "form_override", "", "", JSON.stringify({
+    id: formId, fy, version_action: a.version_action, diff_counts: s.diff_counts, price_backdate: s.price_backdate, plans: s.plans, limits: s.limits, rebound: formId ? s.requests_rebound : 0,
+  })));
+  for (const x of o.backdated) {
+    stmts.push(auditStmt(DB, by, who.role, "price_backdate", "", x.from_round, JSON.stringify({
+      code: x.code, old: x.old, new: x.price, from_round: x.from_round, to_round: x.to_round, requests: x.requests, lines: x.n_lines, delta: x.delta, form_version: formId,
+    })));
+  }
+  await batchChunked(DB, stmts);
+  return { fy, form_version_id: formId, version_action: a.version_action, override: { ...s, requests_rebound: formId ? s.requests_rebound : 0 }, warnings: a.warnings };
 }
 
 export async function adminImportApply(ctx, p) {

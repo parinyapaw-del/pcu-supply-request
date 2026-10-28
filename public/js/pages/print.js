@@ -27,9 +27,12 @@ function fillOrDots(dots, value, fill) {
   return `<span class="fill-slot" style="min-width:${(dots.length * 0.15).toFixed(1)}em">${esc(String(value))}</span>`;
 }
 
-// Steps that are printed: all of them in order, except steps switched off (`active === false`, form editor 2d).
-function printableSteps(form) {
-  return getOrderedSteps(form).filter((s) => s.active !== false);
+// Steps that are printed: all of them in order, except steps switched off (`active === false`, form editor 2d) — a closed step is still printed
+// when the request carries a quantity on it (2t: requests follow the latest form of their fy, so a page may close after the request was sent).
+function printableSteps(form, request) {
+  const lines = (request && request.lines) || {};
+  const hasQty = (s) => (s.rows || []).some((r) => r.type === "item" && lines[r.code] && (Number(lines[r.code].op) || 0) + (Number(lines[r.code].pp) || 0) > 0);
+  return getOrderedSteps(form).filter((s) => s.active !== false || hasQty(s));
 }
 
 function blankRequestFor(pcu, month) {
@@ -119,7 +122,7 @@ export async function renderPrint(container, app, params) {
     hidden = app.boot.hidden || [];
   }
 
-  const steps = printableSteps(form);
+  const steps = printableSteps(form, request);
   const thisRound = !asAdmin && !isPreview && app.boot ? roundOf(app, month) : null;
   const trialRound = !!(thisRound && thisRound.trial);
   const wrap = document.createElement("div");
@@ -335,7 +338,7 @@ export async function renderPrint(container, app, params) {
 export function renderAllPages(host, form, request, pcu, hidden, month, opts = {}) {
   const printOpts = normPrintOpts(opts);
   host.innerHTML = "";
-  printableSteps(form).forEach((step, i) => {
+  printableSteps(form, request).forEach((step, i) => {
     const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
     page.dataset.step = step.code;
     host.appendChild(page);

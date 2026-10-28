@@ -1817,15 +1817,15 @@ async function main() {
     eq(pb1.form_version_id, V1, "pcuBootstrap.form_version_id = new version");
     ok(stepOf(pb1.form.steps, "S08") && findItem(pb1.form.steps, "S08-01"), "pcuBootstrap.form has the new page + item");
     ok(findItem(pb1.form.steps, newP5) && findItem(pb1.form.steps, B.code).active === false, "new item present; closed item is active:false");
-    ok(pb1.forms && pb1.forms[V0] && pb1.forms[V0].id === V0, "pcuBootstrap.forms has the old version bound to the submitted request");
-    eq(findItem(pb1.forms[V0].steps, A.code).price, oldA, "forms[old] keeps the old price");
+    eq(pb1.forms, {}, "2t: the submitted request follows the new version (re-bound) → forms {}");
     const pb2 = await mustOk("pcuBootstrap", {}, TF2);
     eq(pb2.forms, {}, "forms is {} when no shown request is bound to an older version (draft)");
     const gm1 = await mustOk("pcuGetMonth", { month: CUR }, TF1);
-    ok(gm1.form && gm1.form.id === V0, "pcuGetMonth.form = bound old version");
+    ok(!("form" in gm1) && gm1.request.form_version_id === V1, "2t: pcuGetMonth: request re-bound to the latest version → no form key");
     ok(!("form" in (await mustOk("pcuGetMonth", { month: CUR }, TF2))), "pcuGetMonth omits form when it is the latest");
     const gr = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
-    ok(gr.form.id === V0 && gr.form_version_id === V0 && findItem(gr.form.steps, A.code).price === oldA, "adminGetRequest: submitted request keeps its old version + old price");
+    ok(gr.form.id === V1 && gr.form_version_id === V1 && findItem(gr.form.steps, renItem.code).name === oldName + " (ปรับชื่อ)", "2t: adminGetRequest: submitted request shows the new version (new wording)");
+    eq(gr.request.lines[A.code].price_print, oldA, "2t: …the printed price of the sent line is unchanged");
 
     // ---- saving after the edit ----
     const s2 = await api("saveLines", { month: CUR, lines: { "S08-01": { op: 2, updated_at: t(2) }, [newP5]: { op: 1, updated_at: t(2) } }, send: true }, TF2);
@@ -1894,8 +1894,10 @@ async function main() {
     ok(stepOf(v3.form.steps, "P5").page_no === 5 && stepOf(v3.form.steps, "LAB").page_no === 7, "page_no stays a running number among active pages");
     const pb3 = await mustOk("pcuBootstrap", {}, TF2);
     ok(!stepOf(pb3.form.steps, "S08"), "pcuBootstrap.form strips closed pages");
-    ok(pb3.forms[V1] && stepOf(pb3.forms[V1].steps, "S08"), "…but forms[V1] (still has S08 active) is intact");
-    ok(!pb3.forms[V0], "forms lists only versions bound to the shown requests");
+    ok(pb3.forms[v3.form.id] && stepOf(pb3.forms[v3.form.id].steps, "S08"), "2t: …but a request with a quantity on the closed page gets the full latest form (forms[latest] keeps S08)");
+    ok(!pb3.forms[V0] && !pb3.forms[V1], "2t: no older version in forms (requests re-bound to the latest)");
+    const gm3 = await mustOk("pcuGetMonth", { month: CUR }, TF2);
+    ok(gm3.form && gm3.form.id === v3.form.id && stepOf(gm3.form.steps, "S08"), "2t: pcuGetMonth: full latest form when a closed page carries a quantity");
     const ab3 = await mustOk("adminBootstrap", {}, ADM2);
     ok(stepOf(ab3.form.steps, "S08") && stepOf(ab3.form.steps, "S08").active === false, "adminBootstrap.form keeps the closed page (active:false)");
     ok((await api("saveLines", { month: CUR, lines: { "S08-01": { op: 5, updated_at: t(4) } }, send: true }, TF2)).ok, "closed page's item code still saves on a request (code exists)");
@@ -2070,14 +2072,14 @@ async function main() {
     eq(hrows(bd.data.price_history, Y), [[PREV, py2]], "Y back-dated to the first round replaces its first-round row");
     expectErr(await api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, r2(px2 + 1)) }, price_from: { [X]: "2026-10" } }, ADM2, ADM_LATER), "BAD_REQUEST", "back-date before fy_current refused");
 
-    // ---- PDF after the back-date: same key + old price · re-send → new price + new key ----
+    // ---- PDF after the back-date: old price (price_print) · re-send → new price + new key ----
     const tk7 = await mustOk("devPrintToken", { pcu: "PCU07", month: CUR });
-    eq(tk7.content_key, k7, "back-date does not change the content_key (R2 keeps serving the sheet as sent)");
+    ok(tk7.content_key !== k7, "2t: the form save re-binds the request → new content_key (the sheet is re-rendered with the latest form; prices stay price_print)");
     eq(findIt((await mustOk("printData", { k: tk7.token })).form.steps, X).price, px0, "printData after the back-date: the price as sent (price_print)");
     ok(!!(await send(T7, CUR, { [X]: { op: 6, pp: 0 } })), "PCU07 re-sends 2026-12 after the back-date");
     eq(pp2(await line("PCU07", CUR, X)), [px2, px2], "re-send: price_snapshot = price_print = the back-dated price");
     const tk7b = await mustOk("devPrintToken", { pcu: "PCU07", month: CUR });
-    ok(tk7b.content_key !== k7 && findIt((await mustOk("printData", { k: tk7b.token })).form.steps, X).price === px2, "re-send → new content_key, printed at the new price");
+    ok(tk7b.content_key !== tk7.content_key && findIt((await mustOk("printData", { k: tk7b.token })).form.steps, X).price === px2, "re-send → new content_key, printed at the new price");
 
     // ---- an old round re-sent uses ITS round's price ----
     ok(!!(await send(T8, PREV, { [X]: { op: 1, pp: 0 } })), "PCU08 re-sends 2026-11");
@@ -2225,7 +2227,7 @@ async function main() {
     // ---- preview: same fiscal year ----
     const pv0 = await mustOk("adminImportPreview", { seed }, ADM2);
     eq([pv0.fy, pv0.fy_current, pv0.mode], [OLD, OLD, "same_fy"], "preview of the FY2570 seed → mode same_fy");
-    eq(pv0.summary.form.version_action, "same", "preview same_fy: version_action same (the seed form is version 1 of FY2570)");
+    eq(pv0.summary.form.version_action, "override", "preview same_fy: version_action override (the seed form differs from the latest, editor-edited version)");
     eq(pv0.summary.rollover, null, "preview same_fy: rollover null");
     ok(pv0.summary.limits.in_file > 0 && pv0.summary.limits.will_default === 0, "preview same_fy: limits in_file > 0, will_default 0");
     let seedTotal = 0;
@@ -2401,7 +2403,7 @@ async function main() {
     expectErr(await api("adminImportApply", { seed: seed71, confirm: "เปิดปีงบ 2571" }, ADM2), "CONFLICT", "re-apply the same file → CONFLICT (ปีงบเปิดแล้ว)");
     eq((await mustOk("adminBootstrap", {}, ADM2)).form_versions.length, versions0 + 1, "re-apply created no extra form version");
     const pvAfter = await api("adminImportPreview", { seed: seed71 }, ADM2);
-    ok(pvAfter.ok && pvAfter.data.mode === "same_fy" && pvAfter.data.summary.form.version_action === "skipped_differs", "preview of the same file after opening → same_fy (stored form = file + the closed carry-over, so it differs from the raw file)");
+    ok(pvAfter.ok && pvAfter.data.mode === "same_fy" && pvAfter.data.summary.form.version_action === "same", "preview of the same file after opening → same_fy, form same (file + the same closed carry-over)");
     const aud = (await mustOk("adminAuditLog", { limit: 30 }, ADM2)).entries.find((e) => e.action === "fy_open");
     ok(aud && aud.actor === ADMIN_EMAIL, "audit has fy_open");
     const ad = aud ? JSON.parse(aud.detail) : {};
@@ -2863,6 +2865,105 @@ async function main() {
     } }, ADM2, "restore plans 2571 / stats 2570 / actual_prev 2570");
     const ex1 = (await mustOk("adminExportSeed", {}, ADM2)).seed;
     eq([ex1.plans[String(FY)], ex1.stats["2570"], ex1.actual_prev["2570"]], [ex0.plans[String(FY)], ex0.stats["2570"], ex0.actual_prev["2570"]], "restore: plans / stats / actual_prev equal the export taken before");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("same-fy override import + requests follow the latest form (2t)");
+  {
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const items = (steps) => steps.flatMap((x) => x.rows.filter((r) => r.type === "item").map((r) => ({ ...r, step: x.code })));
+    const findIt = (steps, code) => items(steps).find((r) => r.code === code);
+    const r2 = (x) => Math.round(x * 100) / 100;
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
+    const FY = (await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, first = `${FY - 544}-11`;
+    const devMonth0 = devMonth;
+    devMonth = `${FY - 544}-12`; // calendar Dec → round Jan of FY (a round of fy_current)
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const F0 = b0.form;
+    const T4 = (await mustOk("pcuLogin", { pcu: "PCU04", pin: "12345" })).token;
+    const R = (await mustOk("pcuBootstrap", {}, T4)).current_round;
+    await mustOk("adminLockRound", { month: R, locked: 0 }, ADM2);
+    const openSteps = F0.steps.filter((x) => x.active !== false);
+    const act = items(openSteps).filter((i) => i.active !== false);
+    const [A, B, C, D] = act;
+    const sent = await api("saveLines", { month: R, lines: { [A.code]: { op: 3 }, [D.code]: { op: 1 } }, send: true }, T4);
+    ok(sent.ok && sent.data.status === "submitted", "2t fixture: PCU04 sends A + D in the current round");
+    const g0 = await mustOk("adminGetRequest", { pcu: "PCU04", month: R }, ADM2);
+    const ppA = g0.request.lines[A.code].price_print;
+
+    // ---- the file: export of the current fy, then edited ----
+    const seed = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    const st = seed.form.steps;
+    const s0 = st.find((x) => x.code === openSteps[0].code);
+    const newA = r2(findIt(F0.steps, A.code).price + 2);
+    st.forEach((x) => x.rows.forEach((r) => { if (r.code === A.code) r.price = newA; if (r.code === B.code) r.name = B.name + " (ใหม่)"; }));
+    st.forEach((x) => { x.rows = x.rows.filter((r) => r.code !== C.code && r.code !== D.code); });
+    const dst = st.filter((x) => x.active !== false).find((x) => x.code !== C.step && x.rows.filter((r) => r.type === "item" && r.active !== false).length < 24);
+    dst.rows.push({ type: "item", code: C.code, name: C.name, unit: C.unit, price: C.price, active: true });
+    const NC = `${s0.code}-987`;
+    s0.rows.push({ type: "item", code: NC, name: "รายการใหม่ override", unit: "ชิ้น", price: 5, active: true });
+    s0.title = s0.title + " ฉบับใหม่";
+    const pl = seed.plans[String(FY)];
+    (pl.PCU04 ||= {})[A.code] = [100, 0];
+    pl.PCU04[NC] = [12, 0];
+    const [delPcu] = Object.keys(pl).filter((k) => k !== "PCU04" && Object.keys(pl[k]).length);
+    const delCode = Object.keys(pl[delPcu])[0];
+    delete pl[delPcu][delCode];
+    delete seed.limits;
+
+    // ---- preview ----
+    const pv = await mustOk("adminImportPreview", { seed }, ADM2);
+    const O = pv.summary.override;
+    eq([pv.mode, pv.summary.form.version_action, O.version_action], ["same_fy", "override", "override"], "2t preview: same_fy, version_action override");
+    ok(O.diff_counts.renamed >= 1 && O.diff_counts.moved >= 1 && O.diff_counts.items_added === 1 && O.diff_counts.items_closed === 1, "2t preview: diff counts (renamed / moved / added 1 / closed 1)");
+    ok(O.requests_rebound >= 1, "2t preview: requests to re-bind ≥ 1");
+    ok(O.price_backdate.items === 1 && O.price_backdate.lines >= 1 && O.price_backdate.requests >= 1, "2t preview: 1 price change back-dated over the whole fy (≥ 1 sent line)");
+    eq([O.plans.upsert, O.plans.delete], [2, 1], "2t preview: plans upsert 2 (changed + new) · delete 1");
+    ok(O.limits.upsert >= 1 && O.limits.source === "default", "2t preview: default limits for the new plan pair");
+    ok(pv.warnings.some((x) => /ปิดแล้ว/.test(x)), "2t preview: warns that the dropped item is kept closed");
+
+    // ---- guards ----
+    expectErr(await api("adminImportOverride", { seed, confirm: "แทนที่" }, ADM2), "BAD_REQUEST", "2t: wrong confirm phrase");
+    expectErr(await api("adminImportOverride", { seed: { ...seed, fy: FY + 1 }, confirm: `แทนที่ปีงบ ${FY + 1}` }, ADM2), "BAD_REQUEST", "2t: a file of another fy");
+    expectErr(await api("adminImportOverride", { seed, confirm: `แทนที่ปีงบ ${FY}` }, T4), "FORBIDDEN", "2t: PCU token");
+    expectErr(await api("adminImportOverride", { seed, confirm: `แทนที่ปีงบ ${FY}` }), "AUTH_REQUIRED", "2t: no token");
+
+    // ---- apply ----
+    const ap = await mustOk("adminImportOverride", { seed, confirm: `แทนที่ปีงบ ${FY}` }, ADM2);
+    ok(ap.form_version_id > F0.id && ap.version_action === "override", "2t apply: new form version");
+    eq(ap.override.requests_rebound, O.requests_rebound, "2t apply: re-bound = preview");
+    const g1 = await mustOk("adminGetRequest", { pcu: "PCU04", month: R }, ADM2);
+    eq(g1.form_version_id, ap.form_version_id, "2t: sent request now bound to the new version");
+    ok(findIt(g1.form.steps, B.code).name === B.name + " (ใหม่)" && g1.form.steps.find((x) => x.code === s0.code).title === s0.title, "2t: admin sees the new wording (item name + page title)");
+    ok(findIt(g1.form.steps, D.code).active === false && g1.request.lines[D.code].op === 1, "2t: dropped item kept closed, its sent line intact");
+    ok(g1.form.steps.find((x) => x.code === dst.code).rows.some((r) => r.code === C.code), "2t: moved item is on its new page");
+    eq([g1.request.lines[A.code].price_snapshot, g1.request.lines[A.code].price_print], [newA, ppA], "2t: price back-dated on the sent line (snapshot) · printed price unchanged");
+    const pg = await mustOk("pcuGetMonth", { month: R }, T4);
+    ok(!("form" in pg) && pg.request.form_version_id === ap.form_version_id, "2t: PCU side follows the latest form too");
+    const hist = (await mustOk("adminFormGet", { id: ap.form_version_id }, ADM2)).price_history.filter((h) => h.code === A.code).map((h) => [h.from_round, h.price]);
+    eq(hist, [[first, newA]], "2t: price_history of the changed item = one row at the fy's first round");
+    const ex = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq([ex.plans[String(FY)].PCU04[A.code], ex.plans[String(FY)].PCU04[NC], ex.plans[String(FY)][delPcu] && ex.plans[String(FY)][delPcu][delCode]], [[100, 0], [12, 0], undefined], "2t: plans upserted / deleted");
+    ok(ex.limits[String(FY)].PCU04 && ex.limits[String(FY)].PCU04[NC], "2t: limits row for the new plan pair");
+    const aud = (await mustOk("adminAuditLog", { limit: 30 }, ADM2)).entries.find((e) => e.action === "form_override");
+    const ad = aud ? JSON.parse(aud.detail) : {};
+    ok(aud && ad.id === ap.form_version_id && ad.rebound === O.requests_rebound && ad.plans.upsert === 2, "2t: audit form_override");
+
+    // ---- the same file again: nothing left to do ----
+    const pv2 = await mustOk("adminImportPreview", { seed }, ADM2);
+    const O2 = pv2.summary.override;
+    eq([O2.version_action, O2.price_backdate.items, O2.plans.upsert, O2.plans.delete, O2.limits.upsert], ["same", 0, 0, 0, 0], "2t: re-preview of the same file → nothing to change");
+    const ap2 = await mustOk("adminImportOverride", { seed, confirm: `แทนที่ปีงบ ${FY}` }, ADM2);
+    ok(ap2.form_version_id === null && ap2.version_action === "same", "2t: re-apply creates no version");
+
+    // ---- the form editor re-binds too ----
+    const F2 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const st2 = cl(F2.steps);
+    st2.forEach((x) => x.rows.forEach((r) => { if (r.code === A.code) r.name = A.name + " (editor)"; }));
+    const sv = await mustOk("adminFormSave", { base_version_id: F2.id, note: "2t rename", form: { steps: st2 } }, ADM2);
+    const g2 = await mustOk("adminGetRequest", { pcu: "PCU04", month: R }, ADM2);
+    ok(g2.form_version_id === sv.form.id && findIt(g2.form.steps, A.code).name === A.name + " (editor)", "2t: adminFormSave re-binds the fy's requests to the new version");
+    devMonth = devMonth0;
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

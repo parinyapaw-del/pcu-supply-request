@@ -5,7 +5,7 @@ import { requirePcu, requireStaff } from "../_lib/auth.js";
 import * as pcu from "../_lib/pcu.js";
 import * as admin from "../_lib/admin.js";
 import { adminImportSeed } from "../_lib/importer.js";
-import { adminImportApply, adminImportPreview } from "../_lib/import_fy.js";
+import { adminImportApply, adminImportOverride, adminImportPreview } from "../_lib/import_fy.js";
 import { adminExportSeed, adminFormGet, adminFormSave, adminPricePreview } from "../_lib/form_editor.js";
 import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
@@ -68,6 +68,7 @@ const ADMIN = {
   adminImportSeed,
   adminImportPreview,
   adminImportApply,
+  adminImportOverride, // 2t
   adminExportSeed,
   adminFormGet,
   adminFormSave,

@@ -1,7 +1,8 @@
 // Tab 11 — นำเข้า / เปิดปีงบใหม่ (phase 2.md §5.10, briefs/2e_frontend.md). Admin only.
 // 3-step wizard: (1) files — Excel form + plan (parsed in the browser with SheetJS) or an import_<ปี>.json,
 // (2) item mapping to the current codes (exact / fuzzy / new; every non-exact row confirmed),
-// (3) server preview (adminImportPreview) → download the JSON → "เปิดปีงบ <fy>" (adminImportApply).
+// (3) server preview (adminImportPreview) → download the JSON → "เปิดปีงบ <fy>" (adminImportApply)
+//     or, for a file of the current fy, "แทนที่ปีงบ <fy>" (adminImportOverride, 2t).
 // Parsing / mapping / JSON building are pure and live in import_parse.js (shared with tools/check_import_2570.mjs).
 import { formatMoney } from "../format.js";
 import { el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, downloadJson, getXLSX } from "./util.js";
@@ -46,7 +47,7 @@ export function renderTab11(container, ctx) {
     head.innerHTML = "";
     head.appendChild(el("h2", {}, "นำเข้า / เปิดปีงบใหม่"));
     head.appendChild(el("p", { class: "admin-note" },
-      `ปีงบปัจจุบัน ${fyCur()} · อัปโหลดไฟล์แบบฟอร์มเบิก + ไฟล์ประมาณการของปีใหม่ (หรือไฟล์ import_<ปี>.json) → จับคู่รายการกับรหัสเดิม → ตรวจสอบ → เปิดปีงบ`));
+      `ปีงบปัจจุบัน ${fyCur()} · อัปโหลดไฟล์แบบฟอร์มเบิก + ไฟล์ประมาณการ (หรือไฟล์ import_<ปี>.json) → จับคู่รายการกับรหัสเดิม → ตรวจสอบ → เปิดปีงบใหม่ หรือแทนที่ปีงบปัจจุบัน`));
     const steps = el("ol", { class: "t11-steps", id: "t11-steps" });
     ["ไฟล์", "จับคู่รายการ", "ตรวจสอบ + ยืนยัน"].forEach((t, i) => {
       const n = i + 1;
@@ -81,10 +82,10 @@ export function renderTab11(container, ctx) {
     });
     const fyHint = el("span", { class: "muted small", id: "t11-fy-hint" });
     const fyHintText = () => (w.fy === fyCur() + 1 ? `เปิดปีงบใหม่ (ปีงบปัจจุบัน ${fyCur()} จะย้ายไปแท็บ "ปีก่อน")`
-      : w.fy === fyCur() ? "ปีงบเดียวกับปัจจุบัน — ดูตัวอย่างได้ แต่เปิดปีงบไม่ได้ (ใช้ \"นำเข้าข้อมูลตั้งต้น\" ที่แท็บระบบแทน)"
+      : w.fy === fyCur() ? "ปีงบเดียวกับปัจจุบัน — นำเข้าแทนที่: ฟอร์ม/ราคา/แผน/เพดานของปีงบนี้เปลี่ยนตามไฟล์ ใบเบิกทั้งปีงบแสดงคำตามฟอร์มใหม่"
         : `ระบบเปิดได้เฉพาะปีงบ ${fyCur() + 1}`);
     fyHint.textContent = fyHintText();
-    card.appendChild(el("div", { class: "admin-toolbar" }, [el("label", { for: "t11-fy" }, "ปีงบที่จะเปิด (พ.ศ.)"), fyIn, fyHint]));
+    card.appendChild(el("div", { class: "admin-toolbar" }, [el("label", { for: "t11-fy" }, "ปีงบของไฟล์ (พ.ศ.)"), fyIn, fyHint]));
 
     // (A) Excel
     const formIn = el("input", { type: "file", id: "t11-form-file", accept: ".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -450,12 +451,18 @@ export function renderTab11(container, ctx) {
     ctx.adminCall("adminImportPreview", { seed: w.seed }).then((pv) => {
       w.preview = pv;
       drawPreview(pv);
+      if (pv.mode === "same_fy") {
+        apply.textContent = `แทนที่ปีงบ ${pv.fy}`;
+        apply.id = "t11-override";
+        apply.disabled = !overrideHasWork(pv.summary.override);
+        if (apply.disabled) { msg.className = "admin-note"; msg.textContent = "ไฟล์นี้ตรงกับข้อมูลในระบบแล้ว — ไม่มีอะไรต้องแทนที่"; }
+        return;
+      }
       const canApply = pv.mode === "rollover" && pv.summary && pv.summary.form && pv.summary.form.version_action === "insert";
       apply.disabled = !canApply;
       if (!canApply) {
         msg.className = "admin-err-text";
-        msg.textContent = pv.mode === "same_fy" ? `ปีงบ ${pv.fy} เป็นปีงบปัจจุบัน — เปิดปีงบซ้ำไม่ได้ (ถ้าต้องการนำเข้าข้อมูลปีนี้ ใช้ "นำเข้าข้อมูลตั้งต้น" ที่แท็บระบบ)`
-          : `ปีงบ ${pv.fy} มีฟอร์มอยู่แล้ว — เปิดปีงบซ้ำไม่ได้`;
+        msg.textContent = `ปีงบ ${pv.fy} มีฟอร์มอยู่แล้ว — เปิดปีงบซ้ำไม่ได้`;
       }
     }).catch((err) => {
       const code = err && err.code;
@@ -465,6 +472,7 @@ export function renderTab11(container, ctx) {
     apply.addEventListener("click", async () => {
       const pv = w.preview;
       if (!pv) return;
+      if (pv.mode === "same_fy") return applyOverride(pv);
       const s = pv.summary;
       const ok = await confirmDialog(
         `เปิดปีงบ ${pv.fy} แทนปีงบ ${pv.fy_current}\n\n` +
@@ -497,6 +505,43 @@ export function renderTab11(container, ctx) {
         apply.disabled = false; back.disabled = false;
       }
     });
+
+    // 2t: a file of the current fy replaces its form (every request of the fy shows the new wording), prices (whole fy), plans, limits
+    async function applyOverride(pv) {
+      const o = pv.summary.override, pb = o.price_backdate;
+      const ok = await confirmDialog(
+        `แทนที่ข้อมูลปีงบ ${pv.fy} ด้วยไฟล์นี้\n\n` +
+        (o.version_action === "same" ? "• แบบฟอร์ม: เหมือนเดิม (ไม่สร้าง version ใหม่)\n"
+          : `• แบบฟอร์ม version ใหม่ — ใบเบิกทุกใบของปีงบ ${pv.fy} (${o.requests_rebound} ใบ รวมใบที่ส่งแล้ว) จะแสดงชื่อรายการ/หน้า/หัวเรื่องตามไฟล์ใหม่\n`) +
+        (pb.items ? `• ราคาเปลี่ยน ${pb.items} รายการ มีผลทั้งปีงบ — ปรับราคาใบที่ส่งแล้ว ${pb.requests} ใบ ${pb.lines} บรรทัด (${pb.delta_baht >= 0 ? "+" : ""}${fmt(pb.delta_baht)} บาท) · ราคาในใบพิมพ์ที่ส่งไปแล้วไม่เปลี่ยน\n` : "") +
+        `• แผน: แก้/เพิ่ม ${o.plans.upsert} คู่ · ลบ ${o.plans.delete} คู่\n` +
+        `• เพดาน: ตั้งใหม่ ${o.limits.upsert} คู่${o.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${o.limits.kept_admin} คู่` : ""}\n\nแนะนำให้ Export backup ที่แท็บระบบก่อน`,
+        { title: `แทนที่ปีงบ ${pv.fy}`, okText: "ดำเนินการต่อ", danger: true });
+      if (!ok) return;
+      const phrase = `แทนที่ปีงบ ${pv.fy}`;
+      const typed = await formDialog(`ยืนยันแทนที่ปีงบ ${pv.fy}`, [
+        { key: "confirm", label: `พิมพ์ "${phrase}" เพื่อยืนยัน`, required: true, placeholder: phrase }
+      ], { okText: phrase, intro: "ขั้นสุดท้าย — ข้อมูลปีงบนี้จะเปลี่ยนตามไฟล์ทันที", validate: (v) => (v.confirm === phrase ? "" : `ต้องพิมพ์ "${phrase}" ให้ตรง`) });
+      if (!typed) return;
+      apply.disabled = true; back.disabled = true;
+      msg.className = "admin-note"; msg.textContent = "กำลังแทนที่...";
+      try {
+        const r = await ctx.adminCall("adminImportOverride", { seed: w.seed, confirm: typed.confirm });
+        const ro = r.override;
+        toast(`แทนที่ปีงบ ${r.fy} แล้ว`);
+        msg.className = "admin-ok-text";
+        msg.textContent = `แทนที่ปีงบ ${r.fy} แล้ว · ${r.form_version_id ? `ฟอร์ม version #${r.form_version_id} · ใบเบิกใช้ฟอร์มใหม่ ${ro.requests_rebound} ใบ` : "ฟอร์มเหมือนเดิม"}`
+          + ` · ราคาย้อนหลัง ${ro.price_backdate.lines} บรรทัด · แผน ${ro.plans.upsert + ro.plans.delete} คู่ · เพดาน ${ro.limits.upsert} คู่`;
+        await ctx.refreshBootstrap();
+        ctx.markStale(ALL_TABS);
+        ctx.markStale(["tab11"]);
+        back.disabled = false;
+      } catch (err) {
+        msg.className = "admin-err-text";
+        msg.textContent = "แทนที่ไม่สำเร็จ: " + errMessage(err);
+        apply.disabled = false; back.disabled = false;
+      }
+    }
 
     function drawPreview(pv) {
       const s = pv.summary || {};
@@ -540,6 +585,17 @@ export function renderTab11(container, ctx) {
       if (fileTot.per_pcu && b().pcus.some((p) => { const t = pl.per_pcu[p.code], ft = fileTot.per_pcu[p.code]; return t && ft && Math.abs(ft.total - t.total) > 0.01; })) {
         html += `<p class="admin-note">✗ = แถว "รวมเป็นเงิน" ในไฟล์ไม่เท่าผลรวมรายรายการ (มักเป็นสูตรในไฟล์ที่ไม่ครอบคลุมทุกหมวด) — ระบบใช้ผลรวมรายรายการ ตรวจสูตรในไฟล์ต้นทาง</p>`;
       }
+      // 2t: same-fy override
+      const ov = s.override;
+      if (ov) {
+        const pb = ov.price_backdate, dc = ov.diff_counts || {};
+        html += `<h4>นำเข้าแทนที่ปีงบ ${pv.fy}</h4><ul class="t11-sum" id="t11-sum-override">
+          <li>แบบฟอร์ม: ${ov.version_action === "same" ? "เหมือนเดิม (ไม่สร้าง version ใหม่)" : `version ใหม่ — เปลี่ยนชื่อ ${dc.renamed || 0} · ย้ายหน้า ${dc.moved || 0} · เพิ่ม ${dc.items_added || 0} · ปิด ${dc.items_closed || 0}`}</li>
+          ${ov.version_action === "same" ? "" : `<li>ใบเบิกของปีงบ ${pv.fy} ทุกใบ (${ov.requests_rebound} ใบ รวมใบที่ส่งแล้ว) จะแสดงคำ/หน้า/หัวเรื่องตามฟอร์มใหม่ ทั้ง admin ผู้จ่าย รพ.สต. ใบพิมพ์ และ Excel</li>`}
+          <li>ราคา: ${pb.items ? `เปลี่ยน ${pb.items} รายการ มีผลทั้งปีงบ — ปรับใบที่ส่งแล้ว ${pb.requests} ใบ ${pb.lines} บรรทัด (${pb.delta_baht >= 0 ? "+" : ""}${fmt(pb.delta_baht)} บาท) · ราคาในใบพิมพ์ที่ส่งไปแล้วไม่เปลี่ยน` : "ไม่เปลี่ยน"}</li>
+          <li>แผน: แก้/เพิ่ม ${ov.plans.upsert} คู่ · ลบ ${ov.plans.delete} คู่</li>
+          <li>เพดาน: ${ov.limits.source === "file" ? "ตามไฟล์" : "คำนวณอัตโนมัติ"} ตั้งใหม่ ${ov.limits.upsert} คู่${ov.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${ov.limits.kept_admin} คู่` : ""}</li></ul>`;
+      }
       // limits / config / rollover
       const lim = s.limits || {};
       const ro = s.rollover;
@@ -576,8 +632,11 @@ export function renderTab11(container, ctx) {
   };
 }
 
+function overrideHasWork(o) {
+  return !!o && (o.version_action !== "same" || o.price_backdate.items > 0 || o.plans.upsert + o.plans.delete + o.limits.upsert > 0);
+}
 function versionLabel(a) {
-  return a === "insert" ? "จะสร้าง version 1 ของปีงบใหม่" : a === "same" ? "เหมือนฟอร์มที่มีอยู่ (ไม่สร้างใหม่)" : a === "skipped_differs" ? "มีฟอร์มของปีนี้อยู่แล้วและต่างกัน (จะไม่ทับ)" : (a || "–");
+  return a === "override" ? "จะสร้าง version ใหม่แทนที่ฟอร์มปีงบนี้" : a === "insert" ? "จะสร้าง version 1 ของปีงบใหม่" : a === "same" ? "เหมือนฟอร์มที่มีอยู่ (ไม่สร้างใหม่)" : a === "skipped_differs" ? "มีฟอร์มของปีนี้อยู่แล้วและต่างกัน (จะไม่ทับ)" : (a || "–");
 }
 function srcLabel(s) { return s === "file" ? "ไฟล์" : s === "db" ? "ใบเบิกในระบบ" : (s || "–"); }
 function monthRange(ms) {

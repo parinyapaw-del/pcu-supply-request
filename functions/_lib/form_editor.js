@@ -47,6 +47,13 @@ export function canonSteps(stepsIn) {
   return steps;
 }
 
+// Every request of `fy` bound to an older version of that fy follows the new one, so admin / dispenser / PCU / print / PDF / Excel all show the
+// wording, pages and order of the latest form for the whole fiscal year (sent requests included). Lines keep their own prices
+// (price_snapshot / price_print), and a newer version never drops a code (items are only closed), so every line still resolves.
+export const rebindStmt = (DB, fy, id) => DB.prepare(
+  `UPDATE requests SET form_version_id = ? WHERE form_version_id <> ? AND form_version_id IN (SELECT id FROM form_versions WHERE fy = ?)`
+).bind(id, id, fy);
+
 // ---- validation of the editor input (first error wins; Thai messages) -------------------------------------------------------------
 function validateInput(formIn) {
   if (!isObj(formIn) || !Array.isArray(formIn.steps) || !formIn.steps.length) throw err("BAD_REQUEST", "ต้องมี form.steps อย่างน้อย 1 หน้า");
@@ -282,6 +289,7 @@ export async function adminFormSave(ctx, p) {
   }
   const backdated = effect ? effect.per_code.filter((x) => x.backdate) : [];
   stmts.push(...backdateStmts(DB, backdated));
+  stmts.push(rebindStmt(DB, base.fy, newId));
   const priceFromUsed = Object.fromEntries(changes.map((c) => [c.code, c.from_round]));
   stmts.push(auditStmt(DB, who.email, who.role, "form_save", "", "", auditDetail(newId, note, diff, changes.length ? priceFromUsed : undefined)));
   for (const x of backdated) {

@@ -179,15 +179,16 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     if (s) notices.push({ month: rr.month, complete: s.complete, incomplete: s.incomplete });
   }
 
-  // forms bound to the shown requests when they differ from the latest (submitted before a form edit) — PCU-stripped
+  // forms bound to the shown requests when they differ from the latest (another fy's form) — PCU-stripped; 2t: also the latest form itself,
+  // unstripped, when the request still carries a quantity on one of its closed pages
   const forms = {};
   const boundOf = {}; // 2p: round → [bound form] (prices that differ from it are listed too)
   for (const [m, v] of [[cur, curView.view], [prev, prevView.view]]) {
     const fid = v.request && v.request.form_version_id;
     if (fid && form && fid !== form.id) {
       const f = await loadForm(DB, fid);
-      if (f) { boundOf[m] = [f]; if (!forms[fid]) forms[fid] = formPublic(f, PCU_FORM); }
-    }
+      if (f) { boundOf[m] = [f]; if (!forms[fid]) forms[fid] = formPublic(f, closedPageQty(f, v.request) ? undefined : PCU_FORM); }
+    } else if (fid && form && closedPageQty(form, v.request)) forms[fid] = formPublic(form);
   }
   // 2p: price of each shown round (price_history) where it differs from the form price
   const prices = await roundPriceOverrides(priceHistories(DB), form, [cur, prev], monthFy, boundOf);
@@ -212,6 +213,17 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   };
 }
 
+// 2t: does `req` carry a quantity on an item of a closed page of `form`? (a PCU-stripped copy would hide that line)
+function closedPageQty(form, req) {
+  const lines = req && req.lines;
+  if (!form || !lines) return false;
+  for (const s of form.steps) {
+    if (s.active !== false) continue;
+    for (const r of s.rows) if (r.type === "item" && lines[r.code] && (Number(lines[r.code].op) || 0) + (Number(lines[r.code].pp) || 0) > 0) return true;
+  }
+  return false;
+}
+
 export async function pcuBootstrap(ctx) {
   return buildPcuBootstrap(ctx, ctx.pcu);
 }
@@ -231,8 +243,8 @@ export async function pcuGetMonth(ctx, p) {
   let bound = null;
   if (fid && latest && latest.id !== fid) {
     bound = await loadForm(DB, fid);
-    if (bound) out.form = formPublic(bound, PCU_FORM);
-  }
+    if (bound) out.form = formPublic(bound, closedPageQty(bound, view.request) ? undefined : PCU_FORM);
+  } else if (fid && latest && closedPageQty(latest, view.request)) out.form = formPublic(latest); // 2t: closed page with a quantity
   // 2p: same shape as pcuBootstrap.prices, for this month only
   out.prices = await roundPriceOverrides(priceHistories(DB), latest, [p.month], monthFy, bound ? { [p.month]: [bound] } : {});
   return out;

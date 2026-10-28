@@ -65,3 +65,10 @@
 - `actual_prev["<fy เก่า>"]`, `prices_prev["<fy เก่า>"]`, `stats["<fy เก่า>"]`: ถ้าไฟล์ไม่มี → ระบบคำนวณจากใบเบิกที่ส่งแล้ว (`submitted`/`issued`) ของปีเก่าใน D1 (ราคา = ฟอร์มล่าสุดของปีเก่า · stats = median/p90 แบบ numpy linear ของยอด op+pp 12 เดือน)
 - `limits["<fy ใหม่>"]`: ถ้าไฟล์ไม่มี → สร้างตามกฎ Q81 ข้างบนจาก `plans[fy ใหม่]` ∪ `stats[fy เก่า]` (source `stat<fy เก่า−2500>` / `plan<fy ใหม่−2500>`)
 - `adminImportSeed` ตรวจรูปแบบทั้งไฟล์ก่อนเขียน (ไฟล์เสีย = ไม่เขียนอะไรเลย)
+
+## นำเข้าแทนที่ปีงบปัจจุบัน (backend action `adminImportOverride`, 2t)
+ไฟล์ `import_<ปี>.json` ของ **ปีงบปัจจุบัน** (`fy = fy_current`) แท็บนำเข้า → ปุ่ม "แทนที่ปีงบ <ปี>" (พิมพ์ยืนยัน) · preview = `adminImportPreview` (`summary.override`) · รายละเอียด `functions/API.md` §5.4b
+- ฟอร์ม = ไฟล์ + รายการที่ไฟล์ไม่มีแล้วเก็บเป็น `active:false` (เหมือนเปิดปีใหม่) → version ใหม่ · **ใบเบิกทุกใบของปีงบนั้น (รวมที่ส่งแล้ว) ใช้ฟอร์มใหม่** — admin / ผู้จ่าย / รพ.สต. / ใบพิมพ์ / PDF / Excel เห็นคำใหม่
+- ราคาที่เปลี่ยน มีผล **ทั้งปีงบ** (price_history เหลือแถวเดียวที่รอบแรก · price_snapshot ของใบที่ส่งแล้วถูกปรับ · price_print ในใบพิมพ์ไม่เปลี่ยน)
+- แผน = upsert เฉพาะคู่ที่เปลี่ยน + ลบคู่ที่ไฟล์ไม่มี · เพดาน = `limits[fy]` ในไฟล์ หรือกฎตั้งต้น Q81 — แถว `source:"admin"` คงไว้
+- ไม่แตะ pcus / config / actual_prev / stats / prices_prev · แก้ฟอร์มที่แท็บแบบฟอร์ม (`adminFormSave`) ก็ทำให้ใบทั้งปีงบใช้ version ใหม่เช่นกัน

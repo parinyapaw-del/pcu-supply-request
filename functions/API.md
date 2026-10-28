@@ -241,6 +241,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `issueShortage` (2s, admin + dispenser) | `fy?`, `scope?:"round"\|"fy"`, `month?`, `unit?:"พัสดุ"\|"จ่ายกลาง"\|"LAB"\|"all"` | `{fy, scope, month, unit, rounds, summary, items, by_pcu}` — §5.5 |
 | `adminExportSeed` | `fy?` (default `config.fy_current`) | `{seed:<seed/FORMAT.md object>}` — the live DB in import format, §5.2 |
 | `adminImportPreview` | `seed` (FORMAT.md object; `form` + `plans[fy]` required, the rest optional) | `{fy, fy_current, mode:"rollover"\|"same_fy", summary, warnings:[...]}` — **no writes**, §5.3 |
+| `adminImportOverride` (2t) | `seed` (file of `fy_current`), `confirm:"แทนที่ปีงบ <fy>"` | the file replaces the current fy's form / prices / plans / limits → `{fy, form_version_id\|null, version_action, override:<summary.override>, warnings}` — §5.4b |
 | `adminImportApply` | `seed`, `confirm:"เปิดปีงบ <fy>"` | opens the new fiscal year (rollover only) → `{fy_current, imported:<adminImportSeed result>, rollover:{actual_rows, stats_rows, prices_rows, limits_rows, form_version_id}, warnings}` — §5.3 |
 | `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month,doc_date?,supply_month?}`, `devSetRequestMonth{pcu,month,new_month}`, `devRerunMigration{v}` (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month); `devRerunMigration` (2o) deletes `schema_version` rows ≥ `v` (int ≥ 2) and re-runs those migrations on the live tables → `{schema_version}`. None of the dev actions is counted in `usage_counters` |
 | header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
@@ -282,7 +283,10 @@ else the last day of `prevMonth(month)` (2j: round 2026-11 → `2026-10-31`; rou
 A form version is immutable. "Editing" the form = `adminFormSave` inserts a new `form_versions` row (`data = {fy, note, steps}`, `fy` = the base's fy,
 `created_by` = actor email or `"backup"`). Pages and items are **never deleted, only closed** (`active:false`) so every request keeps resolving its codes.
 New data fields: `step.active` (default true; false = closed page). `adminBootstrap.form`, `adminGetRequest.form`, `adminFormGet` keep closed pages;
-every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips them. Existing requests keep their `form_version_id`; drafts follow the latest version
+every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips them — **2t:** except for a shown request with a quantity on an item of a closed page: it gets the
+unstripped form (`forms[id]` / `pcuGetMonth.form`, even when id = the latest) and print shows that page. **2t: every new version of an fy re-binds every request of that fy**
+(`form_version_id` of requests bound to any version of the fy := the new id, sent ones included), so the latest form's wording / pages / order apply to the whole fy everywhere;
+lines keep their prices. `forms` then only lists versions of another fy (e.g. requests of the old fy after a rollover). Drafts follow the latest version
 (`pcuBootstrap.form`); `saveLines` accepts any code of the latest or bound version, so a closed item with qty > 0 on an old submitted request still resubmits.
 
 `adminFormSave{base_version_id, note?, form:{steps}}`
@@ -304,7 +308,7 @@ every PCU-facing form (`pcuBootstrap.form`/`forms`, `pcuGetMonth.form`) strips t
   price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}]}`; stored in `audit_log` as `form_save`
   (`detail` = JSON `{id, note, diff}`; a very large diff is reduced to `{id, note, diff_counts, truncated:true}` to stay valid JSON inside the 2000-char cap).
 - `versions` = every row of `form_versions` newest first `[{id,fy,created_at,created_by,note}]` (same list as `adminBootstrap.form_versions`).
-- Nothing else changes (requests, lines, plans, limits untouched) — except prices (2p, below). New items have no plan/limit until an admin sets one.
+- Nothing else changes (lines, plans, limits untouched) — except prices (2p, below) and the re-bind of the fy's requests (2t, above). New items have no plan/limit until an admin sets one.
 
 **2p — price effective from a round** (spec 2o-2s §4, brief 2p). `price_from:{code:"YYYY-MM"}` (optional) = "เริ่มใช้ตั้งแต่รอบ" per changed price.
 - Validation before anything is written (`BAD_REQUEST`, Thai): not an object · a month outside `fyMonths(fy_current)` (before its first round or after its last;
@@ -369,22 +373,24 @@ Validation (→ `BAD_REQUEST`, Thai message): the checks of `adminImportSeed` (f
 `actual_prev` / `stats` / `limits`) **run up front** (`adminImportSeed` itself now also validates the whole file before its first write) + `form` and `plans[fy]` must exist ·
 `form.fy`, when given, must equal `fy` + the form rules of the editor (§5.2: ≤ 10 active pages, ≤ 24 active items per page, ≤ 2 sections, unique page/item codes, code formats, lengths,
 a page can be closed only without active items — messages start with "ฟอร์มในไฟล์:").
-`mode`: `"same_fy"` when `seed.fy === config.fy_current` (apply is refused — `CONFLICT`, use `adminImportSeed`) · `"rollover"` when `seed.fy === fy_current + 1` · any other fy → `BAD_REQUEST`.
+`mode`: `"same_fy"` when `seed.fy === config.fy_current` (apply is refused — `CONFLICT`; use `adminImportOverride`, §5.4b) · `"rollover"` when `seed.fy === fy_current + 1` · any other fy → `BAD_REQUEST`.
 
 **The form that gets stored (rollover).** The file's form **plus every item of the latest form of `fy_current` that the file no longer lists, kept with `active:false`** in its original
 page (a page the file dropped is kept as a closed page `active:false`) — items/pages are never deleted, so old request lines, stats and `actual_prev` keep resolving their codes.
 Then it is normalised exactly like the editor (`order`, `page_no`, `item.seq` recomputed; prices rounded to 2 decimals); `note` = the file's `form.note` or `"เปิดปีงบ <fy>"`.
-The preview's `summary.form` describes this stored form. In `same_fy` mode nothing is merged: the raw file form is hashed like `adminImportSeed` does.
+The preview's `summary.form` describes this stored form. **2t:** `same_fy` merges the same way, with the latest form of `fy_current` (= the file's fy) as the base.
 
-`summary` = `{ pcus:{known:[code], new:[code], missing_in_file:[code]}, form:{steps, active_items, items_new:[code], items_closed:[code], items_reopened:[code], price_changed:[{code,old,new}], renamed:n, version_action:"insert"|"same"|"skipped_differs"},
+`summary` = `{ pcus:{known:[code], new:[code], missing_in_file:[code]}, form:{steps, active_items, items_new:[code], items_closed:[code], items_reopened:[code], price_changed:[{code,old,new}], renamed:n, version_action:"insert"|"same"|"skipped_differs"|"override"},
 plans:{rows, per_pcu:{pcu:{op,pp,total}}, network:{op,pp,total}}, limits:{in_file, will_default}, config:{will_set:[key]}, rollover:{from_fy, actual_months:[CE month], requests_counted, source:{actual_prev,prices_prev,stats}} | null }`
 - `pcus`: `known` = in file and in DB · `new` = in file only (apply creates them with PIN `12345`) · `missing_in_file` = in DB only (never deleted). A file without `pcus` → all three `[]` + a warning.
 - `form`: compared with the **latest form version of `fy_current`**. `items_new` = codes absent from it · `items_closed` = active there but closed/absent in the file · `items_reopened` = closed there, active now ·
   `price_changed` = same code, different price · `renamed` = count of changed names · `steps`/`active_items` count the form that will be stored (incl. carried closed items/pages).
-  `version_action`: `insert` (no `form_versions` row of `fy` yet) · `same` (a version of `fy` has the same hash) · `skipped_differs`. In rollover anything but `insert` adds a warning (apply → `CONFLICT`).
+  `version_action`: `insert` (no `form_versions` row of `fy` yet) · rollover: `same` (a version of `fy` has the same hash) / `skipped_differs` — anything but `insert` adds a warning (apply → `CONFLICT`) ·
+  same_fy (2t): `same` (normalised steps equal the **latest** version of the fy; note ignored, as the editor) / `override`.
 - `plans`: baht = plan qty × **price of the stored form** (2 decimals); `rows` = number of (pcu,item) entries of known pcus; `per_pcu` has every known pcu present in `plans[fy]`. Entries of unknown pcus / codes not in the form → `warnings`.
-- `limits`: `in_file` = entries of `limits[fy]` in the file · `will_default` = rows apply will generate (0 when the file has `limits[fy]`, and in `same_fy`).
+- `limits`: `in_file` = entries of `limits[fy]` in the file · `will_default` = rows apply will generate (0 when the file has `limits[fy]`; same_fy = `override.limits.upsert`).
 - `config.will_set`: the keys that will be written — in rollover always `fy_current`, plus file keys (`limit_mode, stock_required, budget_op/pp/total, deadline_day`) that have no value yet (existing values are never overwritten).
+- `override` (2t, same_fy only, else null) — see §5.4b.
 - `rollover` (null in `same_fy`): `from_fy` = `fy_current` · `requests_counted` = requests with status `submitted`/`issued` in the 12 **round** months of `from_fy` (`fyMonths`, 2j) · `actual_months` = the
   Excel columns that will hold them, i.e. `prevMonth(round)` of each such round (or the file's `actual_prev[from_fy].months` when the file supplies it) · `source` = `"file"|"db"` for each of the three old-fy blocks (a block present in the file for `from_fy` is used as it is).
 - `warnings` (Thai strings): pcus missing from the file, unknown pcus/codes in plans, `config.plan_total` mismatch, dropped items kept closed, no sent requests in the old fy, form already exists …
@@ -407,7 +413,23 @@ plans:{rows, per_pcu:{pcu:{op,pp,total}}, network:{op,pp,total}}, limits:{in_fil
 `form_version_id` = id of the new `form_versions` row.
 Effect: `config.fy_current = seed.fy`; `adminBootstrap`/`pcuBootstrap` use the new form (`pcuBootstrap` always follows `fy_current`; requests sent earlier keep their bound old version in `forms`);
 `adminBootstrap.prev` gains the old fy (12 Excel months Oct … Sep), `stats.fy` = old fy, `plan_totals.fy` = new fy. Requests, lines, users, PINs, hidden items, unlocks are not touched.
-After opening, re-previewing the same file gives `mode:"same_fy"` and (because the stored form also carries the closed items) usually `version_action:"skipped_differs"`.
+After opening, re-previewing the same file gives `mode:"same_fy"` and `version_action:"same"` (the same closed carry-over is merged in).
+
+### 5.4b Override the current fiscal year from a file (2t) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
+`adminImportOverride{seed, confirm}`: `seed.fy !== fy_current` → `BAD_REQUEST` · `confirm !== "แทนที่ปีงบ <fy>"` → `BAD_REQUEST` · then the same validation + analysis as the preview (`mode:"same_fy"`).
+Only rows that change are written (D1 write quota). `summary.override` (preview) = the response's `override`:
+`{version_action:"same"|"override"|"insert", requests_rebound:n, diff_counts:{steps_added, steps_closed, steps_reopened, items_added, items_closed, items_reopened, price_changed, renamed, unit_changed, moved}|null,
+price_backdate:{items, requests, lines, delta_baht, months:[first,last]|[]}, plans:{upsert, delete}, limits:{upsert, kept_admin, source:"file"|"default"}}`.
+1. **Form**: `override`/`insert` → new `form_versions` row of the fy (stored form = file + closed carry-over, §5.4), guarded on the latest id of the fy being unchanged (else `CONFLICT`); `same` → none.
+2. **Every request of the fy follows it** (`requests.form_version_id` of every request bound to a version of the fy := the new id; `requests_rebound` = how many) — admin, dispenser, PCU, print, PDF
+   (new `content_key`), Excel all show the new wording / pages / order. Lines keep their prices; codes never disappear (dropped items are closed), so every line still resolves.
+3. **Prices** (`form.price_changed`): effective for the **whole fy** — the item's `price_history` = one row at the fy's first round (later rows deleted) and `price_snapshot` of every
+   sent (`submitted`/`issued`) line of the fy with op+pp > 0 is back-dated (`priceEffect` over the whole fy; audit `price_backdate` per item). `price_print` is never touched. Added items get a first-round row.
+4. **Plans** of the fy: upsert the pairs whose `[plan_op, plan_pp]` changed or are new, delete pairs the file no longer lists (known pcus only).
+5. **Limits** of the fy: the file's `limits[fy]` when present, else the default rule of §5.4 step 3 per plan pair (`p90_m` from `stats[fy−1]` in the DB) — upserted only when different;
+   rows with `source:"admin"` are kept (`kept_admin`).
+6. Not touched: pcus (a new pcu in the file → warning, its plans skipped), config, `actual_prev` / `stats` / `prices_prev`, requests' lines (except the back-dated `price_snapshot`).
+7. Audit `form_override` (`detail` JSON `{id, fy, version_action, diff_counts, price_backdate, plans, limits, rebound}`). Re-applying the same file → `form_version_id:null`, nothing written but the audit row.
 
 ### 5.5 Admin dashboard + "จ่ายไม่พอ" (2s — `functions/_lib/dashboard.js`, spec 2o-2s §6.2–§6.3, brief 2s §6)
 Common rules: **`submitted`/`issued` requests only**, never the trial round (`config.trial_month`), never PCUs of group `ทดลอง` (`TRIAL_GROUP`).
