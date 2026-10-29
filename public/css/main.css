@@ -644,3 +644,57 @@ button.item-search-hit:hover, button.item-search-hit:focus-visible { background:
 .dash-heat-legend i { display: inline-block; width: 22px; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
 @media (max-width: 720px) { .dash-two { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 480px) { .dash-table .dash-name { min-width: 150px; max-width: 170px; } .dash-table { font-size: 0.85rem; } }
+
+/* ---- 2ab: floating feedback button + panel (index.html + admin.html) ---- */
+.fb-fab {
+  position: fixed; right: 16px; bottom: 16px; z-index: 900; display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--accent);
+  background: var(--accent); color: var(--accent-contrast); font: inherit; font-weight: 600; cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+}
+.fb-fab:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.fb-fab.open { background: var(--surface); color: var(--accent); }
+.fb-fab-icon { font-size: 1.15rem; line-height: 1; }
+body.has-fb-fab { padding-bottom: 72px; } /* the end of every page can scroll clear of the button */
+.fb-panel {
+  position: fixed; right: 16px; bottom: 72px; z-index: 901; width: 380px; max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 96px); overflow-y: auto; background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.22); padding: 12px 14px 14px;
+}
+.fb-panel[hidden] { display: none; }
+.fb-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
+.fb-close { border: 0; background: transparent; color: var(--muted); font-size: 1.5rem; line-height: 1; cursor: pointer; min-width: 36px; min-height: 36px; }
+.fb-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.fb-tab { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 0.9rem; padding: 6px 8px; cursor: pointer; border-bottom: 2px solid transparent; text-decoration: none; }
+.fb-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.fb-tab-link { margin-left: auto; }
+.fb-cats { border: 0; padding: 0; margin: 0 0 10px; }
+.fb-cats legend { font-weight: 600; margin-bottom: 4px; }
+.fb-cat { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; cursor: pointer; }
+.fb-cat input { margin-top: 4px; }
+.fb-field { display: block; margin-bottom: 6px; }
+.fb-field > span { display: block; font-weight: 600; margin-bottom: 4px; }
+.fb-field textarea, .fb-field select { width: 100%; box-sizing: border-box; font: inherit; }
+.fb-field textarea { padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); resize: vertical; }
+.fb-count { font-size: 0.8rem; text-align: right; margin-bottom: 6px; }
+.fb-anon { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+.fb-hint { font-size: 0.82rem; margin: 4px 0 8px; }
+.fb-msg { min-height: 1.2em; font-size: 0.9rem; margin-bottom: 6px; }
+.fb-ok { color: var(--success); }
+.fb-err { color: var(--danger); }
+.fb-actions { display: flex; justify-content: flex-end; }
+.fb-body { white-space: pre-wrap; word-break: break-word; margin: 6px 0; }
+.fb-mine { list-style: none; padding: 0; margin: 0; }
+.fb-mine-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+.fb-mine-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 0.85rem; }
+.fb-reply { background: var(--note-bg); color: var(--text); border-radius: 6px; padding: 6px 8px; margin-top: 6px; white-space: pre-wrap; }
+.fb-faq { border-bottom: 1px solid var(--line); padding: 6px 0; }
+.fb-faq summary { cursor: pointer; font-weight: 600; }
+.fb-faq-a { padding: 6px 0 4px 16px; }
+.fb-faq-cat { margin: 10px 0 2px; font-size: 0.9rem; color: var(--muted); }
+@media (max-width: 720px) {
+  .fb-fab { right: 12px; bottom: 12px; width: 48px; height: 48px; padding: 0; justify-content: center; }
+  .fb-fab-text { display: none; }
+  .fb-panel { right: 8px; left: 8px; bottom: 68px; width: auto; max-width: none; max-height: calc(100vh - 84px); }
+}
+@media print { .fb-fab, .fb-panel { display: none !important; } body.has-fb-fab { padding-bottom: 0; } }

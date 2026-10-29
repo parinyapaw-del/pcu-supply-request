@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p, v6 = 2w, v7 = 2x (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p, v6 = 2w, v7 = 2x, v8 = 2ab (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -126,6 +126,34 @@ const V7 = [
      pcu TEXT NOT NULL, name TEXT, set_at TEXT NOT NULL, set_by TEXT, PRIMARY KEY (pcu, set_at))`,
 ];
 
+// Migration v8 (2ab, feedback + FAQ): feedback (kept forever, one row per send — the per-day rate limits count this table, so no counter
+// table / extra write; `day` = Bangkok date, `rate_key` = HMAC of the device id + day for guest / anonymous rows only) · faq (admin-edited).
+// Two starter FAQ rows are seeded only while faq is empty (a re-run never seeds twice). Same one-by-one rule.
+const V8 = [
+  `CREATE TABLE IF NOT EXISTS feedback (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, day TEXT NOT NULL,
+     role TEXT NOT NULL CHECK (role IN ('pcu','dispenser','admin','guest')), pcu TEXT, email TEXT,
+     anonymous INTEGER NOT NULL DEFAULT 0, category TEXT NOT NULL CHECK (category IN ('wording','entry','dashboard','other')),
+     body TEXT NOT NULL, context TEXT, rate_key TEXT,
+     status TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','ack','fixed')), status_at TEXT, status_by TEXT,
+     reply TEXT, reply_at TEXT, reply_by TEXT)`,
+  `CREATE INDEX IF NOT EXISTS feedback_day ON feedback(day)`,
+  `CREATE TABLE IF NOT EXISTS faq (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT NOT NULL, answer TEXT NOT NULL,
+     aud_pcu INTEGER NOT NULL DEFAULT 0, aud_dispenser INTEGER NOT NULL DEFAULT 0, aud_admin INTEGER NOT NULL DEFAULT 0,
+     category TEXT, sort INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, from_feedback_id INTEGER,
+     created_at TEXT, created_by TEXT, updated_at TEXT, updated_by TEXT)`,
+  `INSERT INTO faq (question, answer, aud_pcu, aud_dispenser, aud_admin, category, sort, hidden, created_at, created_by, updated_at, updated_by)
+     SELECT q, a, 1, d, 1, c, s, 0, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'migration v8', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'migration v8' FROM (
+       SELECT 'ข้อความสีฟ้า "เกินเพดาน" หมายถึงอะไร' AS q,
+              'เป็น**ข้อมูลแจ้งให้ทราบ**ว่าจำนวนที่ขอเบิกรวมแล้วเกินเพดานที่ตั้งไว้สำหรับรายการนั้น — **ยังส่งใบเบิกได้ตามปกติ** ไม่ใช่ข้อผิดพลาด
+ถ้าต้องการจริงตามจำนวนนี้ ส่งได้เลย ผู้ดูแลจะพิจารณาตอนจ่าย' AS a, 1 AS d, 'การกรอก' AS c, 1 AS s
+       UNION ALL
+       SELECT 'ลืม PIN ทำอย่างไร',
+              'ติดต่อผู้ดูแลระบบ (admin) ของ รพ. เพื่อตั้ง PIN ใหม่ให้ — หลังเข้าระบบได้แล้ว แนะนำให้**เปลี่ยน PIN เอง**ที่หน้าหลัก → "เปลี่ยน PIN"', 0, 'เข้าระบบ', 2
+     ) WHERE NOT EXISTS (SELECT 1 FROM faq)`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -135,10 +163,11 @@ export const MIGRATIONS = [
   { v: 5, statements: V5, oneByOne: true, tolerate: /duplicate column/i },
   { v: 6, statements: V6, oneByOne: true, tolerate: /duplicate column/i },
   { v: 7, statements: V7, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 8, statements: V8, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "audit_log",
 ];
 
 let migrated = false;

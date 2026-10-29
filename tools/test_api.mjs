@@ -54,6 +54,7 @@ const near = (a, b, tol = 0.005) => typeof a === "number" && Math.abs(a - b) <= 
 function expectErr(res, code, label) {
   ok(res && res.ok === false && res.error && res.error.code === code, `${label} → ${code}` + (res && res.error && res.error.code !== code ? ` (got ${res.error && res.error.code}: ${res.error && res.error.message})` : ""));
 }
+const eqA = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 function section(t) { console.log("\n=== " + t + " ==="); }
 
 // ---- http ----------------------------------------------------------------------------------------------------------------
@@ -1813,7 +1814,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 7, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5/v6/v7 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 8, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v8 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2172,10 +2173,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 7, "re-running migration v5 (+ v6, v7) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 8, "re-running migration v5 (+ v6–v8) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 7, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 8, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3364,6 +3365,178 @@ async function main() {
 
     // restore
     await mustOk("adminPcuEdit", { code: P, phone: "" }, ADM2);
+    await mustOk("adminUsersRemove", { email: DSP }, ADM2);
+  }
+
+
+  section("2ab: feedback (send · rate limits · anonymous · mine · review) + FAQ");
+  {
+    const TP = (await mustOk("pcuLogin", { pcu: "PCU05", pin: "12345" })).token;
+    const TP6 = (await mustOk("pcuLogin", { pcu: "PCU06", pin: "12345" })).token;
+    const DSP = "fb.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSP, role: "dispenser", units: ["พัสดุ"] }, ADM2);
+    const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSP })).token;
+    const dev = (n) => "device-" + String(n).padStart(4, "0") + "-test";
+    const send = (p, t) => api("feedbackSend", { category: "other", body: "ทดสอบ", ...p }, t);
+    const list = async (p = {}) => mustOk("adminFeedbackList", { limit: 1000, ...p }, ADM2);
+    const auditN = async () => (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.length;
+
+    // ---- validation ----
+    expectErr(await send({ category: "bogus", device: dev(1) }), "BAD_REQUEST", "feedbackSend bad category");
+    expectErr(await send({ body: "   ", device: dev(1) }), "BAD_REQUEST", "feedbackSend blank body");
+    expectErr(await send({ body: 5, device: dev(1) }), "BAD_REQUEST", "feedbackSend body not a string");
+    expectErr(await send({}), "BAD_REQUEST", "guest without device");
+    expectErr(await send({ device: "short" }), "BAD_REQUEST", "guest device < 8 chars");
+    expectErr(await send({ body: "ก".repeat(1001), device: dev(1) }), "BAD_REQUEST", "guest body 1,001 chars");
+    expectErr(await send({ body: "ก".repeat(2001) }, TP), "BAD_REQUEST", "pcu body 2,001 chars");
+
+    // ---- guest: pcu from the dropdown (must exist) · 5 per device per day ----
+    const g1 = await mustOk("feedbackSend", { category: "wording", body: "  จากหน้า login  ", pcu: "PCU01", device: dev(1), context: { route: "login" } });
+    ok(Number.isInteger(g1.id) && g1.remaining_today === 4, "guest send → {id, remaining_today: 4}");
+    await mustOk("feedbackSend", { category: "entry", body: "ก".repeat(1000), pcu: "PCU99", device: dev(1) });
+    for (let i = 0; i < 3; i++) await mustOk("feedbackSend", { category: "other", body: "g" + i, device: dev(1) });
+    const g6 = await send({ device: dev(1) });
+    expectErr(g6, "RATE_LIMITED", "guest 6th send on the same device");
+    eq(g6.error && g6.error.limit, 5, "RATE_LIMITED carries {limit: 5}");
+    eq((await mustOk("feedbackSend", { category: "other", body: "อีกเครื่อง", device: dev(2) })).remaining_today, 4, "another device can still send");
+    const gl = (await list({ role: "guest" })).items;
+    const gRow = gl.find((x) => x.id === g1.id);
+    ok(gRow && gRow.pcu === "PCU01" && gRow.email === null && gRow.body === "จากหน้า login" && gRow.category === "wording" && gRow.status === "new", "guest row: pcu kept, body trimmed, status new");
+    ok(gRow && gRow.context && gRow.context.route === "login" && !("rate_key" in gRow), "context stored as an object · rate_key never returned");
+    ok(gl.some((x) => x.body.length === 1000 && x.pcu === null), "guest unknown pcu → NULL · 1,000 chars accepted");
+
+    // bad token → guest (no error) · guest limits apply
+    const bt = await mustOk("feedbackSend", { category: "other", body: "token เสีย", device: dev(3), token: "abc.def" });
+    ok((await list({ role: "guest" })).items.some((x) => x.id === bt.id), "bad token → stored as guest");
+    expectErr(await send({ body: "ก".repeat(1001), device: dev(3) }, "abc.def"), "BAD_REQUEST", "bad token → guest body limit (1,000)");
+    const expired = forgeToken({ t: "pcu", pcu: "PCU05", v: 1, exp: Date.now() - 1000 });
+    ok((await send({ device: dev(3) }, expired)).ok, "expired pcu token → guest");
+
+    // ---- pcu named: 20 per pcu per day ----
+    const p1 = await mustOk("feedbackSend", { category: "dashboard", body: "ก".repeat(2000), pcu: "PCU01", context: { route: "home", big: "x".repeat(3000), month: "2026-12" } }, TP);
+    eq(p1.remaining_today, 19, "pcu send → remaining 19 (2,000 chars accepted)");
+    const pRow = (await list({ pcu: "PCU05" })).items.find((x) => x.id === p1.id);
+    ok(pRow && pRow.role === "pcu" && pRow.pcu === "PCU05" && !pRow.anonymous, "pcu row: role pcu, pcu = token's unit (param ignored)");
+    eq(pRow && pRow.context, { route: "home", month: "2026-12" }, "context > 2 KB → the oversized field is dropped, no error");
+    for (let i = 0; i < 19; i++) await mustOk("feedbackSend", { category: "other", body: "p" + i }, TP);
+    const p21 = await send({}, TP);
+    expectErr(p21, "RATE_LIMITED", "pcu 21st named send");
+    eq(p21.error && p21.error.limit, 20, "…limit 20");
+    ok((await send({}, TP6)).ok, "another pcu still sends");
+
+    // ---- anonymous: no pcu stored, counted per device ----
+    expectErr(await send({ anonymous: true }, TP), "BAD_REQUEST", "anonymous without device");
+    const a1 = await mustOk("feedbackSend", { category: "wording", body: "นิรนาม", anonymous: true, device: dev(4) }, TP);
+    eq(a1.remaining_today, 19, "anonymous is counted on its own (named limit already reached)");
+    const aRow = (await list({ role: "pcu" })).items.find((x) => x.id === a1.id);
+    ok(aRow && aRow.pcu === null && aRow.anonymous === true && aRow.email === null, "anonymous row: pcu IS NULL, anonymous true");
+    const mine = (await mustOk("feedbackMine", {}, TP)).items;
+    ok(mine.length === 20 && !mine.some((x) => x.id === a1.id) && mine[0].id > mine[19].id, "feedbackMine: 20 named rows, newest first, no anonymous row");
+    eq(Object.keys(mine[0]).sort(), ["body", "category", "created_at", "id", "reply", "reply_at", "status"], "feedbackMine item shape");
+    ok(!(await mustOk("feedbackMine", {}, TP6)).items.some((x) => mine.some((m) => m.id === x.id)), "feedbackMine never shows another unit's rows");
+
+    // ---- staff ----
+    const d1 = await mustOk("feedbackSend", { category: "entry", body: "จากผู้จ่าย", anonymous: true, context: { tab: "issue" } }, DT);
+    const dRow = (await list({ role: "dispenser" })).items.find((x) => x.id === d1.id);
+    ok(dRow && dRow.email === DSP && dRow.anonymous === false && dRow.pcu === null, "dispenser row: email kept, anonymous ignored");
+    await mustOk("feedbackSend", { category: "other", body: "จาก admin" }, ADM2);
+    eq((await mustOk("feedbackMine", {}, DT)).items.map((x) => x.id), [d1.id], "dispenser feedbackMine = own rows only");
+    eq((await mustOk("feedbackMine", {}, ADM2)).items.length, 1, "admin feedbackMine = own rows only");
+    expectErr(await api("feedbackMine", {}), "AUTH_REQUIRED", "feedbackMine without token");
+    expectErr(await api("feedbackMine", {}, "abc.def"), "AUTH_EXPIRED", "feedbackMine with a bad token");
+
+    // ---- global cap: guest + anonymous ≤ 100 per day ----
+    let sent = (await list()).items.filter((x) => x.role === "guest" || (x.role === "pcu" && x.pcu === null)).length, last = null, n = 10;
+    while (sent < 100 && n < 60) { last = await send({ device: dev(n) }); if (last.ok) sent++; else break; if (last.data.remaining_today === 0) n++; }
+    eq(sent, 100, "setup: 100 rows without identity today");
+    const over = await send({ device: dev(99) });
+    expectErr(over, "RATE_LIMITED", "101st row without identity (fresh device)");
+    eq(over.error && over.error.limit, 100, "…limit 100");
+    expectErr(await send({ anonymous: true, device: dev(98) }, TP6), "RATE_LIMITED", "anonymous pcu also hits the global cap");
+    ok((await send({}, TP6)).ok, "named pcu is not affected by the global cap");
+
+    // ---- adminFeedbackList: filters, paging, counts ----
+    const all = await list();
+    eq(all.counts, { new: all.items.length, ack: 0, fixed: 0 }, "counts = all new");
+    ok((await list({ category: "wording" })).items.every((x) => x.category === "wording"), "filter category");
+    ok((await list({ status: "new" })).items.length === all.items.length, "filter status");
+    const pg = await mustOk("adminFeedbackList", { limit: 5 }, ADM2);
+    ok(pg.items.length === 5 && pg.next_before === pg.items[4].id, "limit 5 → next_before");
+    const pg2 = await mustOk("adminFeedbackList", { limit: 5, before: pg.next_before }, ADM2);
+    ok(pg2.items[0].id < pg.items[4].id, "before pages older rows");
+    expectErr(await api("adminFeedbackList", { role: "x" }, ADM2), "BAD_REQUEST", "adminFeedbackList bad role");
+    expectErr(await api("adminFeedbackList", {}, DT), "FORBIDDEN", "adminFeedbackList as dispenser");
+    expectErr(await api("adminFeedbackList", {}, TP), "FORBIDDEN", "adminFeedbackList with a pcu token");
+    expectErr(await api("adminFeedbackList", {}), "AUTH_REQUIRED", "adminFeedbackList without token");
+    const bs = await mustOk("adminBootstrap", {}, ADM2);
+    eq(bs.feedback_new, all.items.length, "adminBootstrap.feedback_new = new count");
+    ok(!("feedback_new" in (await mustOk("adminBootstrap", {}, DT))), "dispenser bootstrap has no feedback_new");
+
+    // ---- adminFeedbackUpdate ----
+    const target = mine[0].id;
+    const a0 = await auditN();
+    const u1 = await mustOk("adminFeedbackUpdate", { id: target, status: "ack", reply: "  รับทราบ จะปรับแก้  " }, ADM2);
+    ok(u1.item.status === "ack" && u1.item.status_by === ADMIN_EMAIL && u1.item.reply === "รับทราบ จะปรับแก้" && u1.item.reply_by === ADMIN_EMAIL, "update status + reply");
+    eq((await mustOk("adminBootstrap", {}, ADM2)).feedback_new, all.items.length - 1, "badge count drops by 1");
+    eq(await auditN(), a0 + 1, "update → 1 audit row");
+    await mustOk("adminFeedbackUpdate", { id: target, status: "ack", reply: "รับทราบ จะปรับแก้" }, ADM2);
+    eq(await auditN(), a0 + 1, "same values → no write, no audit");
+    const seen = (await mustOk("feedbackMine", {}, TP)).items.find((x) => x.id === target);
+    ok(seen && seen.status === "ack" && seen.reply === "รับทราบ จะปรับแก้" && seen.reply_at, "pcu sees status + reply in feedbackMine");
+    await mustOk("adminFeedbackUpdate", { id: target, status: "fixed" }, ADM2);
+    const u3 = await mustOk("adminFeedbackUpdate", { id: target, reply: "" }, ADM2);
+    ok(u3.item.status === "fixed" && u3.item.reply === null && u3.item.reply_at === null, "reply \"\" clears it · status kept");
+    expectErr(await api("adminFeedbackUpdate", { id: a1.id, reply: "ตอบ" }, ADM2), "BAD_REQUEST", "reply to an anonymous row");
+    eq((await mustOk("adminFeedbackUpdate", { id: a1.id, status: "ack" }, ADM2)).item.status, "ack", "status on an anonymous row is fine");
+    expectErr(await api("adminFeedbackUpdate", { id: target, status: "done" }, ADM2), "BAD_REQUEST", "bad status");
+    expectErr(await api("adminFeedbackUpdate", { id: target, reply: "x".repeat(2001) }, ADM2), "BAD_REQUEST", "reply > 2,000");
+    expectErr(await api("adminFeedbackUpdate", { id: 999999, status: "ack" }, ADM2), "NOT_FOUND", "unknown id");
+    expectErr(await api("adminFeedbackUpdate", { id: target, status: "ack" }, DT), "FORBIDDEN", "adminFeedbackUpdate as dispenser");
+    const au = (await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.find((e) => e.action === "adminFeedbackUpdate");
+    ok(au && au.detail.includes("#" + a1.id), "adminFeedbackUpdate audited");
+
+    // ---- FAQ ----
+    const pub = (await mustOk("faqList", {})).faqs;
+    eq(pub.length, 2, "migration v8 seeds 2 FAQ (public sees both)");
+    ok(pub.every((f) => f.aud.includes("pcu") && !("hidden" in f)), "public items: aud pcu, no hidden field");
+    eq((await mustOk("faqList", {}, DT)).faqs.length, 1, "dispenser sees only aud_dispenser (the PIN one is pcu/admin)");
+    eq((await mustOk("faqList", {}, ADM2)).faqs.length, 2, "admin sees aud_admin");
+    const fd = (await mustOk("adminFaqSave", { question: "สำหรับผู้จ่าย", answer: "ตอบ", aud: ["dispenser"], category: "จ่าย", sort: 3 }, ADM2)).faq;
+    ok(fd.id && fd.hidden === false && fd.category === "จ่าย" && fd.sort === 3 && eqA(fd.aud, ["dispenser"]), "adminFaqSave insert → {faq}");
+    const fh = (await mustOk("adminFaqSave", { question: "ซ่อน", answer: "**x**", aud: ["pcu", "admin"], hidden: true, from_feedback_id: target }, ADM2)).faq;
+    ok(fh.hidden === true && fh.from_feedback_id === target, "hidden + from_feedback_id stored");
+    ok(!(await mustOk("faqList", {})).faqs.some((f) => f.id === fd.id || f.id === fh.id), "public: not aud_pcu / hidden → not listed");
+    ok((await mustOk("faqList", {}, DT)).faqs.some((f) => f.id === fd.id), "dispenser sees the dispenser FAQ");
+    ok(!(await mustOk("faqList", {}, TP)).faqs.some((f) => f.id === fd.id), "pcu token does not see the dispenser FAQ");
+    const adAll = (await mustOk("faqList", { all: true }, ADM2)).faqs;
+    ok(adAll.length === 4 && adAll.find((f) => f.id === fh.id).hidden === true, "admin all:true → every FAQ incl. hidden");
+    eq((await mustOk("faqList", { all: true }, DT)).faqs.length, 2, "dispenser all:true is ignored");
+    eq((await mustOk("faqList", { all: true }, TP)).faqs.length, 2, "pcu all:true is ignored");
+    const a2 = await auditN();
+    await mustOk("adminFaqSave", { id: fd.id, question: "สำหรับผู้จ่าย", answer: "ตอบ", aud: ["dispenser"], category: "จ่าย", sort: 3 }, ADM2);
+    eq(await auditN(), a2, "adminFaqSave unchanged → no write, no audit");
+    const fe = (await mustOk("adminFaqSave", { id: fd.id, question: "สำหรับผู้จ่าย (แก้)", answer: "ตอบ", aud: ["dispenser", "pcu"], category: "จ่าย", sort: 3 }, ADM2)).faq;
+    ok(fe.question === "สำหรับผู้จ่าย (แก้)" && eqA(fe.aud, ["pcu", "dispenser"]) && (await auditN()) === a2 + 1, "adminFaqSave update → changed + 1 audit");
+    expectErr(await api("adminFaqSave", { question: "", answer: "a", aud: ["pcu"] }, ADM2), "BAD_REQUEST", "FAQ blank question");
+    expectErr(await api("adminFaqSave", { question: "q".repeat(301), answer: "a", aud: ["pcu"] }, ADM2), "BAD_REQUEST", "FAQ question > 300");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a".repeat(5001), aud: ["pcu"] }, ADM2), "BAD_REQUEST", "FAQ answer > 5,000");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a", aud: [] }, ADM2), "BAD_REQUEST", "FAQ no audience");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a", aud: ["guest"] }, ADM2), "BAD_REQUEST", "FAQ bad audience");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a", aud: ["pcu"], from_feedback_id: 999999 }, ADM2), "BAD_REQUEST", "FAQ unknown source feedback");
+    expectErr(await api("adminFaqSave", { id: 999999, question: "q", answer: "a", aud: ["pcu"] }, ADM2), "NOT_FOUND", "FAQ update unknown id");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a", aud: ["pcu"] }, DT), "FORBIDDEN", "adminFaqSave as dispenser");
+    expectErr(await api("adminFaqSave", { question: "q", answer: "a", aud: ["pcu"] }, TP), "FORBIDDEN", "adminFaqSave with a pcu token");
+    expectErr(await api("adminFaqDelete", { id: fh.id }, ADM2), "BAD_REQUEST", "adminFaqDelete without confirm");
+    expectErr(await api("adminFaqDelete", { id: fh.id, confirm: "ลบ" }, DT), "FORBIDDEN", "adminFaqDelete as dispenser");
+    eq(await mustOk("adminFaqDelete", { id: fh.id, confirm: "ลบ" }, ADM2), { ok: true }, "adminFaqDelete");
+    expectErr(await api("adminFaqDelete", { id: fh.id, confirm: "ลบ" }, ADM2), "NOT_FOUND", "deleted FAQ is gone");
+    ok((await mustOk("adminAuditLog", { limit: 5 }, ADM2)).entries.some((e) => e.action === "adminFaqDelete"), "adminFaqDelete audited");
+
+    // ---- migration v8 re-run: no error, no second seed, data kept ----
+    const fbN = (await list()).items.length;
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 8, "devRerunMigration v8");
+    eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
+
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
   }
 

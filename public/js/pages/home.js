@@ -195,7 +195,7 @@ export async function renderHome(container, app) {
     <p class="muted fy-line">${fyLineHtml(selectedFy, F, hasPrevFy)}</p>
     <div class="round-cards">${cardsHtml(app, selectedFy, F)}</div>
     <div class="dash-entry"><a class="btn btn-primary btn-lg" href="#/dashboard">📊 แดชบอร์ดการเบิก</a></div>
-    <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a> · <a href="#/pin">เปลี่ยน PIN</a></p>
+    <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a> · <a href="#/pin">เปลี่ยน PIN</a> · <a href="#/feedback">ความคิดเห็นของฉัน</a></p>
   `;
 
   container.innerHTML = "";

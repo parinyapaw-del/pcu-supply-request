@@ -12,6 +12,7 @@ import * as issue from "../_lib/issue.js";
 import { adminDashboard, issueShortage, pcuDashboard } from "../_lib/dashboard.js";
 import { adminSaveLines } from "../_lib/admin_entry.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
+import * as feedback from "../_lib/feedback.js";
 
 const PUBLIC = {
   pcuList: pcu.pcuList,
@@ -19,6 +20,10 @@ const PUBLIC = {
   adminLoginGoogle: admin.adminLoginGoogle,
   adminLoginBackup: admin.adminLoginBackup,
   printData: pdf.printData,
+  // 2ab — public, but a token is read when sent (bad / expired token = guest) · feedbackMine resolves pcu or staff itself
+  feedbackSend: feedback.feedbackSend,
+  faqList: feedback.faqList,
+  feedbackMine: feedback.feedbackMine,
 };
 const PCU = {
   pcuBootstrap: pcu.pcuBootstrap,
@@ -87,6 +92,11 @@ const ADMIN = {
   // 2b-R — PDF files on R2: list + usage, prune now
   adminPdfFiles: admin.adminPdfFiles,
   adminPdfPrune: admin.adminPdfPrune,
+  // 2ab — feedback review + FAQ editor
+  adminFeedbackList: feedback.adminFeedbackList,
+  adminFeedbackUpdate: feedback.adminFeedbackUpdate,
+  adminFaqSave: feedback.adminFaqSave,
+  adminFaqDelete: feedback.adminFaqDelete,
 };
 const REMOVED = {
   submit: "ไม่มี action submit แล้ว — ใช้ saveLines พร้อม send:true",

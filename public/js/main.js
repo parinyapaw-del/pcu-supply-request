@@ -11,7 +11,9 @@ import { renderFill } from "./pages/fill.js";
 import { renderPrint } from "./pages/print.js";
 import { renderIssue } from "./pages/issue.js";
 import { renderDashboard } from "./pages/dashboard.js";
-import { loadOlderMonth } from "./pages/common.js";
+import { renderFeedback } from "./pages/feedback.js";
+import { loadOlderMonth, requestOf } from "./pages/common.js";
+import { mountFeedbackWidget } from "./feedback_widget.js";
 
 // app.boot = pcuBootstrap (functions/API.md §4.1) · app.older = months loaded via pcuGetMonth · app.offline = running on the cached bootstrap
 const app = { pcuList: null, boot: null, monthKey: null, flash: null, older: {}, bootAt: 0, offline: false };
@@ -173,6 +175,9 @@ async function route() {
     } else if (path === "dashboard") {
       app.monthKey = null;
       await renderDashboard(container, app);
+    } else if (path === "feedback") {
+      app.monthKey = null;
+      await renderFeedback(container, app, feedbackWidget);
     } else {
       location.hash = "#/home";
     }
@@ -212,6 +217,24 @@ function wireBeforeUnload() {
     }
   });
 }
+
+// 2ab: floating feedback button on every route (login page = guest)
+function feedbackContext() {
+  const { segments, params } = parseHash();
+  const c = { app: "pcu", route: segments[0] || "login" };
+  if (segments[1]) c.step = segments[1];
+  const month = params.get("month") || app.monthKey;
+  if (month) c.month = month;
+  if (app.boot && month) {
+    try { const r = requestOf(app, month); if (r && r.id) c.request = r.id; } catch (e) { /* no request */ }
+  }
+  return c;
+}
+const feedbackWidget = mountFeedbackWidget({
+  getAuth: () => (app.boot && getPcuToken() ? { token: getPcuToken(), role: "pcu" } : null),
+  getContext: feedbackContext,
+  mineHref: "#/feedback",
+});
 
 wireFooter();
 wireBeforeUnload();

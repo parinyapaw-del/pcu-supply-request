@@ -45,6 +45,12 @@ async function hmacKey(env) {
   return crypto.subtle.importKey("raw", enc.encode(env.TOKEN_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
 }
 
+// 2ab: hex HMAC-SHA256 under TOKEN_SECRET (feedback rate_key — the device id itself is never stored)
+export async function hmacHex(env, str) {
+  const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(env), enc.encode(str)));
+  return [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function signToken(env, payload) {
   const partA = b64urlFromBytes(enc.encode(JSON.stringify(payload)));
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(env), enc.encode(partA)));

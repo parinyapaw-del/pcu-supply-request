@@ -20,6 +20,8 @@ import { renderTab9 } from "./admin/tab9_system.js";
 import { renderTab10 } from "./admin/tab10_form.js";
 import { renderTab11 } from "./admin/tab11_import.js";
 import { renderTab12 } from "./admin/tab12_dashboard.js";
+import { renderTab13 } from "./admin/tab13_feedback.js";
+import { mountFeedbackWidget } from "./feedback_widget.js";
 
 const root = document.getElementById("admin-root");
 
@@ -38,14 +40,15 @@ const TABS = [
   { id: "tab6", hash: "excel", label: "Excel", render: renderTab6, staff: true },
   { id: "tab7", hash: "pcu", label: "รพ.สต. (PIN / รายการที่ซ่อน)", render: renderTab7 },
   { id: "tab8", hash: "users", label: "ผู้ใช้", render: renderTab8 },
-  { id: "tab9", hash: "system", label: "ระบบ", render: renderTab9 }
+  { id: "tab9", hash: "system", label: "ระบบ", render: renderTab9 },
+  { id: "tab13", hash: "feedback", label: "Feedback", render: renderTab13 } // admin only (2ab) — badge = bootstrap.feedback_new
 ];
 
 const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }; // fy = ปีงบที่เลือกดู (2i)
 const panels = {}; // tabId -> { section, rendered, lifecycle }
 let activeTabId = null;
 
-const ctx = { state, adminCall, refreshBootstrap, markStale, tabs: TABS, fyCurrent, fySelected, isCurrentFy, fyMonths, defaultMonth, fyNotice, roundMonth, monthLabel };
+const ctx = { state, adminCall, refreshBootstrap, markStale, setFeedbackBadge, tabs: TABS, fyCurrent, fySelected, isCurrentFy, fyMonths, defaultMonth, fyNotice, roundMonth, monthLabel };
 
 // ---- fiscal-year scope (2i) ----------------------------------------------------------------------------
 // The header's "ปีงบประมาณ" select scopes the data tabs: month pickers only offer months of the chosen year,
@@ -190,6 +193,7 @@ async function adminCall(action, params = {}) {
 async function refreshBootstrap() {
   const data = await adminCall("adminBootstrap", {});
   applyBootstrap(data);
+  if (state.isAdmin) setFeedbackBadge(Number(data.feedback_new) || 0);
   return data;
 }
 
@@ -245,6 +249,17 @@ function activate(id) {
   if (btn && btn.scrollIntoView) btn.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+// 2ab: number of "new" feedback on the Feedback tab button (admin only); tab13 calls this after each change
+function setFeedbackBadge(n) {
+  if (state.bootstrap) state.bootstrap.feedback_new = n;
+  const btn = document.querySelector('.admin-tabbar button[data-tab="tab13"]');
+  if (!btn) return;
+  let b = btn.querySelector(".tab-badge");
+  if (!n) { if (b) b.remove(); return; }
+  if (!b) { b = el("span", { class: "tab-badge", "aria-label": "ใหม่" }); btn.appendChild(b); }
+  b.textContent = String(n);
+}
+
 function roleLabel(me) {
   if (me.role === "admin") return "ผู้ดูแลระบบ";
   const units = (me.units || []).join(", ");
@@ -281,6 +296,7 @@ function renderShell() {
     tabbar.appendChild(btn);
   });
   shell.appendChild(tabbar);
+  root.appendChild(shell); // in the DOM before the badge is set
 
   const panelBody = el("div", { class: "admin-panel-body" });
   tabs.forEach((t) => {
@@ -289,7 +305,7 @@ function renderShell() {
     panelBody.appendChild(section);
   });
   shell.appendChild(panelBody);
-  root.appendChild(shell);
+  if (state.isAdmin) setFeedbackBadge(Number(state.bootstrap.feedback_new) || 0);
 
   const wanted = tabFromHash();
   activate(wanted ? wanted.id : tabs[0].id);
@@ -334,6 +350,19 @@ async function boot() {
     }
   }
 }
+
+// 2ab: floating feedback button (admin / dispenser; on the login screen = guest)
+mountFeedbackWidget({
+  getAuth: () => (getAdminToken() && state.me ? { token: getAdminToken(), role: state.me.role } : null),
+  getContext: () => {
+    const [h, q] = location.hash.replace(/^#/, "").split("?");
+    const c = { app: "admin", tab: h || (activeTabId && (TABS.find((t) => t.id === activeTabId) || {}).hash) || "" };
+    if (state.fy) c.fy = state.fy;
+    const prm = new URLSearchParams(q || "");
+    ["month", "pcu", "unit", "mode"].forEach((k) => { if (prm.get(k)) c[k] = prm.get(k); });
+    return c;
+  },
+});
 
 window.addEventListener("error", (ev) => { console.error("admin error:", ev.message); });
 boot();

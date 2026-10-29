@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - **Rounds (brief 2j).** A round is keyed by the month the supplies are *for* ("ขอเบิกเดือน X"); it is filled and submitted during the month
@@ -208,9 +208,32 @@ CPU: 7 parallel queries (+ price_history / the fy−1 form only when a snapshot 
 so a request line is already the (round, item) aggregate. Local bench (125 items × 12 rounds, everything filled): ~0.5 ms JS warm, ~3–5 ms cold
 (form JSON parse), payload ≈ 69 K chars worst case.
 
+### 4.3 Feedback + FAQ (2ab — `functions/_lib/feedback.js`, brief `briefs/2ab_feedback_faq.md`)
+`feedbackSend` and `faqList` are **public but read `token` when sent**: a PCU token → role `pcu` (unit = token's), a staff token → role `admin`/`dispenser`
+(email), no / bad / expired token → **guest** (never an auth error). `feedbackMine` needs a PCU or staff token (none → `AUTH_REQUIRED`, bad → `AUTH_EXPIRED`).
+
+| action | params | data |
+|---|---|---|
+| `feedbackSend` | `category:'wording'\|'entry'\|'dashboard'\|'other', body, context?:object, anonymous?:true, pcu?, device?` | `{id, remaining_today}` |
+| `feedbackMine` | – | `{items:[{id,created_at,category,body,status,reply,reply_at}]}` own rows, newest first, ≤ 200 — pcu: `role='pcu' AND pcu=? AND anonymous=0` · staff: `email=?` |
+| `faqList` | `all?:true` | `{faqs:[{id,question,answer,category,sort,aud:['pcu'\|'dispenser'\|'admin']}]}` ordered `category, sort, id` — guest / pcu: `aud_pcu=1 AND hidden=0` · dispenser: `aud_dispenser=1 AND hidden=0` · admin: `aud_admin=1 AND hidden=0` · **admin + `all:true`** → every row incl. hidden, each item + `hidden, from_feedback_id, created_at, created_by, updated_at, updated_by` (`all` is ignored for other roles) |
+
+`feedbackSend` rules
+- `category` not in the enum → `BAD_REQUEST` · `body` trimmed, 1–2,000 chars (guest 1–1,000) else `BAD_REQUEST` · `context` = plain object kept field by field
+  while its JSON stays ≤ 2 KB (UTF-8); a field that does not fit is dropped (never an error; a non-object is ignored). The client adds route/tab, round, request id,
+  screen size, short UA, client time.
+- Identity stored: pcu → `pcu` = token unit, unless `anonymous:true` → `pcu` NULL, `anonymous` 1 (role stays `pcu`) · staff → `email`, `anonymous` ignored ·
+  guest → `pcu` param kept only if it is an existing code (else NULL; not verified — the admin UI shows "(ไม่ได้ login)").
+- `device` (string 8–64, a random id kept in the browser) is **required for guest and anonymous** (`BAD_REQUEST` otherwise); only
+  `rate_key = HMAC-SHA256(TOKEN_SECRET, "dev:"+device+":"+day)` is stored (guest / anonymous rows only), never the device id or IP.
+- Per Bangkok day (`day` = `bangkokDate()`), counted from the `feedback` table itself (one read, no counter table): named pcu 20 (`role='pcu' AND pcu=?`) ·
+  staff 20 (`email`) · anonymous 20 (`rate_key` + role pcu) · guest 5 (`rate_key` + role guest) · all rows without identity (guest + anonymous) 100 for the whole
+  system → `RATE_LIMITED{limit}` (Thai message). `remaining_today` = that sender's own limit − sent today.
+- **Exactly 1 INSERT per call** (no audit — like autosave). Rows are kept forever (no prune) and cannot be edited / deleted by the sender.
+
 ## 5. Admin / dispenser actions
 Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `issueDoneAll`, `issueExcept`, `adminItemIssue`; own units + time window only),
-`issueShortage` (2s, §5.5; read-only, any unit), `GET /api/export.xlsx`, `GET /api/pdf/:id`; everything else `FORBIDDEN` (incl. `adminDashboard`).
+`issueShortage` (2s, §5.5; read-only, any unit), `GET /api/export.xlsx`, `GET /api/pdf/:id` (+ 2ab `feedbackSend` / `feedbackMine` / `faqList`, §4.3); everything else `FORBIDDEN` (incl. `adminDashboard`, `adminFeedback*`, `adminFaq*`).
 `adminLoginGoogle` / `adminLoginBackup` are public.
 
 | action | params | data |
@@ -296,6 +319,7 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   prices: { "2026-11": { code: price } },                              // 2p (admin + dispenser): key = every round of `rounds` + the 12 rounds of fy_current;
                                                                        // value = codes whose priceFor(round) ≠ the price in `form` ({} when none) — §4.1
   users: [ ...adminUsersList ] , users_source: "table"|"env"           // admin only
+  feedback_new: <int>                                                  // admin only (2ab) — feedback rows with status "new" (Feedback tab badge)
 }
 RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, locked:bool, locked_at, locked_by, note }   // fy = monthFy(month); trial = month === config.trial_month
 ```
@@ -550,6 +574,16 @@ issued + used, 916 flags): network JS ≈ 3 ms warm / ≈ 12 ms cold (fresh proc
 ≈ 0.6 / 1.9 ms, ≈ 391 K chars; scope round ≈ 0.1 ms, ≈ 53 K chars (pcuDashboard reference ≈ 0.6 / 1.3 ms). SQL ≈ 80 ms (network) in node:sqlite = D1 time, not Worker CPU, but the network view
 reads the fy's lines ~5 times (D1 rows read ≈ 5 × lines + 2 × actual_prev rows per open).
 
+### 5.6 Feedback review + FAQ editor (2ab — `functions/_lib/feedback.js`) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
+| action | params | data |
+|---|---|---|
+| `adminFeedbackList` | `role?, category?, status?, pcu?, before?:int, limit?` (default 100, max 1000) | `{items:[{id,created_at,day,role,pcu,email,anonymous:bool,category,body,context:object\|null,status,status_at,status_by,reply,reply_at,reply_by}], next_before, counts:{new,ack,fixed}}` newest first · `rate_key` never returned · `counts` = whole table (not filtered) · bad enum → `BAD_REQUEST` |
+| `adminFeedbackUpdate` | `id, status?:'new'\|'ack'\|'fixed', reply?` | `{item}` · reply trimmed ≤ 2,000 (`""`/null clears → reply, reply_at, reply_by NULL) · a non-empty reply on an anonymous row → `BAD_REQUEST` (answer via FAQ) · status change sets `status_at/by`, reply change `reply_at/by` · nothing changed → no write · else 1 UPDATE + audit `adminFeedbackUpdate` · unknown id → `NOT_FOUND` |
+| `adminFaqSave` | `id?, question, answer, aud:[…], category?, sort?:int, hidden?:bool, from_feedback_id?` | `{faq}` (full shape as `faqList{all}`) · question 1–300, answer 1–5,000 (trimmed), `aud` ≥ 1 of `pcu/dispenser/admin`, category ≤ 60 (`""` → null), sort integer (default 0), `from_feedback_id` must exist (`BAD_REQUEST`) · no `id` → INSERT · `id` unknown → `NOT_FOUND` · unchanged → no write · audit `adminFaqSave` |
+| `adminFaqDelete` | `id, confirm:"ลบ"` | `{ok:true}` · permanent (the UI recommends hiding) · wrong/missing confirm → `BAD_REQUEST` · unknown → `NOT_FOUND` · audit `adminFaqDelete` |
+
+FAQ answers are plain text rendered by `public/js/faq_render.js`: HTML escaped → `**bold**` → `[label](url)` (only `https://`, `http://`, `#…`, `/…`) → line breaks.
+
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
 `month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2w: FY2570 = rounds `2026-10` … `2027-09`; the plan/form of the scope = that fy, form via `formForFy`).
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
@@ -667,7 +701,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -701,6 +735,11 @@ stats(fy, pcu, item_code, median_m, p90_m, annual_qty)      PK(fy,pcu,item_code)
 pdf_files(request_id, content_key, r2_key, created_at, bytes)   PK(request_id,content_key)   -- bytes: v2, nullable (rows from before v2 = null)
 requester_log(pcu, name, set_at, set_by)                    PK(pcu,set_at)   -- v7 (2x): one row per requester change (name NULL = cleared); rows > 2 years deleted on write
 usage_counters(period, metric, n)                           PK(period,metric)   -- v2; period "YYYY-MM" | "YYYY-MM-DD" (UTC); metric r2_class_a|r2_class_b|pdf_render
+feedback(id PK AUTOINCREMENT, created_at, day 'YYYY-MM-DD' (Bangkok), role 'pcu'|'dispenser'|'admin'|'guest', pcu NULL, email NULL, anonymous 0|1,
+         category 'wording'|'entry'|'dashboard'|'other', body, context JSON NULL, rate_key NULL,
+         status 'new'|'ack'|'fixed' DEFAULT 'new', status_at, status_by, reply, reply_at, reply_by)   -- v8 (2ab) · INDEX feedback_day(day)
+faq(id PK AUTOINCREMENT, question, answer, aud_pcu, aud_dispenser, aud_admin (0|1), category NULL, sort DEFAULT 0, hidden DEFAULT 0,
+    from_feedback_id NULL, created_at, created_by, updated_at, updated_by)                               -- v8 (2ab)
 audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
 ```
 - Migrations run automatically at the start of each request when `schema_version` is behind (cached per isolate). They must be idempotent.
@@ -721,6 +760,9 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   (INSERT OR IGNORE, set_by = actor); `adminFormSave` maintains them (§5.2).
   **v7** (2x) = `ALTER TABLE pcus ADD COLUMN requester_name TEXT` / `phone TEXT` + `ALTER TABLE requests ADD COLUMN requester_name TEXT` +
   `CREATE TABLE IF NOT EXISTS requester_log …` (same one-by-one / "duplicate column" rule; no backfill). `requester_log` is in `TABLES`.
+  **v8** (2ab) = `CREATE TABLE IF NOT EXISTS feedback …` + `CREATE INDEX IF NOT EXISTS feedback_day` + `CREATE TABLE IF NOT EXISTS faq …` + seed 2 FAQ
+  (`INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM faq)` — "ข้อความสีฟ้า เกินเพดาน" for all 3 audiences · "ลืม PIN" for pcu + admin; a re-run never seeds twice,
+  tested with `devRerunMigration{v:8}`). `feedback` + `faq` are in `TABLES` (backups, `devReset`).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

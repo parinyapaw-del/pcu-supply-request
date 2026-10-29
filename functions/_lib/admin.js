@@ -18,6 +18,7 @@ import { runBackup } from "./backup.js";
 import { priceFor, priceHistories, roundPriceOverrides } from "./price.js";
 import { PDF_RULE, pdfDownloadUrl, prunePdfFiles } from "./pdf.js";
 import { R2_CAP_KEYS, r2Caps, readUsage } from "./usage.js";
+import { feedbackNewCount } from "./feedback.js";
 
 const round2 = (x) => Math.round(x * 100) / 100;
 
@@ -199,7 +200,7 @@ export async function adminBootstrap(ctx) {
   out.prices = await roundPriceOverrides(priceHistories(DB), form, [...new Set([...months12, ...monthSet])].sort(), monthFy);
   if (!isAdmin) return out;
 
-  const [planRes, statRes, limRes, unlockRes, hidRes, prevFyRes, usersEff] = await Promise.all([
+  const [planRes, statRes, limRes, unlockRes, hidRes, prevFyRes, usersEff, fbNew] = await Promise.all([
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(fy).raw(),
     DB.prepare(`SELECT pcu, item_code, median_m, p90_m, annual_qty FROM stats WHERE fy = ?`).bind(fy - 1).raw(),
     DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, source, updated_by, updated_at, note FROM limits WHERE fy = ?`).bind(fy).raw(),
@@ -207,6 +208,7 @@ export async function adminBootstrap(ctx) {
     DB.prepare(`SELECT pcu, item_code FROM hidden_items`).raw(),
     DB.prepare(`SELECT DISTINCT fy FROM actual_prev ORDER BY fy`).all(),
     effectiveUsers(env, DB),
+    feedbackNewCount(DB), // 2ab: badge on the Feedback tab
   ]);
 
   const plans = {};
@@ -260,6 +262,7 @@ export async function adminBootstrap(ctx) {
   out.prev = prevOut;
   out.users = usersEff.users;
   out.users_source = usersEff.source;
+  out.feedback_new = fbNew;
   return out;
 }
 

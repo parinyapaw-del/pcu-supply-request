@@ -496,3 +496,28 @@
 .t2b-wiz-reason { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
 .t2b-wiz-reason .t2b-wiz-note { flex: 1 1 220px; margin-top: 0; }
 .t2b-wiz-sum li { margin: 4px 0; }
+
+/* ---- 2ab: Feedback tab (tab13) + badge ---- */
+.tab-badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px; background: var(--danger); color: #fff; font-size: 0.75rem; line-height: 18px; text-align: center; }
+/* sticky action bars keep their right end clear of the floating feedback button */
+body.has-fb-fab .t10-footer, body.has-fb-fab .t2b-footer { padding-right: 190px; }
+@media (max-width: 720px) { body.has-fb-fab .t10-footer, body.has-fb-fab .t2b-footer { padding-right: 68px; } }
+.t13-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9rem; }
+.t13-counts { display: flex; gap: 6px; flex-wrap: wrap; }
+.t13-item { border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.t13-st-new { border-left-color: var(--warn); }
+.t13-st-ack { border-left-color: var(--focus); }
+.t13-st-fixed { border-left-color: var(--success); }
+.t13-item-head { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.t13-ctx { font-size: 0.8rem; word-break: break-word; margin-bottom: 6px; }
+.t13-status-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.t13-reply-box textarea { width: 100%; box-sizing: border-box; font: inherit; margin-bottom: 4px; }
+.t13-faq-form { border: 1px solid var(--accent); border-radius: 10px; padding: 12px; margin-bottom: 14px; }
+.t13-faq-form input[type="text"], .t13-faq-form textarea { width: 100%; box-sizing: border-box; font: inherit; }
+.t13-faq-inline { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.t13-faq-inline input[type="number"] { width: 90px; }
+.t13-preview { border: 1px dashed var(--line); border-radius: 8px; padding: 8px; min-height: 2em; }
+.t13-faq-row { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.t13-faq-hidden { opacity: 0.6; }
+.t13-faq-a { margin: 4px 0; }
+.t13-faq-actions { display: flex; gap: 6px; flex-wrap: wrap; }
