@@ -2,8 +2,8 @@
 // Edits a deep copy of the latest form (adminBootstrap.form, inactive steps included) and saves it as a new
 // form version via adminFormSave. Older versions are viewable read-only (adminFormGet) with a diff.
 // Validation / diff helpers are pure and live in form_diff.js.
-import { formatMoney, fiscalYearStartMonthKey, fiscalYearEndMonthKey, nextMonthKey } from "../format.js";
-import { el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, openModal, formatBangkokDateTime, monthShort } from "./util.js";
+import { formatMoney } from "../format.js";
+import { el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, openModal, formatBangkokDateTime } from "./util.js";
 import { clearRequestCache } from "./requests.js";
 import {
   DISPENSE_UNITS, MAX_ACTIVE_STEPS, MAX_ACTIVE_ITEMS, MAX_SECTIONS, STEP_CODE_RE,
@@ -14,9 +14,9 @@ import {
 const PREVIEW_KEY = "pcuSupply2:formPreview";
 const DRAFT_KEY = "pcuSupply2:formEditorDraft"; // unsaved edits survive a reload / same-tab navigation
 
-function storeDraft(baseId, draft, priceFrom) {
+function storeDraft(baseId, draft) {
   try {
-    if (draft) sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ base_id: baseId, steps: draft.steps, price_from: priceFrom || {} }));
+    if (draft) sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ base_id: baseId, steps: draft.steps }));
     else sessionStorage.removeItem(DRAFT_KEY);
   } catch (e) { /* storage unavailable: the in-memory draft still works */ }
 }
@@ -57,40 +57,18 @@ export function renderTab10(container, ctx) {
     focusIdx: null,    // index in the selected step's rows of the focused row (section insert point)
     viewing: null,     // older version shown read-only
     saving: false,
-    priceFrom: {},     // 2p: code -> "YYYY-MM" round a changed price takes effect from (default = open round)
-    hist: {},          // 2p: code -> [{from_round, price, set_at, set_by}] ascending (adminFormGet.price_history of fy_current)
+    hist: {},          // 2p/2z: code -> [{from_round, price, set_at, set_by}] by set_at (adminFormGet.price_history of fy_current — a log only)
     histSeq: 0
   };
 
-  // ---- 2p: price effective round --------------------------------------------------------------------------
-  // Rounds of fy_current, first round .. last round of the year; default = the open round (clamped into the year).
-  function fyRounds() {
-    const fy = ctx.fyCurrent();
-    const out = [];
-    let m = fiscalYearStartMonthKey(fy);
-    const end = fiscalYearEndMonthKey(fy);
-    while (m <= end && out.length < 13) { out.push(m); m = nextMonthKey(m); }
-    return out;
-  }
-  function defaultFromRound() {
-    const rounds = fyRounds();
-    const cur = ctx.roundMonth();
-    if (!rounds.length) return cur;
-    if (cur < rounds[0]) return rounds[0];
-    if (cur > rounds[rounds.length - 1]) return rounds[rounds.length - 1];
-    return cur;
-  }
-  function roundOptionLabel(m) {
-    const cur = ctx.roundMonth();
-    return `ขอเบิก ${monthShort(m)}` + (m === cur ? " (รอบปัจจุบัน)" : m < cur ? " (ย้อนหลัง)" : "");
-  }
+  // ---- 2z: one price per fiscal year (a changed price applies to every request of the fy, sent sheets included) -----------------
   function basePriceMap() {
     const map = {};
     ts.base.steps.forEach((st) => (st.rows || []).forEach((r) => { if (r.type === "item") map[r.code] = Number(r.price); }));
     return map;
   }
   const r2 = (n) => Math.round(Number(n) * 100) / 100;
-  // changed prices of items that already exist in the base version: [{code, price, from_round}]
+  // changed prices of items that already exist in the base version: [{code, price}]
   function priceChanges() {
     const base = basePriceMap();
     const out = [];
@@ -98,14 +76,17 @@ export function renderTab10(container, ctx) {
       if (r.type !== "item" || !(r.code in base)) return;
       const np = Number(r.price);
       if (!Number.isFinite(np) || r2(np) === r2(base[r.code])) return;
-      out.push({ code: r.code, price: r2(np), from_round: ts.priceFrom[r.code] || defaultFromRound() });
+      out.push({ code: r.code, price: r2(np) });
     }));
     return out;
   }
   function histText(code) {
     const h = ts.hist[code] || [];
     if (h.length < 2) return "";
-    return "ราคา " + h.map((x) => `${formatMoney(x.price)} ตั้งแต่ ${monthShort(x.from_round)}`).join(" · ");
+    return "ประวัติราคา " + h.map((x) => `${formatMoney(x.price)}${x.set_at ? ` (ตั้งเมื่อ ${setDate(x.set_at)})` : ""}`).join(" → ");
+  }
+  function setDate(iso) { // "29/10/2569 14:05" → "29/10/2569"
+    return String(formatBangkokDateTime(iso) || "").split(" ")[0];
   }
   async function loadHistory() {
     const my = ++ts.histSeq;
@@ -114,7 +95,8 @@ export function renderTab10(container, ctx) {
       if (my !== ts.histSeq) return;
       const hist = {};
       (res.price_history || []).forEach((x) => { (hist[x.code] || (hist[x.code] = [])).push(x); });
-      Object.values(hist).forEach((a) => a.sort((x, y) => (x.from_round < y.from_round ? -1 : x.from_round > y.from_round ? 1 : 0)));
+      const k = (x) => `${x.set_at || ""}|${x.from_round}`;
+      Object.values(hist).forEach((a) => a.sort((x, y) => (k(x) < k(y) ? -1 : k(x) > k(y) ? 1 : 0)));
       ts.hist = hist;
       if (!ts.viewing) drawRows();
     } catch (err) { /* history is informational only */ }
@@ -126,7 +108,6 @@ export function renderTab10(container, ctx) {
     ts.baseSig = formSignature(ts.base);
     ts.dirty = false;
     storeDraft(null, null);
-    ts.priceFrom = {};
     ts.viewing = null;
     ts.focusIdx = null;
     if (!ts.sel || !ts.draft.steps.some((s) => s.code === ts.sel)) ts.sel = ts.draft.steps.length ? ts.draft.steps[0].code : null;
@@ -170,7 +151,7 @@ export function renderTab10(container, ctx) {
 
   function touch() {
     ts.dirty = formSignature(ts.draft) !== ts.baseSig;
-    storeDraft(ts.base.id, ts.dirty ? ts.draft : null, ts.priceFrom);
+    storeDraft(ts.base.id, ts.dirty ? ts.draft : null);
     drawDirty();
   }
   function drawDirty() {
@@ -450,28 +431,12 @@ export function renderTab10(container, ctx) {
         const unit = el("input", { type: "text", class: "t10-in t10-in-unit", value: r.unit || "", maxlength: 30, "aria-label": "หน่วย " + r.code });
         unit.addEventListener("input", () => { r.unit = unit.value; touch(); });
         const price = el("input", { type: "number", class: "t10-in t10-in-price", step: "0.01", min: "0", inputmode: "decimal", value: Number.isFinite(Number(r.price)) ? String(r.price) : "", "aria-label": "ราคา " + r.code });
-        // 2p: a changed price of an existing item asks "เริ่มใช้ตั้งแต่รอบ" (hidden until the price differs from the saved one)
-        const isBaseItem = baseCodes.has(r.code);
-        const fromSel = el("select", { class: "select-input t10-pf", "aria-label": "เริ่มใช้ตั้งแต่รอบ " + r.code, "data-pf": r.code });
-        const curFrom = ts.priceFrom[r.code] || defaultFromRound();
-        fyRounds().forEach((m) => fromSel.appendChild(el("option", { value: m, selected: m === curFrom }, roundOptionLabel(m))));
-        fromSel.addEventListener("change", () => { ts.priceFrom[r.code] = fromSel.value; touch(); });
-        const fromBox = el("label", { class: "t10-pf-box" }, [el("span", { class: "muted small" }, "เริ่มใช้ตั้งแต่รอบ"), fromSel]);
-        const syncFromBox = () => {
-          const np = Number(r.price);
-          const changed = isBaseItem && Number.isFinite(np) && r2(np) !== r2(basePriceMap()[r.code]);
-          fromBox.hidden = !changed;
-          if (!changed) delete ts.priceFrom[r.code];
-          else if (!ts.priceFrom[r.code]) ts.priceFrom[r.code] = fromSel.value;
-        };
         price.addEventListener("input", () => {
           const v = price.value.trim();
           r.price = v === "" ? NaN : Number(v);
           price.classList.toggle("bad", !(Number.isFinite(r.price) && r.price >= 0));
-          syncFromBox();
           touch();
         });
-        syncFromBox();
         const toggle = el("button", { type: "button", class: "btn btn-sm " + (active ? "btn-secondary" : "btn-primary"), "data-act": "toggle" }, active ? "ปิด" : "เปิด");
         toggle.addEventListener("click", () => {
           if (!active && stepCounts(s).activeItems >= MAX_ACTIVE_ITEMS) { toast(`หน้านี้เปิดรายการครบ ${MAX_ACTIVE_ITEMS} แล้ว`, "err"); return; }
@@ -502,10 +467,10 @@ export function renderTab10(container, ctx) {
           el("td", { class: "num" }, String(seq)),
           linkCell(r),
           el("td", { class: "left" }, histText(r.code)
-            ? [name, el("div", { class: "t10-hist muted small", title: (ts.hist[r.code] || []).map((x) => `${formatMoney(x.price)} ตั้งแต่ ${monthShort(x.from_round)}${x.set_by ? " โดย " + x.set_by : ""}`).join("\n") }, histText(r.code))]
+            ? [name, el("div", { class: "t10-hist muted small", title: (ts.hist[r.code] || []).map((x) => `${formatMoney(x.price)}${x.set_at ? " ตั้งเมื่อ " + formatBangkokDateTime(x.set_at) : ""}${x.set_by ? " โดย " + x.set_by : ""}`).join("\n") }, histText(r.code))]
             : name),
           el("td", { class: "left" }, unit),
-          el("td", { class: "num" }, [price, fromBox]),
+          el("td", { class: "num" }, price),
           statusCell,
           upDown,
           moveCell
@@ -681,31 +646,28 @@ export function renderTab10(container, ctx) {
     }
     const d = diffForms(ts.base, ts.draft);
 
-    // 2p: back-dated price (from_round before the open round) -> preview what it changes, then confirm
+    // 2z: a changed price is the price of the whole fy — preview what it changes on the sent requests (sheets/PDF included), then confirm
     const changes = priceChanges();
-    const cur = ctx.roundMonth();
-    if (changes.some((c) => c.from_round <= cur)) { // ≤: already-sent requests of the open round are re-priced too
+    if (changes.length) {
       let pv;
       try {
         pv = await ctx.adminCall("adminPricePreview", { changes });
       } catch (err) {
-        toast("ตรวจผลกระทบของราคาย้อนหลังไม่สำเร็จ: " + errMessage(err), "err");
+        toast("ตรวจผลกระทบของราคาใหม่ไม่สำเร็จ: " + errMessage(err), "err");
         return;
       }
       if (pv && Number(pv.requests) > 0) {
-        const [first, last] = pv.months || [];
-        const range = first && last ? (first === last ? monthShort(first) : `${monthShort(first)}–${monthShort(last)}`) : "";
         const delta = Number(pv.delta_baht) || 0;
         const sign = delta > 0 ? "+" : delta < 0 ? "−" : "±";
         const perCode = (pv.per_code || []).filter((x) => Number(x.n_lines) > 0).map((x) => {
           const dl = Number(x.delta) || 0;
-          return `• ${x.code}${itemName(x.code) ? " " + itemName(x.code) : ""}: ${x.n_lines} รายการ ${dl > 0 ? "+" : dl < 0 ? "−" : "±"}${formatMoney(Math.abs(dl))} บาท`;
+          return `• ${x.code}${itemName(x.code) ? " " + itemName(x.code) : ""}: ${x.requests} ใบ ${dl > 0 ? "+" : dl < 0 ? "−" : "±"}${formatMoney(Math.abs(dl))} บาท`;
         });
         const ok = await confirmDialog(
-          `จะปรับราคาใบที่ส่งแล้ว ${pv.requests} ใบ${range ? ` (รอบ ${range})` : ""} เป็นเงินเปลี่ยน ${sign}${formatMoney(Math.abs(delta))} บาท`
+          `ราคาใหม่มีผลทั้งปีงบ ${ctx.fyCurrent()} — ใบที่ส่งแล้ว ${pv.requests} ใบ เป็นเงินเปลี่ยน ${sign}${formatMoney(Math.abs(delta))} บาท (รวมใบพิมพ์/PDF ที่ส่งแล้ว)`
           + (perCode.length ? "\n\n" + perCode.join("\n") : "")
-          + "\n\nใบพิมพ์/PDF ที่ส่งไปแล้วไม่เปลี่ยน · ไม่แจ้ง รพ.สต.",
-          { title: "ปรับราคาย้อนหลัง", okText: "ยืนยันปรับราคาย้อนหลัง", danger: true });
+          + "\n\nไม่แจ้ง รพ.สต.",
+          { title: "ราคาใหม่ทั้งปีงบ", okText: "ยืนยันราคาใหม่" });
         if (!ok) return;
       }
     }
@@ -714,7 +676,7 @@ export function renderTab10(container, ctx) {
       { key: "note", label: "โน้ต (ไม่บังคับ, ≤ 200 ตัวอักษร)", type: "textarea", maxlength: 200, rows: 3, placeholder: "เช่น เพิ่มหน้า S08 / ปรับราคาตามสัญญาใหม่" }
     ], {
       okText: "บันทึก",
-      intro: `สรุปการแก้ไข: ${summaryThai(d)}\nใบที่ส่งแล้วไม่เปลี่ยน · แบบร่างของ รพ.สต. จะใช้ฟอร์มใหม่ทันที`,
+      intro: `สรุปการแก้ไข: ${summaryThai(d)}\n${changes.length ? "ราคาใหม่ใช้กับทุกใบของปีงบ (รวมใบที่ส่งแล้ว)" : "ใบที่ส่งแล้วไม่เปลี่ยน"} · แบบร่างของ รพ.สต. จะใช้ฟอร์มใหม่ทันที`,
       validate: (x) => (x.note.length > 200 ? "โน้ตยาวเกิน 200 ตัวอักษร" : "")
     });
     if (!res) return;
@@ -722,17 +684,12 @@ export function renderTab10(container, ctx) {
     saveBtn.textContent = "กำลังบันทึก...";
     try {
       const payload = { base_version_id: ts.base.id, note: res.note, form: { steps: payloadSteps() } };
-      // 2p: send price_from for every changed price (even when = the open round)
-      if (changes.length) {
-        payload.price_from = {};
-        changes.forEach((c) => { payload.price_from[c.code] = c.from_round; });
-      }
       const out = await ctx.adminCall("adminFormSave", payload);
       if (out.saved) {
         // 2x R5: out.warnings = a unit whose pages carry different headers (an older form) — shown, never blocks
         toast(`บันทึกฟอร์ม version #${out.form.id} แล้ว${out.warnings && out.warnings.length ? " · ⚠ " + out.warnings.join(" · ") : ""}`);
         ts.dirty = false;
-        clearRequestCache(); // back-dated prices change price_snapshot without touching the requests' updated_at
+        clearRequestCache(); // 2z: a new price rewrites price_snapshot/price_print without touching the requests' updated_at
         await ctx.refreshBootstrap();
         ctx.markStale(STALE_ON_SAVE);
         loadFromBootstrap();
@@ -787,7 +744,6 @@ export function renderTab10(container, ctx) {
   loadFromBootstrap();
   if (stored && stored.base_id === ts.base.id && Array.isArray(stored.steps)) {
     ts.draft = { steps: stored.steps };
-    ts.priceFrom = stored.price_from && typeof stored.price_from === "object" ? stored.price_from : {};
     if (!ts.draft.steps.some((s) => s.code === ts.sel)) ts.sel = ts.draft.steps.length ? ts.draft.steps[0].code : null;
     touch();
     if (ts.dirty) toast("กู้คืนการแก้ไขที่ยังไม่บันทึกแล้ว");

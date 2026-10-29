@@ -1,23 +1,23 @@
-// Tab 5 — เพดาน (phase 2.md §5.7 + limit_upload_format.md): mode switch, per PCU x item limits with inline
-// edit / reset, Excel download + upload (client parses with SheetJS, server validates via dry_run first),
-// and temporary unlocks (adminUnlockLimit / adminRemoveUnlock).
+// Tab 5 — เพดาน (phase 2.md §5.7 + limit_upload_format.md): mode switch (2z: ปิด / แจ้งเตือน), per PCU x item YEARLY limits with
+// inline edit / reset, Excel download + upload (client parses with SheetJS, server validates via dry_run first).
+// 2z (R11): limit_month is hidden everywhere (a file that still has the column uploads fine — the column is skipped) · unlocks are retired
+// from the UI (nothing blocks any more; the actions stay on the server).
 import { formatInt } from "../format.js";
 import {
-  el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, downloadBlob, getXLSX, formatBangkokDateTime, monthLong
+  el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, downloadBlob, getXLSX
 } from "./util.js";
 import { planFor } from "./compute.js";
 
 const MODES = [
   { id: "off", label: "ปิด", hint: "ไม่ตรวจเพดาน" },
-  { id: "warn", label: "เตือน", hint: "ส่งได้ แต่แสดงคำเตือนเมื่อเกินเพดาน (ค่าตั้งต้น)" },
-  { id: "enforce", label: "บังคับ", hint: "ส่งใบเบิกที่เกินเพดานไม่ได้" }
+  { id: "warn", label: "แจ้งเตือน", hint: "รพ.สต. เห็นข้อความแจ้ง (สีฟ้า) เมื่อยอดขอสะสมเกินเพดานรายปี — ส่งได้ตามปกติ ไม่บล็อก (ค่าตั้งต้น)" }
 ];
 const SOURCE_BADGE = {
   plan70: { label: "แผนปี 70", cls: "badge-muted" },
   stat69: { label: "สถิติปี 69", cls: "badge-warn" },
   admin: { label: "admin", cls: "badge-success" }
 };
-const HEADERS = ["pcu_code", "item_code", "item_name", "limit_month", "limit_year", "note"];
+const HEADERS = ["pcu_code", "item_code", "item_name", "limit_year", "note"];
 
 function parseLimitInput(text) {
   const t = String(text).trim();
@@ -52,16 +52,12 @@ export function renderTab5(container, ctx) {
   modeCard.appendChild(modeHint);
   container.appendChild(modeCard);
   function drawMode() {
-    const cur = b().config.limit_mode;
+    const cur = b().config.limit_mode === "off" ? "off" : "warn";
     seg.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x.dataset.mode === cur));
     modeHint.textContent = (MODES.find((m) => m.id === cur) || {}).hint || "";
   }
   async function setMode(mode) {
-    if (mode === b().config.limit_mode) return;
-    if (mode === "enforce") {
-      const ok = await confirmDialog("เปลี่ยนเป็นโหมด \"บังคับ\"?\nรพ.สต. จะส่งใบเบิกที่เกินเพดานรายปีไม่ได้ (ยกเว้นรายการที่ปลดล็อกชั่วคราว)", { title: "บังคับเพดาน", okText: "บังคับ", danger: true });
-      if (!ok) return;
-    }
+    if (mode === (b().config.limit_mode === "off" ? "off" : "warn")) return;
     try {
       const res = await ctx.adminCall("adminSetLimitMode", { mode });
       Object.assign(b().config, res.config);
@@ -74,7 +70,7 @@ export function renderTab5(container, ctx) {
   // ---- excel card ------------------------------------------------------------------------------------
   const xlCard = el("div", { class: "admin-card", id: "t5-excel-card" });
   xlCard.appendChild(el("h2", {}, "ดาวน์โหลด / อัปโหลดเพดาน (Excel)"));
-  xlCard.appendChild(el("p", { class: "admin-note" }, "ไฟล์ .xlsx แผ่นแรก หัวคอลัมน์ pcu_code, item_code, item_name, limit_month, limit_year, note · ช่อง limit ว่าง = ไม่แตะค่าเดิม (โหมดรวม) · พิมพ์ CLEAR เพื่อลบเพดานของคู่นั้น"));
+  xlCard.appendChild(el("p", { class: "admin-note" }, "ไฟล์ .xlsx แผ่นแรก หัวคอลัมน์ pcu_code, item_code, item_name, limit_year, note (ไฟล์เก่าที่มีคอลัมน์ limit_month อัปโหลดได้ — ระบบข้ามคอลัมน์นั้น) · ช่อง limit_year ว่าง = ไม่แตะค่าเดิม (โหมดรวม) · พิมพ์ CLEAR เพื่อลบเพดานของคู่นั้น"));
   const xlRow = el("div", { class: "admin-toolbar" });
   const dlBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t5-download" }, "ดาวน์โหลดเพดานปัจจุบัน");
   const tplBtn = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t5-template" }, "ดาวน์โหลด template ว่าง");
@@ -98,8 +94,8 @@ export function renderTab5(container, ctx) {
       const lim = b().limits[p.code] || {};
       state.cat.items.forEach((it) => {
         const l = lim[it.code];
-        if (all) rows.push([p.code, it.code, it.name, null, null, null]);
-        else if (l && (l.limit_month !== null || l.limit_year !== null)) rows.push([p.code, it.code, it.name, l.limit_month, l.limit_year, l.note || null]);
+        if (all) rows.push([p.code, it.code, it.name, null, null]);
+        else if (l && l.limit_year !== null) rows.push([p.code, it.code, it.name, l.limit_year, l.note || null]);
       });
     });
     return rows;
@@ -108,7 +104,7 @@ export function renderTab5(container, ctx) {
     try {
       const XLSX = await getXLSX();
       const ws = XLSX.utils.aoa_to_sheet([HEADERS, ...rows.map((r) => r.map((v) => (v === null ? "" : v)))]);
-      ws["!cols"] = [{ wch: 8 }, { wch: 9 }, { wch: 46 }, { wch: 12 }, { wch: 11 }, { wch: 30 }];
+      ws["!cols"] = [{ wch: 8 }, { wch: 9 }, { wch: 46 }, { wch: 11 }, { wch: 30 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "limits");
       const out = XLSX.write(wb, { type: "array", bookType: "xlsx" });
@@ -145,7 +141,6 @@ export function renderTab5(container, ctx) {
           pcu_code: blank(r.pcu_code) ? "" : String(r.pcu_code),
           item_code: blank(r.item_code) ? "" : String(r.item_code),
           item_name: blank(r.item_name) ? null : String(r.item_name),
-          limit_month: blank(r.limit_month) ? null : r.limit_month,
           limit_year: blank(r.limit_year) ? null : r.limit_year,
           note: blank(r.note) ? null : String(r.note)
         });
@@ -170,7 +165,7 @@ export function renderTab5(container, ctx) {
     } catch (err) { previewHost.innerHTML = `<p class="admin-err-text">ตรวจไฟล์ไม่สำเร็จ: ${escapeHtml(errMessage(err))}</p>`; }
   }
 
-  function oldNewText(v) { return v ? `${v[0] ?? "–"} / ${v[1] ?? "–"}` : "—"; }
+  function oldNewText(v) { return v ? `${v[1] ?? "–"}` : "—"; } // [limit_month, limit_year] → the yearly ceiling only (2z)
   function drawPreview() {
     const pv = ts.preview, r = pv.result;
     const nErr = (r.errors || []).length, nWarn = (r.warnings || []).length, nChg = (r.changes || []).length;
@@ -190,7 +185,7 @@ export function renderTab5(container, ctx) {
       }</tbody></table>`, "short"));
     }
     if (nChg) {
-      box.appendChild(el("h3", {}, `การเปลี่ยนแปลง (${nChg}) — ค่าเดิม → ค่าใหม่ (เดือน / ปี)`));
+      box.appendChild(el("h3", {}, `การเปลี่ยนแปลง (${nChg}) — เพดานรายปี เดิม → ใหม่`));
       box.insertAdjacentHTML("beforeend", tableScroll(`<table class="admin-table"><thead><tr><th class="left">รพ.สต.</th><th class="left">รายการ</th><th>เดิม</th><th>ใหม่</th></tr></thead><tbody>${
         r.changes.slice(0, 300).map((c) => `<tr><td class="left">${escapeHtml(c.pcu)}</td><td class="left">${escapeHtml(c.item_code)}</td><td class="num">${oldNewText(c.old)}</td><td class="num">${c.new ? oldNewText(c.new) : "<em>ลบ</em>"}</td></tr>`).join("")
       }</tbody></table>`, "short"));
@@ -218,7 +213,7 @@ export function renderTab5(container, ctx) {
         toast(`นำเข้าแล้ว: เพิ่ม ${res.added} · แก้ ${res.updated} · ลบ ${res.deleted}`);
         ts.preview = null; fileInput.value = ""; previewHost.innerHTML = "";
         await ctx.refreshBootstrap();
-        drawTable(); drawUnlocks();
+        drawTable();
       } catch (err) { toast(errMessage(err), "err"); applyBtn.disabled = false; }
     });
   }
@@ -235,7 +230,7 @@ export function renderTab5(container, ctx) {
   bar.appendChild(el("label", { class: "admin-inline-check" }, [onlyCb, "เฉพาะรายการที่มีแผนหรือเพดาน"]));
   bar.appendChild(qInput);
   tblCard.appendChild(bar);
-  tblCard.appendChild(el("p", { class: "admin-note" }, "เพดานนับ OP+PP รวม · ระบบเตือน/บังคับเฉพาะเพดานรายปี (เพดาน/เดือน เก็บไว้ดูเท่านั้น ไม่ใช้ตรวจ) · แก้ช่องแล้วออกจากช่อง (หรือกด Enter) เพื่อบันทึก · เว้นว่าง = ไม่มีเพดาน · \"แผนปี 70\" = แผน OP + PP"));
+  tblCard.appendChild(el("p", { class: "admin-note" }, "เพดานนับ OP+PP รวม · รพ.สต. เห็นข้อความแจ้งเมื่อยอดขอสะสมเกินเพดานรายปี (ไม่บล็อกการส่ง) · แก้ช่องแล้วออกจากช่อง (หรือกด Enter) เพื่อบันทึก · เว้นว่าง = ไม่มีเพดาน · \"แผนปี 70\" = แผน OP + PP"));
   const tblHost = el("div", { id: "t5-table" });
   tblCard.appendChild(tblHost);
   container.appendChild(tblCard);
@@ -250,7 +245,7 @@ export function renderTab5(container, ctx) {
       if (ts.onlyActive) {
         const [po, pp] = planFor(b().plans, ts.pcu, it.code);
         const l = lim[it.code];
-        return po + pp > 0 || (l && (l.limit_month !== null || l.limit_year !== null));
+        return po + pp > 0 || (l && l.limit_year !== null);
       }
       return true;
     });
@@ -261,7 +256,6 @@ export function renderTab5(container, ctx) {
       return `<tr data-code="${escapeHtml(it.code)}">
         <td class="left code-cell">${escapeHtml(it.code)}</td><td class="left name-cell">${escapeHtml(it.name)}</td><td class="left">${escapeHtml(it.unit)}</td>
         <td class="num plan-cell" title="OP ${po} + PP ${pp}">${po + pp > 0 ? `${formatInt(po)}+${formatInt(pp)}` : "–"}</td>
-        <td class="num"><input class="limit-input" data-f="month" inputmode="numeric" value="${l && l.limit_month !== null ? l.limit_month : ""}" aria-label="limit เดือน ${escapeHtml(it.code)}"></td>
         <td class="num"><input class="limit-input" data-f="year" inputmode="numeric" value="${l && l.limit_year !== null ? l.limit_year : ""}" aria-label="limit ปี ${escapeHtml(it.code)}"> <span class="cell-status"></span></td>
         <td class="left">${src ? `<span class="badge ${src.cls}">${escapeHtml(src.label)}</span>` : '<span class="muted">–</span>'}</td>
         <td class="left small">${escapeHtml((l && l.note) || "")}</td>
@@ -269,8 +263,8 @@ export function renderTab5(container, ctx) {
       </tr>`;
     }).join("");
     tblHost.innerHTML = `<p class="admin-note">${items.length} รายการ</p>` + tableScroll(`<table class="admin-table admin-table-wide" id="t5-limits-tbl"><thead><tr>
-      <th class="left">รหัส</th><th class="left">รายการ</th><th class="left">หน่วย</th><th class="num">แผนปี 70 (OP+PP)</th><th class="num">เพดาน/เดือน</th><th class="num">เพดาน/ปีงบ</th><th class="left">ที่มา</th><th class="left">หมายเหตุ</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="9" class="left muted">ไม่มีรายการ</td></tr>'}</tbody></table>`);
+      <th class="left">รหัส</th><th class="left">รายการ</th><th class="left">หน่วย</th><th class="num">แผนปี 70 (OP+PP)</th><th class="num">เพดาน/ปีงบ</th><th class="left">ที่มา</th><th class="left">หมายเหตุ</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="8" class="left muted">ไม่มีรายการ</td></tr>'}</tbody></table>`);
     tblHost.querySelectorAll("tr[data-code]").forEach((tr) => {
       const code = tr.dataset.code;
       const inputs = tr.querySelectorAll("input.limit-input");
@@ -282,19 +276,19 @@ export function renderTab5(container, ctx) {
         inp.addEventListener("blur", async () => {
           const cur = snapshot().join("|");
           if (cur === last) return;
-          const m = parseLimitInput(inputs[0].value), y = parseLimitInput(inputs[1].value);
-          if (m.error || y.error) {
-            status.className = "cell-status err"; status.textContent = m.error || y.error;
+          const y = parseLimitInput(inputs[0].value);
+          if (y.error) {
+            status.className = "cell-status err"; status.textContent = y.error;
             inp.classList.add("save-error"); return;
           }
           inputs.forEach((i) => i.classList.remove("save-error"));
           try {
-            const res = await ctx.adminCall("adminSetLimit", { pcu: ts.pcu, code, limit_month: m.value, limit_year: y.value });
+            const res = await ctx.adminCall("adminSetLimit", { pcu: ts.pcu, code, limit_year: y.value });
             const old = lim[code] || {};
             lim[code] = { ...old, ...res.limit };
             last = cur;
             status.className = "cell-status ok"; status.textContent = "บันทึกแล้ว";
-            const srcCell = tr.children[6];
+            const srcCell = tr.children[5];
             srcCell.innerHTML = `<span class="badge badge-success">admin</span>`;
             tr.querySelector("[data-reset]").disabled = false;
           } catch (err) { status.className = "cell-status err"; status.textContent = errMessage(err); }
@@ -311,63 +305,6 @@ export function renderTab5(container, ctx) {
     });
   }
   drawTable();
-
-  // ---- unlocks ---------------------------------------------------------------------------------------
-  const ulCard = el("div", { class: "admin-card", id: "t5-unlock-card" });
-  ulCard.appendChild(el("h2", {}, "ปลดล็อกชั่วคราว (ต่อ รพ.สต. × รายการ × เดือน)"));
-  ulCard.appendChild(el("p", { class: "admin-note" }, "รายการที่ปลดล็อกจะไม่ถูกตรวจเพดานในเดือนนั้น แม้อยู่ในโหมดบังคับ"));
-  const form = el("div", { class: "unlock-form" });
-  const uPcu = el("select", { class: "select-input", id: "t5-u-pcu" }, b().pcus.map((p) => el("option", { value: p.code }, `${p.code} ${p.name}`)));
-  const uItem = el("select", { class: "select-input", id: "t5-u-item" }, state.cat.items.map((it) => el("option", { value: it.code }, `${it.code} ${it.name}`)));
-  const uMonth = el("input", { type: "month", id: "t5-u-month", value: ctx.roundMonth() });
-  const uReason = el("input", { type: "text", id: "t5-u-reason", placeholder: "เหตุผล (จำเป็น)", maxlength: "200" });
-  const uBtn = el("button", { type: "button", class: "btn btn-primary btn-sm", id: "t5-u-add" }, "ปลดล็อก");
-  form.appendChild(el("label", {}, ["รพ.สต.: ", uPcu]));
-  form.appendChild(el("label", {}, ["รายการ: ", uItem]));
-  form.appendChild(el("label", {}, ["เดือน: ", uMonth]));
-  form.appendChild(el("label", {}, ["เหตุผล: ", uReason]));
-  form.appendChild(uBtn);
-  ulCard.appendChild(form);
-  const ulHost = el("div", { id: "t5-unlock-list" });
-  ulCard.appendChild(ulHost);
-  container.appendChild(ulCard);
-  uBtn.addEventListener("click", async () => {
-    const reason = uReason.value.trim();
-    if (!reason) { toast("กรุณากรอกเหตุผล", "err"); uReason.focus(); return; }
-    if (!/^\d{4}-\d{2}$/.test(uMonth.value)) { toast("เลือกเดือนให้ถูกต้อง", "err"); return; }
-    try {
-      const res = await ctx.adminCall("adminUnlockLimit", { pcu: uPcu.value, item_code: uItem.value, month: uMonth.value, reason });
-      const list = b().unlocks || (b().unlocks = []);
-      const i = list.findIndex((u) => u.pcu === res.unlock.pcu && u.item_code === res.unlock.item_code && u.month === res.unlock.month);
-      if (i >= 0) list[i] = res.unlock; else list.push(res.unlock);
-      uReason.value = "";
-      toast("ปลดล็อกชั่วคราวแล้ว");
-      drawUnlocks();
-    } catch (err) { toast(errMessage(err), "err"); }
-  });
-  function drawUnlocks() {
-    const list = (b().unlocks || []).slice().sort((a, c) => (a.at < c.at ? 1 : -1));
-    const rows = list.map((u) => {
-      const it = state.cat.byCode[u.item_code];
-      return `<tr data-k="${escapeHtml(u.pcu + "|" + u.item_code + "|" + u.month)}"><td class="left">${escapeHtml(u.pcu)}</td><td class="left">${escapeHtml(u.item_code)} ${escapeHtml(it ? it.name : "")}</td>
-        <td class="left">${escapeHtml(monthLong(u.month))}</td><td class="left">${escapeHtml(u.reason)}</td><td class="left small">${escapeHtml(u.by || "")}<br>${escapeHtml(formatBangkokDateTime(u.at))}</td>
-        <td class="left"><button type="button" class="btn btn-secondary btn-sm" data-remove>ยกเลิก</button></td></tr>`;
-    }).join("");
-    ulHost.innerHTML = `<h3>รายการที่ปลดล็อกอยู่ (${list.length})</h3>` + tableScroll(`<table class="admin-table" id="t5-unlock-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">รายการ</th><th class="left">เดือน</th><th class="left">เหตุผล</th><th class="left">โดย</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="6" class="left muted">ไม่มีรายการ</td></tr>'}</tbody></table>`);
-    ulHost.querySelectorAll("tr[data-k]").forEach((tr) => {
-      const [pcu, item_code, month] = tr.dataset.k.split("|");
-      tr.querySelector("[data-remove]").addEventListener("click", async () => {
-        try {
-          await ctx.adminCall("adminRemoveUnlock", { pcu, item_code, month });
-          b().unlocks = (b().unlocks || []).filter((u) => !(u.pcu === pcu && u.item_code === item_code && u.month === month));
-          toast("ยกเลิกการปลดล็อกแล้ว");
-          drawUnlocks();
-        } catch (err) { toast(errMessage(err), "err"); }
-      });
-    });
-  }
-  drawUnlocks();
 
   return { onShow() { drawMode(); } };
 }

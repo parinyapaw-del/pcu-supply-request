@@ -9,7 +9,7 @@ import * as store from "../store.js";
 import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
-  esc, pcuCode, roundOf, monthData, unlocksOf, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
+  esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
   alertDialog, toast, requesterOf,
 } from "./common.js";
@@ -878,28 +878,18 @@ function refreshStepTotals(app, month, step) {
   el.innerHTML = `<strong>รวมขั้นตอนนี้</strong> — OP ${formatInt(t.op)} · PP ${formatInt(t.pp)} · รวม ${formatInt(t.qty)} · เป็นเงิน ${formatMoney(t.money)} บาท`;
 }
 
-// Ceiling feedback for one item — only when exceeded (Q90): warn = red, enforce = red + blocked, or the
-// admin's unlock reason when an unlock exists for this month.
+// Ceiling feedback for one item — only when the yearly ceiling is exceeded (Q90) · 2z (Q10): an info note (blue), never red, never blocks.
 function refreshRowLimit(app, month, item) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const st = roundUsesCurrentFy(app, month)
-    ? limitStatus({
-        mode: app.boot.config.limit_mode, limits: app.boot.limits, usedFy: monthData(app, month).used_fy,
-        unlocks: unlocksOf(app, month), code: item.code, total: lineTotal(line),
-      })
+    ? limitStatus({ mode: app.boot.config.limit_mode, limits: app.boot.limits, usedFy: monthData(app, month).used_fy, code: item.code, total: lineTotal(line) })
     : null;
-  const unlocked = !!st && st.unlockReason !== null;
   document.querySelectorAll(`[data-code="${item.code}"] input.num-input`).forEach((inp) => {
     if (inp.dataset.field !== "op" && inp.dataset.field !== "pp") return; // stock/used/adj have their own states (refreshRowCalc)
-    inp.classList.toggle("input-error", !!st && !unlocked);
-    inp.classList.toggle("input-warn", unlocked);
+    inp.classList.toggle("input-note", !!st);
   });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
-    if (!st) { box.innerHTML = ""; return; }
-    const msgs = st.messages.map((m) => `<div class="limit-line ${unlocked ? "limit-info" : "limit-danger"}">${esc(m)}</div>`);
-    if (unlocked) msgs.push(`<div class="limit-line limit-unlocked">ปลดล็อกโดย admin${st.unlockReason ? ": " + esc(st.unlockReason) : ""}</div>`);
-    else if (st.blocked) msgs.push(`<div class="limit-line limit-danger">ส่งไม่ได้จนกว่า admin จะปลดล็อก</div>`);
-    box.innerHTML = msgs.join("");
+    box.innerHTML = st ? st.messages.map((m) => `<div class="limit-line limit-note">${esc(m)}</div>`).join("") : "";
   });
 }
 
@@ -1116,9 +1106,10 @@ function renderSummary(app, month, steps) {
 
     ${app.boot.config.limit_mode !== "off" && overs.length ? `
     <div class="summary-section" id="over-box">
-      <h3>รายการที่เกินเพดาน (${overs.length})</h3>
+      <h3>รายการที่เกินเพดานรายปี (${overs.length})</h3>
+      <p class="limit-note small">แจ้งเพื่อใช้ประมาณการปีถัดไปให้แม่นยำขึ้น — ส่งใบเบิกได้ตามปกติ</p>
       <ul class="jump-list">${overs.map((o) => `<li><a href="#" data-jump="${esc(o.stepCode)}" data-code="${esc(o.code)}" data-field="op">${esc(o.name)} (${esc(o.code)})</a>
-        <div class="${o.status.unlockReason !== null ? "limit-info" : "limit-danger"} small">${o.status.messages.map(esc).join(" · ")}${o.status.unlockReason !== null ? ` — ปลดล็อกโดย admin${o.status.unlockReason ? ": " + esc(o.status.unlockReason) : ""}` : o.status.blocked ? " — ส่งไม่ได้จนกว่า admin จะปลดล็อก" : ""}</div></li>`).join("")}</ul>
+        <div class="limit-note small">ยอดขอสะสมปีงบนี้ ${o.status.info.yearUsed} · เพดานรายปี ${o.status.info.limit_year}</div></li>`).join("")}</ul>
     </div>` : ""}
 
     <div class="summary-section">

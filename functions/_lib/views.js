@@ -34,7 +34,7 @@ export function requestObj(row, lines, admin = false) {
       m[l.item_code] = admin
         ? {
             stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, price_snapshot: l.price_snapshot ?? null,
-            price_print: l.price_print ?? null, // 2p: the price printed on the sheet (frozen at send; a back-date moves only price_snapshot)
+            price_print: l.price_print ?? null, // 2p/2z: the price printed on the sheet (= price_snapshot since 2z: a price change rewrites both)
             issued_total: l.issued_total ?? null, issued_op: l.issued_op ?? null, issued_pp: l.issued_pp ?? null,
             issue_reason: l.issue_reason ?? null, issue_note: l.issue_note ?? null, issued_at: l.issued_at ?? null, issued_by: l.issued_by ?? null,
           }
@@ -220,31 +220,26 @@ export async function pcuMonthView(DB, pcu, month, fallbackFy) {
   return { view: { request, used_fy: usedFy, prev_lines: prevLines, issue }, unlocks };
 }
 
-// ---- limit check (send:true, enforce / warn) -------------------------------------------------------------------------------
-// Returns [{code,total,limit_month,limit_year,used_fy}] for lines over their YEARLY limit, skipping unlocked items.
-// limit_month is stored/shown to the admin but no longer checked (Save 2026-10-28: warn only when the year ceiling is hit).
+// ---- limit check (send:true, warn) --------------------------------------------------------------------------------------------
+// Returns [{code,total,limit_year,used_fy}] for lines over their YEARLY limit — information only, never blocks (2z Q10).
+// limit_month is not checked nor returned (2z R10/R11: hidden from every UI; the column stays in the DB). limit_unlocks are ignored (2z).
 export async function overLimitItems(DB, pcu, month, lines) {
   const fy = monthFy(month);
   const codes = lines.filter((l) => (l.op || 0) + (l.pp || 0) > 0).map((l) => l.item_code);
   if (!codes.length) return [];
-  const [limRes, unlockRes, used] = await Promise.all([
-    DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, pcu).all(),
-    DB.prepare(`SELECT item_code FROM limit_unlocks WHERE pcu = ? AND month = ?`).bind(pcu, month).all(),
+  const [limRes, used] = await Promise.all([
+    DB.prepare(`SELECT item_code, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, pcu).all(),
     usedFyFor(DB, pcu, month),
   ]);
   const lim = new Map(limRes.results.map((r) => [r.item_code, r]));
-  const unlocked = new Set(unlockRes.results.map((r) => r.item_code));
   const over = [];
   for (const l of lines) {
     const total = (l.op || 0) + (l.pp || 0);
-    if (total <= 0 || unlocked.has(l.item_code)) continue;
+    if (total <= 0) continue;
     const r = lim.get(l.item_code);
-    if (!r) continue;
-    const lm = r.limit_month ?? null, ly = r.limit_year ?? null;
+    const ly = r ? r.limit_year ?? null : null;
     const u = used[l.item_code] || 0;
-    if (ly !== null && u + total > ly) {
-      over.push({ code: l.item_code, total, limit_month: lm, limit_year: ly, used_fy: u });
-    }
+    if (ly !== null && u + total > ly) over.push({ code: l.item_code, total, limit_year: ly, used_fy: u });
   }
   return over;
 }

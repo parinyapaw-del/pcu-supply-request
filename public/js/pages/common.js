@@ -86,11 +86,6 @@ export function monthData(app, month) {
   return (app.boot.byMonth && app.boot.byMonth[month]) || (app.older && app.older[month]) || { request: null, used_fy: {}, prev_lines: {}, issue: null };
 }
 
-export function unlocksOf(app, month) {
-  if (app.boot.unlocks && app.boot.unlocks[month]) return app.boot.unlocks[month];
-  return (app.older && app.older[month] && app.older[month].unlocks) || {};
-}
-
 // The round open for keying (boot.current_round = nextMonth(calendar month)); falls back to the newest round.
 export function currentRoundMonth(app) {
   const b = app.boot || {};

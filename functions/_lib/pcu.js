@@ -168,7 +168,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   }
 
   const limits = {}, plans = {};
-  for (const r of limRes.results) limits[r.item_code] = [r.limit_month ?? null, r.limit_year ?? null];
+  for (const r of limRes.results) limits[r.item_code] = [null, r.limit_year ?? null]; // 2z (R10): the PCU never sees the monthly ceiling
   for (const r of planRes.results) plans[r.item_code] = [r.plan_op || 0, r.plan_pp || 0];
 
   const notices = [];
@@ -386,12 +386,10 @@ export async function saveLines(ctx, p) {
       }
       if (missing.length) throw err("INCOMPLETE", "กรอกคงเหลือให้ครบทุกรายการก่อนส่ง", { missing });
     }
-    if (cfg.limit_mode !== "off") {
-      overLimit = await overLimitItems(DB, pcu.code, month, lines);
-      if (cfg.limit_mode === "enforce" && overLimit.length) throw err("OVER_LIMIT", "มีรายการเกินเพดานเบิก", { items: overLimit });
-    }
-    // 2p: the price of THIS round (price_history of the round's fy, fallback the form price) — both the calculation price (price_snapshot,
-    // later moved by a back-date) and the printed price (price_print, frozen until the next send)
+    // 2z (Q10): over the yearly ceiling is information only — never blocks the send
+    if (cfg.limit_mode !== "off") overLimit = await overLimitItems(DB, pcu.code, month, lines);
+    // 2z: the price of the fy (its latest form) — both the calculation price (price_snapshot) and the printed price (price_print); a later
+    // price change rewrites both on every sent line of the fy (adminFormSave)
     const hist = await loadPriceHistory(DB, fy);
     const fin = [];
     for (const l of lines) {

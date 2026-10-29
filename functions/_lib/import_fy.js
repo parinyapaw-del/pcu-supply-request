@@ -328,7 +328,7 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
 
 // ---- 2t: same-fy override — what the file changes, as statements (only rows that change: D1 write quota, plan 1A) ----------------
 // form: a new version of fy (old requests are re-bound to it) · prices that changed: effective for the WHOLE fy (price_history of the item =
-// one row at the fy's first round; price_snapshot of every sent line of the fy back-dated; price_print untouched) · plans: upsert changed
+// one row at the fy's first round; price_snapshot AND price_print (2z) of every sent line of the fy that differs rewritten) · plans: upsert changed
 // pairs, delete pairs the file no longer has · limits: the file's block, else the default rule (Q81) per plan pair; rows set by an admin are kept.
 async function overridePlan(DB, o) {
   const { fy, oldForm, newSteps, planFile, known, limitsFile, priceChanged, version_action } = o;
@@ -467,8 +467,8 @@ export async function adminImportOverride(ctx, p) {
     id: formId, fy, version_action: a.version_action, diff_counts: s.diff_counts, price_backdate: s.price_backdate, plans: s.plans, limits: s.limits, rebound: formId ? s.requests_rebound : 0,
   })));
   for (const x of o.backdated) {
-    stmts.push(auditStmt(DB, by, who.role, "price_backdate", "", x.from_round, JSON.stringify({
-      code: x.code, old: x.old, new: x.price, from_round: x.from_round, to_round: x.to_round, requests: x.requests, lines: x.n_lines, delta: x.delta, form_version: formId,
+    stmts.push(auditStmt(DB, by, who.role, "price_fy", "", String(fy), JSON.stringify({
+      code: x.code, old: x.old, new: x.price, fy, requests: x.requests, lines: x.n_lines, delta: x.delta, form_version: formId,
     })));
   }
   await batchChunked(DB, stmts);

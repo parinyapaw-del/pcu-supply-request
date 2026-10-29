@@ -423,7 +423,8 @@ async function configResult(DB) {
 
 export async function adminSetLimitMode(ctx, p) {
   const { DB, who } = ctx;
-  if (!["off", "warn", "enforce"].includes(p.mode)) throw err("BAD_REQUEST", "โหมดต้องเป็น off, warn หรือ enforce");
+  // 2z (Q10): the yearly ceiling only informs the PCU — "enforce" (block sending) is gone
+  if (!["off", "warn"].includes(p.mode)) throw err("BAD_REQUEST", "โหมดต้องเป็น off หรือ warn (เลิกใช้โหมดบังคับแล้ว)");
   await DB.batch([configStmt(DB, "limit_mode", p.mode), auditStmt(DB, who.email, who.role, "adminSetLimitMode", "", "", p.mode)]);
   return { config: await configResult(DB) };
 }
@@ -470,15 +471,19 @@ export async function adminSetLimit(ctx, p) {
   const fy = ctxFy(await getConfigAll(DB));
   await assertPcu(DB, p.pcu);
   await assertItem(DB, fy, code);
-  const lm = assertLimitValue(p.limit_month), ly = assertLimitValue(p.limit_year);
+  // 2z (R11): the admin UI no longer sends limit_month — absent = keep the stored value (the column stays, hidden everywhere)
+  const lmGiven = p.limit_month !== undefined;
+  const lm = lmGiven ? assertLimitValue(p.limit_month) : null, ly = assertLimitValue(p.limit_year);
   const ts = nowIso();
-  await DB.batch([
+  const [row] = await DB.batch([
     DB.prepare(`INSERT INTO limits (fy,pcu,item_code,limit_month,limit_year,source,updated_by,updated_at) VALUES (?,?,?,?,?, 'admin', ?, ?)
-                ON CONFLICT(fy,pcu,item_code) DO UPDATE SET limit_month=excluded.limit_month, limit_year=excluded.limit_year, source='admin', updated_by=excluded.updated_by, updated_at=excluded.updated_at`)
+                ON CONFLICT(fy,pcu,item_code) DO UPDATE SET limit_month=${lmGiven ? "excluded.limit_month" : "limits.limit_month"}, limit_year=excluded.limit_year, source='admin', updated_by=excluded.updated_by, updated_at=excluded.updated_at
+                RETURNING limit_month`)
       .bind(fy, p.pcu, code, lm, ly, who.email, ts),
-    auditStmt(DB, who.email, who.role, "adminSetLimit", p.pcu, "", `${code} month=${lm} year=${ly}`),
+    auditStmt(DB, who.email, who.role, "adminSetLimit", p.pcu, "", `${code} ${lmGiven ? `month=${lm} ` : ""}year=${ly}`),
   ]);
-  return { limit: limitObj(p.pcu, code, lm, ly, "admin", who.email, ts) };
+  const lmNow = row && row.results && row.results[0] ? row.results[0].limit_month ?? null : lm;
+  return { limit: limitObj(p.pcu, code, lmNow, ly, "admin", who.email, ts) };
 }
 
 // FORMAT.md rule: limit_year = plan_op+plan_pp (0 → null); limit_month = ceil(p90_m of the basis year) if > 0 else ceil(limit_year/12*2)
@@ -543,7 +548,8 @@ export async function adminLimitsUpload(ctx, p) {
   };
   p.rows.forEach((r, i) => {
     const rowNo = r && Number.isInteger(r.row) ? r.row : i + 2;
-    if (!r || typeof r !== "object" || ["pcu_code", "item_code", "limit_month", "limit_year", "note", "item_name"].every((k) => blank(r[k]))) return; // empty row → skip
+    // 2z (R11): a limit_month column (older files) is skipped — never read, never an error; the stored limit_month is kept
+    if (!r || typeof r !== "object" || ["pcu_code", "item_code", "limit_year", "note", "item_name"].every((k) => blank(r[k]))) return; // empty row → skip
     const pcuCode = String(r.pcu_code ?? "").trim(), itemCode = String(r.item_code ?? "").trim();
     const e = (msg) => errors.push({ row: rowNo, pcu_code: pcuCode, item_code: itemCode, error: msg });
     if (!pcuSet.has(pcuCode)) return e("ไม่พบ pcu_code นี้ในระบบ");
@@ -551,15 +557,12 @@ export async function adminLimitsUpload(ctx, p) {
     const key = pcuCode + "|" + itemCode;
     if (!seen.has(key)) seen.set(key, []);
     seen.get(key).push({ rowNo, idx: i });
-    const m = parseVal(r.limit_month, rowNo, "limit_month", mode === "merge");
     const y = parseVal(r.limit_year, rowNo, "limit_year", mode === "merge");
-    if (m.error) return e(m.error);
     if (y.error) return e(y.error);
-    if (m.value !== undefined && y.value !== undefined && y.value < m.value) warnings.push({ row: rowNo, pcu_code: pcuCode, item_code: itemCode, warning: "limit_year น้อยกว่า limit_month" });
     if (!blank(r.item_name) && String(r.item_name).trim() !== String(form.index.get(itemCode).item.name).trim()) {
       warnings.push({ row: rowNo, pcu_code: pcuCode, item_code: itemCode, warning: "item_name ไม่ตรงกับชื่อของ item_code" });
     }
-    valid.push({ idx: i, rowNo, pcu: pcuCode, code: itemCode, m, y, note: blank(r.note) ? null : String(r.note).slice(0, 500) });
+    valid.push({ idx: i, rowNo, pcu: pcuCode, code: itemCode, y, note: blank(r.note) ? null : String(r.note).slice(0, 500) });
   });
   // duplicates: error on every duplicated row (and drop them from the valid set)
   const dupKeys = new Set([...seen].filter(([, v]) => v.length > 1).map(([k]) => k));
@@ -581,13 +584,9 @@ export async function adminLimitsUpload(ctx, p) {
     const key = v.pcu + "|" + v.code;
     const old = cur.get(key) || null;
     const oldPair = old ? [old.limit_month ?? null, old.limit_year ?? null] : null;
-    let lm, ly;
-    if (mode === "replace") { lm = v.m.value ?? null; ly = v.y.value ?? null; }
-    else {
-      lm = v.m.clear ? null : v.m.blank ? (old ? old.limit_month ?? null : null) : v.m.value;
-      ly = v.y.clear ? null : v.y.blank ? (old ? old.limit_year ?? null : null) : v.y.value;
-    }
-    if (lm === null && ly === null) {
+    const lm = old ? old.limit_month ?? null : null; // 2z: limit_month is never changed by an upload
+    const ly = mode === "replace" ? v.y.value ?? null : v.y.clear ? null : v.y.blank ? (old ? old.limit_year ?? null : null) : v.y.value;
+    if (ly === null) { // no yearly ceiling = no ceiling (the hidden limit_month alone means nothing since 2z)
       if (mode === "merge" && old) { removeKeys.push([v.pcu, v.code]); deleted++; changes.push({ pcu: v.pcu, item_code: v.code, old: oldPair, new: null }); }
       continue; // replace mode: pair simply is not kept (counted below)
     }

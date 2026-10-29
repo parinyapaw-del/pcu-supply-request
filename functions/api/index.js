@@ -93,7 +93,7 @@ const REMOVED = {
   withdraw: "ไม่มีการถอนใบเบิกแล้ว (แก้ไขแล้วบันทึกใหม่ได้)",
   adminReceive: "ไม่มีการรับเรื่องแล้ว",
   adminReturn: "ใช้ adminNote (โน้ตขอให้แก้) แทน adminReturn",
-  adminSetMode: "ใช้ adminSetLimitMode (off/warn/enforce) แทน adminSetMode",
+  adminSetMode: "ใช้ adminSetLimitMode (off/warn) แทน adminSetMode",
 };
 const isReserved = () => false; // nothing reserved since 2e
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);

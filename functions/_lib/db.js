@@ -245,7 +245,7 @@ export const configStmt = (DB, key, value) =>
 
 // normalised, defaulted view of the settings the frontends need
 export function publicConfig(cfg, fallbackFy) {
-  const mode = ["off", "warn", "enforce"].includes(cfg.limit_mode) ? cfg.limit_mode : "warn";
+  const mode = cfg.limit_mode === "off" ? "off" : "warn"; // 2z: off | warn only — a stored "enforce" (before 2z) reads as warn
   const fy = Number.isInteger(cfg.fy_current) ? cfg.fy_current : fallbackFy;
   const dd = Number.isInteger(cfg.deadline_day) && cfg.deadline_day >= 1 && cfg.deadline_day <= 31 ? cfg.deadline_day : null;
   return {

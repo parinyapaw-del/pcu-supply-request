@@ -27,6 +27,8 @@
   --danger-bg: #fdecea;
   --warn: #8a5a00;
   --warn-bg: #fff4dd;
+  --note: #1d4ed8;
+  --note-bg: #eaf1ff;
   --success: #1a7a3c;
   --success-bg: #e8f7ec;
   --muted-bg: #eef1f5;
@@ -49,6 +51,8 @@
     --danger-bg: #3a1d1c;
     --warn: #f0c04d;
     --warn-bg: #3a2f10;
+    --note: #93b4ff;
+    --note-bg: #17233d;
     --success: #6fe19a;
     --success-bg: #17301f;
     --muted-bg: #212a35;
@@ -312,6 +316,7 @@ button, input, select {
 .limit-line { font-size: 0.82rem; }
 .limit-danger { color: var(--danger); font-weight: 700; }
 .limit-info { color: var(--muted); }
+.limit-note { color: var(--note); } /* 2z: over the yearly ceiling = information (blue), never red */
 .limit-unlocked { color: var(--success); font-weight: 700; }
 .small { font-size: 0.82rem; }
 
@@ -319,6 +324,7 @@ button, input, select {
 .num-input.calc-field { background: var(--calc-bg); border-color: var(--accent); }
 .num-input.input-error { border-color: var(--danger); background: var(--danger-bg); }
 .num-input.input-warn { border-color: var(--warn); background: var(--warn-bg); }
+.num-input.input-note { border-color: var(--note); background: var(--note-bg); }
 
 .row-highlight { animation: flash-row 1s ease-in-out 2; }
 @keyframes flash-row { 0%,100% { background: transparent; } 50% { background: var(--danger-bg); } }

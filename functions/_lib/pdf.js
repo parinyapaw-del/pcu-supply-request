@@ -61,8 +61,8 @@ async function loadBundle(DB, pcuCode, month) {
   return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code), form, requester };
 }
 
-// 2p: the unit price printed for a line = price_print (frozen at send; a back-date never moves it), fallback price_snapshot (rows from before
-// migration v5 that were never re-sent). null when the line has neither.
+// 2p: the unit price printed for a line = price_print, fallback price_snapshot (rows from before migration v5 that were never re-sent).
+// 2z: a price change rewrites price_print with price_snapshot on every sent line of the fy. null when the line has neither.
 const printPrice = (l) => l.price_print ?? l.price_snapshot ?? null;
 
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
@@ -81,8 +81,8 @@ export function printOptsOf(p, month) {
 // Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION + 2h print options). Same content → same key →
 // the cached PDF is reused; each distinct option set is its own file.
 // 2p: + `pr` {code: printed price} for the lines whose printed price differs from the bound form's price — omitted when empty, so the key of a
-// sheet printed at form prices (every request sent before 2p) is unchanged. A back-date never moves price_print → same key → R2 serves the old
-// PDF; a re-send at a new round price changes price_print → new key → new PDF.
+// sheet printed at form prices (every request sent before 2p) is unchanged. 2z: a price change rewrites price_print → the bound form (rebound
+// to the new version) and/or `pr` change → new key → a fresh PDF on the next print.
 // 2x: + `rq` the printed requester name (bundle.requester) and `ph` the phone print option.
 export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form, requester }, opts = {}) {
   const ls = {}, pr = {};

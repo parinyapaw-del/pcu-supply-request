@@ -1,7 +1,7 @@
-// price.js — 2p: a price is effective from a round (spec 2o-2s §4, brief 2p). functions/API.md §5.2 / §8.
-// price_history(fy, item_code, from_round, price) — the price of item X in round R of fy F = the row of (F, X) with the newest from_round ≤ R;
-// no such row → the price in the form (fallback). The form's price is the "latest price" (shown in the admin editor); every computation uses priceFor.
-// CPU: one query per fy (loadPriceHistory), never one per line.
+// price.js — 2z: ONE price per (fy, item) = the price in the latest form of the fy (brief 2z, reverses 2p's "effective from a round").
+// functions/API.md §5.2 / §8. price_history(fy, item_code, from_round, price) is kept only as a log of who set which price when (admin editor
+// tooltip); it no longer decides any price. Changing a price rewrites price_snapshot AND price_print of every sent line of the fy (priceEffect).
+// Signatures of 2p (hist, round) are kept so the call sites stay unchanged.
 import { insertStatements } from "./db.js";
 import { fyMonths, nextMonth, nowIso } from "./time.js";
 
@@ -33,18 +33,9 @@ export function formPrice(form, code) {
   return ent ? Number(ent.item.price) || 0 : null;
 }
 
-// The price of `code` in `round` (round must belong to the fy `hist` was loaded for): newest history row with from_round ≤ round,
-// else the form price, else null.
+// The price of `code` (2z: `hist` and `round` are ignored — the fy has one price, the one in its latest form; callers pass the latest form,
+// or the line's bound form when the latest lacks the code). null when the form does not have it.
 export function priceFor(hist, form, code, round) {
-  const arr = hist && hist.get(code);
-  if (arr) {
-    let p = null;
-    for (const r of arr) {
-      if (r.from_round <= round) p = r.price;
-      else break;
-    }
-    if (p !== null) return p;
-  }
   return formPrice(form, code);
 }
 
@@ -85,47 +76,32 @@ export function seedHistoryStmts(DB, fy, steps, by, note) {
   return insertStatements(DB, "price_history", ["fy", "item_code", "from_round", "price", "set_by", "set_at", "note"], rows, { prefix: "INSERT OR IGNORE INTO" });
 }
 
-// The end (exclusive) of the range a row at `from` governs: the next from_round of the item in `hist`, else the round after the fy's last.
-export function rangeEnd(hist, code, from, fy) {
-  const arr = (hist && hist.get(code)) || [];
-  for (const r of arr) if (r.from_round > from) return r.from_round;
-  return nextMonth(fyMonths(fy)[11]);
-}
-
-// Effect of back-dating prices (adminPricePreview = what adminFormSave will do). `changes` = [{code, price, from_round}] with from_round ≤ curRound (current-round sends included)
-// (others are reported with zeros). Affected = lines of SENT (submitted/issued) requests with month in [from_round, rangeEnd) whose
-// price_snapshot is set and differs from the new price and whose op+pp > 0 — exactly the money that moves. (adminFormSave rewrites
-// price_snapshot of every line in the range; a qty-0 / unchanged line moves no money.)
-// → { requests, months:[first,last]|[], delta_baht, per_code:[{code, n_lines, delta, old, from_round, to_round, requests}] }
+// 2z: effect of new prices on the SENT (submitted/issued) requests of fy `fy` (adminPricePreview = what adminFormSave will write).
+// `changes` = [{code, price}]. Written = every sent line of the code in the fy whose price_snapshot or price_print differs from the new price
+// (only those rows are updated — D1 write quota). delta = Σ (op+pp) × (new − price_snapshot) over the written lines.
+// `hist` / `curRound` are unused (kept from 2p's signature); `form` gives `old`.
+// → { requests, months:[first,last]|[], delta_baht, per_code:[{code, n_lines, delta, old, price, requests, from_round, to_round, backdate}] }
 export async function priceEffect(DB, fy, hist, form, changes, curRound) {
+  const ms = fyMonths(fy), lo = ms[0], hi = nextMonth(ms[11]);
   const per = changes.map((c) => ({
-    code: c.code, price: c.price, from_round: c.from_round,
-    to_round: rangeEnd(hist, c.code, c.from_round, fy),
-    old: priceFor(hist, form, c.code, c.from_round),
-    back: c.from_round <= curRound,
+    code: c.code, price: c.price, old: formPrice(form, c.code), from_round: lo, to_round: hi, backdate: true,
     n_lines: 0, delta: 0, reqs: new Set(),
   }));
-  const back = per.filter((x) => x.back);
+  const byCode = new Map(per.map((x) => [x.code, x]));
   const allReq = new Set(), months = [];
-  if (back.length) {
-    const lo = back.reduce((a, x) => (x.from_round < a ? x.from_round : a), back[0].from_round);
-    const hi = back.reduce((a, x) => (x.to_round > a ? x.to_round : a), back[0].to_round);
-    const byCode = new Map(back.map((x) => [x.code, x]));
-    const codes = [...byCode.keys()];
-    for (let i = 0; i < codes.length; i += 90) {
-      const part = codes.slice(i, i + 90);
-      const { results } = await DB.prepare(
-        `SELECT l.item_code, r.id, r.month, l.op, l.pp, l.price_snapshot FROM request_lines l JOIN requests r ON r.id = l.request_id
-          WHERE r.status IN ('submitted','issued') AND r.month >= ? AND r.month < ? AND l.item_code IN (${part.map(() => "?").join(",")})
-            AND l.price_snapshot IS NOT NULL AND (COALESCE(l.op,0) + COALESCE(l.pp,0)) > 0`
-      ).bind(lo, hi, ...part).all();
-      for (const l of results) {
-        const x = byCode.get(l.item_code);
-        if (!x || l.month < x.from_round || l.month >= x.to_round || l.price_snapshot === x.price) continue;
-        x.n_lines++;
-        x.delta += ((l.op || 0) + (l.pp || 0)) * (x.price - l.price_snapshot);
-        x.reqs.add(l.id); allReq.add(l.id); months.push(l.month);
-      }
+  const codes = [...byCode.keys()];
+  for (let i = 0; i < codes.length; i += 90) {
+    const part = codes.slice(i, i + 90);
+    const { results } = await DB.prepare(
+      `SELECT l.item_code, r.id, r.month, l.op, l.pp, l.price_snapshot, l.price_print FROM request_lines l JOIN requests r ON r.id = l.request_id
+        WHERE r.status IN ('submitted','issued') AND r.month >= ? AND r.month < ? AND l.item_code IN (${part.map(() => "?").join(",")})`
+    ).bind(lo, hi, ...part).all();
+    for (const l of results) {
+      const x = byCode.get(l.item_code);
+      if (!x || (l.price_snapshot === x.price && l.price_print === x.price)) continue;
+      x.n_lines++;
+      if (l.price_snapshot !== null && l.price_snapshot !== undefined) x.delta += ((l.op || 0) + (l.pp || 0)) * (x.price - l.price_snapshot);
+      x.reqs.add(l.id); allReq.add(l.id); months.push(l.month);
     }
   }
   months.sort();
@@ -136,15 +112,16 @@ export async function priceEffect(DB, fy, hist, form, changes, curRound) {
     delta_baht: round2(total),
     per_code: per.map((x) => ({
       code: x.code, n_lines: x.n_lines, delta: round2(x.delta), old: x.old, price: x.price, from_round: x.from_round, to_round: x.to_round,
-      requests: x.reqs.size, backdate: x.back,
+      requests: x.reqs.size, backdate: x.n_lines > 0,
     })),
   };
 }
 
-// UPDATE statements that apply a back-date: price_snapshot of every line of `code` on a sent request in [from, to). price_print is never touched.
+// UPDATE statements that apply priceEffect: price_snapshot AND price_print of every sent line of `code` in [from, to) that differs (2z).
 export function backdateStmts(DB, per) {
   return per.filter((x) => x.backdate).map((x) => DB.prepare(
-    `UPDATE request_lines SET price_snapshot = ? WHERE item_code = ?
+    `UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE item_code = ?
+       AND (price_snapshot IS NOT ? OR price_print IS NOT ?)
        AND request_id IN (SELECT id FROM requests WHERE status IN ('submitted','issued') AND month >= ? AND month < ?)`
-  ).bind(x.price, x.code, x.from_round, x.to_round));
+  ).bind(x.price, x.price, x.code, x.price, x.price, x.from_round, x.to_round));
 }
