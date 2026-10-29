@@ -43,6 +43,8 @@ const STAFF = {
   issueAll: issue.issueAll,
   issueDone: issue.issueDone,
   issueItem: issue.issueItem,
+  issueDoneAll: issue.issueDoneAll, // 2y — one unit, whole round
+  issueExcept: issue.issueExcept, // 2y — "ครบยกเว้น…"
   adminItemIssue: issue.adminItemIssue,
   issueShortage, // 2s — "จ่ายไม่พอ" (dispenser: default unit = its own)
 };

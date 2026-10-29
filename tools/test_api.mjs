@@ -1559,6 +1559,101 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("issue bulk (2y): issueDoneAll · issueExcept");
+  {
+    const D_LAB = "bulk.lab@example.com", D_STORE = "bulk.store@example.com";
+    await mustOk("adminUsersAdd", { email: D_LAB, role: "dispenser", units: ["LAB"] }, ADM2);
+    await mustOk("adminUsersAdd", { email: D_STORE, role: "dispenser", units: ["พัสดุ", "จ่ายกลาง"] }, ADM2);
+    const DL = (await mustOk("adminLoginGoogle", { id_token: "dev:" + D_LAB })).token;
+    const DS = (await mustOk("adminLoginGoogle", { id_token: "dev:" + D_STORE })).token;
+    const login = async (code) => (await mustOk("pcuLogin", { pcu: code, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-21T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, [op, pp]]) => [c, { stock: 1, op, pp, updated_at: tsn() }]));
+    const send = async (pcu, lines) => ok((await api("saveLines", { month: CUR, lines: L(lines), send: true }, await login(pcu))).ok, `2y setup: ${pcu} submits`);
+    const gl = async (pcu, code) => (await mustOk("adminGetRequest", { pcu, month: CUR }, ADM2)).request.lines[code];
+    const greq = async (pcu) => (await mustOk("adminGetRequest", { pcu, month: CUR }, ADM2));
+    const LAB2 = seedItems.find((i) => i.unit_of === "LAB" && i.code !== LABI.code);
+    ok(!!LAB2, "2y fixture: a second LAB item");
+
+    await send("PCU03", { [A.code]: [10, 5], [B.code]: [4, 0], [CSI.code]: [2, 0], [LABI.code]: [3, 2], [LAB2.code]: [4, 0] });
+    await send("PCU04", { [A.code]: [2, 0], [LABI.code]: [6, 0], [LAB2.code]: [2, 1] });
+    await send("PCU05", { [A.code]: [1, 0] });
+    await send("PCU06", { [CSI.code]: [3, 0] });
+    await mustOk("saveLines", { month: CUR, lines: L({ [A.code]: [1, 0] }) }, await login("PCU09")); // draft
+    await mustOk("adminSaveLines", { pcu: "PCU08", month: CUR, lines: { [LABI.code]: { op: 2, pp: 0 } }, send: true }, ADM2); // keyed by admin (2w)
+    await mustOk("issueLines", { pcu: "PCU03", month: CUR, lines: { [A.code]: { issued_total: 12, reason: "out_of_stock" } } }, DS);
+    const a3before = await gl("PCU03", A.code);
+    await mustOk("issueDone", { pcu: "PCU04", month: CUR, unit: "พัสดุ", done: 1 }, DS);
+
+    // ---- guards ----
+    expectErr(await api("issueDoneAll", { month: CUR, unit: "พัสดุ" }), "AUTH_REQUIRED", "issueDoneAll without a token");
+    expectErr(await api("issueDoneAll", { month: CUR, unit: "พัสดุ" }, await login("PCU03")), "FORBIDDEN", "issueDoneAll with a PCU token");
+    expectErr(await api("issueDoneAll", { month: CUR, unit: "พัสดุ" }, DL), "FORBIDDEN", "issueDoneAll: dispenser LAB on พัสดุ → FORBIDDEN");
+    expectErr(await api("issueDoneAll", { month: CUR, unit: "ห้องเก็บ" }, ADM2), "BAD_REQUEST", "issueDoneAll: unknown unit");
+    expectErr(await api("issueDoneAll", { month: "2026-13", unit: "LAB" }, ADM2), "BAD_REQUEST", "issueDoneAll: bad month");
+
+    // ---- issueDoneAll ----
+    const da = await mustOk("issueDoneAll", { month: CUR, unit: "พัสดุ" }, DS);
+    eq([da.done, da.skipped], [["PCU03", "PCU05"], []], "issueDoneAll พัสดุ: done = requests not yet done that have พัสดุ lines (PCU04 already done · PCU06 none · PCU09 draft)");
+    const a3 = await gl("PCU03", A.code), b3 = await gl("PCU03", B.code);
+    eq([a3.issued_total, a3.issue_reason, a3.issued_at, b3.issued_total, b3.issued_by], [12, "out_of_stock", a3before.issued_at, 4, D_STORE], "issueDoneAll keeps a typed figure untouched (not rewritten) · fills the empty line = ขอ");
+    eq((await gl("PCU03", LABI.code)).issued_total, null, "issueDoneAll พัสดุ does not touch LAB lines");
+    const r3 = await greq("PCU03"), r5 = await greq("PCU05");
+    eq([r3.request.status, r3.issue.units["พัสดุ"].done, r5.request.status], ["submitted", true, "issued"], "PCU03 stays submitted (LAB/จ่ายกลาง pending) · PCU05 (พัสดุ only) → issued");
+    eq((await mustOk("issueDoneAll", { month: CUR, unit: "พัสดุ" }, DS)).done, [], "issueDoneAll again → nothing left (idempotent)");
+    const late = (await api("issueDoneAll", { month: CUR, unit: "LAB" }, DL, { month: "2027-01" })).data;
+    eq([late.done, late.skipped.map((s) => s.pcu)], [["PCU08"], ["PCU03", "PCU04"]], "issueDoneAll past the dispenser window: admin-keyed request done · others skipped");
+    ok(late.skipped.every((s) => /หมดเวลา/.test(s.why)), "skipped carries the window message");
+    eq([(await gl("PCU08", LABI.code)).issued_total, (await greq("PCU08")).request.status], [2, "issued"], "PCU08 (admin-keyed) LAB = ขอ → issued");
+
+    // ---- issueExcept guards (all-or-nothing) ----
+    const ex = (items, extra = {}, tok = DL) => api("issueExcept", { month: CUR, unit: "LAB", items, reason: "out_of_stock", ...extra }, tok);
+    const good = { [LABI.code]: { PCU03: 2, PCU04: 0 } };
+    expectErr(await ex(good, {}, DS), "FORBIDDEN", "issueExcept: dispenser without LAB → FORBIDDEN");
+    expectErr(await ex({ [LABI.code]: { PCU03: 6, PCU04: 0 } }), "BAD_REQUEST", "issueExcept: more than requested → BAD_REQUEST");
+    expectErr(await ex({ [LABI.code]: { PCU03: 2 } }), "BAD_REQUEST", "issueExcept: a requesting PCU without a figure → BAD_REQUEST");
+    expectErr(await ex({ [LABI.code]: { PCU03: 2, PCU04: null } }), "BAD_REQUEST", "issueExcept: null figure → BAD_REQUEST");
+    expectErr(await ex(good, { reason: "other" }), "BAD_REQUEST", "issueExcept: reason other without a note → BAD_REQUEST");
+    expectErr(await ex(good, { reason: "lost" }), "BAD_REQUEST", "issueExcept: unknown reason → BAD_REQUEST");
+    expectErr(await ex({ [A.code]: { PCU03: 1 } }, {}, ADM2), "BAD_REQUEST", "issueExcept: item of another unit → BAD_REQUEST");
+    expectErr(await ex({}), "BAD_REQUEST", "issueExcept: no item → BAD_REQUEST");
+    expectErr(await ex({ "ZZ-99": { PCU03: 1 } }), "BAD_REQUEST", "issueExcept: unknown item → BAD_REQUEST");
+    eq([(await gl("PCU03", LAB2.code)).issued_total, (await greq("PCU03")).issue.units.LAB.done], [null, false], "…rejected calls wrote nothing");
+
+    // ---- issueExcept ----
+    await mustOk("issueLines", { pcu: "PCU04", month: CUR, lines: { [LAB2.code]: { issued_total: 1, reason: "other", note: "ทดสอบ" } } }, DL);
+    const e1 = await mustOk("issueExcept", { month: CUR, unit: "LAB", items: { [LABI.code]: { PCU03: 2, PCU04: 0, PCU05: 1, PCU99: 1 } }, reason: "out_of_stock", note: "รอของเข้า" }, DL);
+    eq([e1.done, e1.skipped, e1.lines], [["PCU03", "PCU04"], [], 4], "issueExcept: done = pending LAB requests (PCU08 already done) · PCU05/PCU99 ignored · 4 lines written");
+    const l3 = await gl("PCU03", LABI.code), l4 = await gl("PCU04", LABI.code);
+    eq([l3.issued_total, l3.issued_op, l3.issued_pp, l3.issue_reason, l3.issue_note], [2, 0, 2, "out_of_stock", "รอของเข้า"], "issueExcept PCU03: 2 of 3/2 → OP-first 0/2, reason + note");
+    eq([l4.issued_total, l4.issue_reason], [0, "out_of_stock"], "issueExcept PCU04: 0, out of stock");
+    const m3 = await gl("PCU03", LAB2.code), m4 = await gl("PCU04", LAB2.code);
+    eq([m3.issued_total, m4.issued_total, m4.issued_op, m4.issued_pp, m4.issue_reason, m4.issue_note], [4, 3, 2, 1, null, null], "issueExcept: other lines of the unit → = ขอ (overwrites PCU04's typed 1)");
+    const s3 = await greq("PCU03"), s4 = await greq("PCU04");
+    eq([s3.issue.units.LAB.done, s3.request.status, s4.request.status], [true, "submitted", "issued"], "issueExcept: LAB done · PCU03 still waits for จ่ายกลาง · PCU04 (พัสดุ+LAB) → issued");
+    eq((await mustOk("issueExcept", { month: CUR, unit: "LAB", items: good, reason: "out_of_stock" }, DL)).done, [], "issueExcept again: already-done requests are left alone");
+    const e2 = await mustOk("issueExcept", { month: CUR, unit: "จ่ายกลาง", items: { [CSI.code]: { PCU03: 2, PCU06: 1 } }, reason: "other", note: "แบ่งจ่าย" }, ADM2);
+    eq(e2.done, ["PCU03", "PCU06"], "issueExcept จ่ายกลาง (admin)");
+    const c3 = await gl("PCU03", CSI.code), c6 = await gl("PCU06", CSI.code);
+    eq([c3.issued_total, c3.issue_reason, c6.issued_total, c6.issue_reason, c6.issue_note], [2, null, 1, "other", "แบ่งจ่าย"], "issueExcept: figure = ขอ → reason null · below → reason other + note");
+    eq([(await greq("PCU03")).request.status, (await greq("PCU06")).request.status], ["issued", "issued"], "every unit done → issued");
+
+    // ---- shortage view + audit ----
+    const sh = await mustOk("issueShortage", { month: CUR, unit: "LAB" }, DL);
+    const shI = sh.items.find((i) => i.code === LABI.code);
+    eq([sh.items.length, shI && shI.short_qty, shI && shI.n_pcus, sh.by_pcu[LABI.code].map((x) => [x.pcu, x.short, x.reason])],
+      [1, 9, 2, [["PCU03", 3, "out_of_stock"], ["PCU04", 6, "out_of_stock"]]], "issueShortage (จ่ายไม่พอ) shows only the excepted LAB item: PCU03 short 3 · PCU04 short 6");
+    const au = (await mustOk("adminAuditLog", { limit: 100 }, ADM2)).entries;
+    eq(au.filter((e) => e.action === "issue_done_all").map((e) => e.pcu).sort(), ["PCU03", "PCU05", "PCU08"], "audit issue_done_all: one row per request");
+    const ae = au.find((e) => e.action === "issue_except" && e.pcu === "PCU03" && e.detail.startsWith("unit=LAB"));
+    ok(ae && ae.actor === D_LAB && ae.detail.includes(`${LABI.code}=2(out_of_stock:รอของเข้า)`) && ae.detail.includes("filled=1"), "audit issue_except detail (figures + filled)");
+
+    ok((await api("adminUsersRemove", { email: D_LAB }, ADM2)).ok && (await api("adminUsersRemove", { email: D_STORE }, ADM2)).ok, "2y: temporary dispensers removed");
+    await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2);
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   section("stock mode (2o): used / adj / calc_from + server recalc");
   {
     const M0 = "2026-10", M1 = PREV, M2 = CUR; // M0 = the trial round (FY2569) — a valid baseline since 2026-10-20 (no special-casing)

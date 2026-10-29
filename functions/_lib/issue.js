@@ -1,4 +1,4 @@
-// issue.js — บันทึกจ่ายจริง (phase 2c): issueLines · issueAll · issueDone · issueItem · adminItemIssue (functions/API.md §5.3).
+// issue.js — บันทึกจ่ายจริง (phase 2c): issueLines · issueAll · issueDone · issueItem · adminItemIssue + (2y) issueDoneAll · issueExcept (functions/API.md §5.3).
 // Staff = admin or dispenser (ctx.who = {email, role, units, backup}). A dispenser may only touch lines whose step.dispense_unit is one of
 // its units, and only while calMonth <= the round month (round m is dispensed in m−1 and m, brief 2j) — except on a request keyed by an admin
 // (requests.entry_by = 'admin', 2w R4: no time limit). Every write rides in the same D1 batch as its audit row.
@@ -300,4 +300,135 @@ export async function issueItem(ctx, p) {
     await recalcAfterIssue(DB, plan.map((x) => x.r.pcu), p.month); // 2o
   }
   return { updated: plan.map((x) => x.r.pcu), skipped };
+}
+
+// ---- whole round, one unit (2y) -------------------------------------------------------------------------------------------
+// issueDoneAll{month, unit} · issueExcept{month, unit, items, reason, note?}. Targets = every submitted/issued request of the month that has
+// requested lines of `unit` and no issue_status(unit) yet; a request past the dispenser's time window → skipped (not an error).
+// Only lines whose figures actually change are written (D1 quota); "= ขอ" lines go as one UPDATE … IN (…) per request.
+const FILL_CHUNK = 90; // + 3 bound params ≤ D1's 100
+
+const isFull = (l) => l.issued_total === requestedQty(l) && l.issued_op === (l.op || 0) && l.issued_pp === (l.pp || 0) && l.issue_reason == null && l.issue_note == null;
+
+async function roundUnitTargets(DB, who, month, unit) {
+  assertMonth(month);
+  assertUnitName(unit);
+  assertUnitAllowed(who, unit);
+  const [reqRes, lineRes, doneRes] = await Promise.all([
+    DB.prepare(`SELECT id, pcu, month, status, form_version_id, entry_by FROM requests WHERE month = ? AND status IN ('submitted','issued') ORDER BY pcu`).bind(month).all(),
+    DB.prepare(
+      `SELECT l.request_id, l.item_code, l.op, l.pp, l.issued_total, l.issued_op, l.issued_pp, l.issue_reason, l.issue_note
+         FROM request_lines l JOIN requests r ON r.id = l.request_id
+        WHERE r.month = ? AND r.status IN ('submitted','issued') AND (COALESCE(l.op,0) + COALESCE(l.pp,0)) > 0`
+    ).bind(month).all(),
+    DB.prepare(`SELECT request_id, dispense_unit FROM issue_status WHERE request_id IN (SELECT id FROM requests WHERE month = ?)`).bind(month).all(),
+  ]);
+  const linesBy = new Map(), doneBy = new Map(), forms = new Map();
+  for (const l of lineRes.results) { if (!linesBy.has(l.request_id)) linesBy.set(l.request_id, []); linesBy.get(l.request_id).push(l); }
+  for (const d of doneRes.results) { if (!doneBy.has(d.request_id)) doneBy.set(d.request_id, new Set()); doneBy.get(d.request_id).add(d.dispense_unit); }
+  const targets = [], skipped = [];
+  for (const r of reqRes.results) {
+    const key = r.form_version_id || 0;
+    if (!forms.has(key)) forms.set(key, await formOfRequest(DB, r));
+    const form = forms.get(key), lines = linesBy.get(r.id) || [], done = doneBy.get(r.id) || new Set();
+    const needed = neededUnits(form, lines);
+    if (!needed.has(unit) || done.has(unit)) continue;
+    if (windowClosed(who, month, r)) { skipped.push({ pcu: r.pcu, why: WINDOW_MSG }); continue; }
+    targets.push({ r, form, needed, done, unitLines: lines.filter((l) => unitOfCode(form, l.item_code) === unit) });
+  }
+  return { targets, skipped };
+}
+
+// UPDATE … SET issued = requested for `codes` of one request (reason/note cleared)
+function fillStmts(DB, reqId, codes, ts, actor) {
+  const out = [];
+  for (let i = 0; i < codes.length; i += FILL_CHUNK) {
+    const part = codes.slice(i, i + FILL_CHUNK);
+    out.push(DB.prepare(
+      `UPDATE request_lines SET issued_total = COALESCE(op,0) + COALESCE(pp,0), issued_op = COALESCE(op,0), issued_pp = COALESCE(pp,0),
+              issue_reason = NULL, issue_note = NULL, issued_at = ?, issued_by = ?
+        WHERE request_id = ? AND item_code IN (${part.map(() => "?").join(",")})`
+    ).bind(ts, actor, reqId, ...part));
+  }
+  return out;
+}
+
+// issue_status row + 'issued' when every needed unit is done (same rule as issueDone done:1) → resulting status
+function markDoneStmts(DB, t, unit, ts, actor, stmts) {
+  stmts.push(DB.prepare(`INSERT OR IGNORE INTO issue_status (request_id, dispense_unit, done_at, done_by) VALUES (?,?,?,?)`).bind(t.r.id, unit, ts, actor));
+  const allDone = [...t.needed].every((u) => u === unit || t.done.has(u));
+  if (allDone && t.r.status === "submitted") {
+    stmts.push(DB.prepare(`UPDATE requests SET status = 'issued', issued_seen_at = NULL WHERE id = ? AND status = 'submitted'`).bind(t.r.id));
+    return "issued";
+  }
+  return t.r.status;
+}
+
+export async function issueDoneAll(ctx, p) {
+  const { DB, who } = ctx;
+  const { targets, skipped } = await roundUnitTargets(DB, who, p.month, p.unit);
+  const ts = nowIso();
+  const stmts = [];
+  for (const t of targets) {
+    const codes = t.unitLines.filter((l) => l.issued_total === null || l.issued_total === undefined).map((l) => l.item_code); // typed figures stay
+    stmts.push(...fillStmts(DB, t.r.id, codes, ts, who.email));
+    const status = markDoneStmts(DB, t, p.unit, ts, who.email, stmts);
+    stmts.push(auditStmt(DB, who.email, who.role, "issue_done_all", t.r.pcu, p.month, `unit=${p.unit} filled=${codes.length} status=${status}`));
+  }
+  if (stmts.length) {
+    await batchChunked(DB, stmts);
+    await recalcAfterIssue(DB, targets.map((t) => t.r.pcu), p.month); // 2o
+  }
+  return { done: targets.map((t) => t.r.pcu), skipped };
+}
+
+export async function issueExcept(ctx, p) {
+  const { DB, who } = ctx;
+  if (!isObj(p.items)) throw err("BAD_REQUEST", "ต้องระบุ items");
+  const codes = Object.keys(p.items);
+  if (!codes.length) throw err("BAD_REQUEST", "ต้องเลือกรายการที่จ่ายไม่ครบอย่างน้อย 1 รายการ");
+  if (codes.length > MAX_LINES) throw err("BAD_REQUEST", "จำนวนรายการมากเกินไป");
+  if (!REASONS.includes(p.reason)) throw err("BAD_REQUEST", "จ่ายไม่ครบต้องระบุเหตุผล (ของหมด/รอจัดซื้อ หรือ อื่น ๆ)");
+  if (p.reason === "other" && !(isStr(p.note) && p.note.trim())) throw err("BAD_REQUEST", 'เหตุผล "อื่น ๆ" ต้องพิมพ์หมายเหตุ');
+  const { targets, skipped } = await roundUnitTargets(DB, who, p.month, p.unit);
+  const latest = await formForFy(DB, monthFy(p.month));
+  for (const code of codes) {
+    const ent = latest && latest.index.get(code);
+    if (!ent) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + code);
+    if (ent.step.dispense_unit !== p.unit) throw err("BAD_REQUEST", `รายการ ${code} ไม่ใช่ของหน่วย "${p.unit}"`);
+    if (!isObj(p.items[code])) throw err("BAD_REQUEST", `items.${code} ต้องเป็น {รพ.สต.: จำนวน}`);
+  }
+
+  // validate every cell before anything is written; a PCU that did not request the item is ignored
+  const picked = new Set(codes);
+  const plan = targets.map((t) => {
+    const custom = [], fill = [];
+    for (const l of t.unitLines) {
+      if (!picked.has(l.item_code)) { if (!isFull(l)) fill.push(l.item_code); continue; }
+      const raw = p.items[l.item_code][t.r.pcu];
+      if (raw === undefined || raw === null || raw === "") throw err("BAD_REQUEST", `ต้องกรอกยอดที่จ่ายของ ${t.r.pcu} รายการ ${l.item_code}`);
+      const v = parseIssueInput({ issued_total: raw, reason: p.reason, note: p.note }, requestedQty(l));
+      const sp = splitIssued(l.op || 0, l.pp || 0, v.total);
+      const same = l.issued_total === v.total && l.issued_op === sp.issued_op && l.issued_pp === sp.issued_pp && (l.issue_reason ?? null) === v.reason && (l.issue_note ?? null) === v.note;
+      custom.push({ l, v, same });
+    }
+    return { t, custom, fill };
+  });
+
+  const ts = nowIso();
+  const stmts = [];
+  let lines = 0;
+  for (const { t, custom, fill } of plan) {
+    for (const x of custom) if (!x.same) stmts.push(lineUpdate(DB, t.r.id, x.l.item_code, x.l, x.v, ts, who.email));
+    stmts.push(...fillStmts(DB, t.r.id, fill, ts, who.email));
+    lines += custom.filter((x) => !x.same).length + fill.length;
+    const status = markDoneStmts(DB, t, p.unit, ts, who.email, stmts);
+    stmts.push(auditStmt(DB, who.email, who.role, "issue_except", t.r.pcu, p.month,
+      clip(`unit=${p.unit} ${custom.map((x) => fmtLine(x.l.item_code, x.v)).join(" ")} filled=${fill.length} status=${status}`)));
+  }
+  if (stmts.length) {
+    await batchChunked(DB, stmts);
+    await recalcAfterIssue(DB, targets.map((t) => t.r.pcu), p.month); // 2o
+  }
+  return { done: targets.map((t) => t.r.pcu), skipped, lines };
 }

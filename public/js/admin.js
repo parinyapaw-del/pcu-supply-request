@@ -157,7 +157,7 @@ const READ_ACTIONS = new Set(["adminBootstrap", "adminRequests", "adminGetReques
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 2c issue actions answer FORBIDDEN for business rules too (unit not the dispenser's, "หมดเวลาแก้ไขการจ่าย") —
 // those must not end the session; only the auth-level FORBIDDEN messages (auth.js) do.
-const ISSUE_ACTIONS = new Set(["issueLines", "issueAll", "issueDone", "issueItem", "adminItemIssue", "issueShortage"]);
+const ISSUE_ACTIONS = new Set(["issueLines", "issueAll", "issueDone", "issueItem", "issueDoneAll", "issueExcept", "adminItemIssue", "issueShortage"]);
 function isSessionForbidden(action, err) {
   if (!ISSUE_ACTIONS.has(action)) return true;
   return /บัญชีนี้ไม่มีสิทธิ์|ไม่มีสิทธิ์เข้าถึง/.test(err.message || "");

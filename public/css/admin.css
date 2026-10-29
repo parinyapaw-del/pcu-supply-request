@@ -485,3 +485,14 @@
 .entry-table .num-input[data-dirty="1"] { background: var(--warn-bg); border-color: var(--warn); }
 .entry-table tr.row-hidden td { opacity: 0.6; }
 .entry-table tr.section-row td { background: var(--bg); }
+
+/* 2y: panel "ทั้งรอบ" */
+.t2b-round-btns { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.t2b-round-list { overflow-wrap: anywhere; }
+.t2b-wiz-list { max-height: 360px; overflow: auto; margin: 8px 0; border: 1px solid var(--line); border-radius: 6px; }
+.t2b-wiz-item { display: flex; gap: 8px; align-items: flex-start; padding: 6px 10px; min-height: 36px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.t2b-wiz-item input { margin-top: 4px; }
+.t2b-wiz-colname { max-width: 140px; font-weight: 400; white-space: normal; }
+.t2b-wiz-reason { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 8px 0; }
+.t2b-wiz-reason .t2b-wiz-note { flex: 1 1 220px; margin-top: 0; }
+.t2b-wiz-sum li { margin: 4px 0; }
