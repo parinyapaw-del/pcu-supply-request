@@ -12,7 +12,7 @@
 import { getOrderedSteps, getItemRows } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
-import { esc, requestOf, isEditable, statusText, monthLabel, roundTitle, roundOf, isTrialMonth, alertDialog, confirmDialog, formForRequest } from "./common.js";
+import { esc, requestOf, isEditable, statusText, monthLabel, roundTitle, roundOf, isTrialMonth, alertDialog, confirmDialog, formForRequest, requesterOf } from "./common.js";
 import { trySend } from "./send.js";
 import { requestPdfReady, startPdfDownload, openPdfInline, pdfErrorHtml } from "../pdf_client.js";
 
@@ -21,10 +21,12 @@ const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 4
 const SIG_DOTS_LONG = "………………………………………..……………..";
 const SIG_NAME_LINE = "( .......................................................... )";
 const SIG_DATE_LINE = "วันที่ .......... / .......... / ..........";
+const SIG_PHONE_LINE = "โทร : ….....................................................................................";
 
-function fillOrDots(dots, value, fill) {
-  if (!fill || value == null || value === "") return esc(dots);
-  return `<span class="fill-slot" style="min-width:${(dots.length * 0.15).toFixed(1)}em">${esc(String(value))}</span>`;
+// 2x (Q4/R6): the header has no dotted leaders — an empty slot is blank space of the same width, a filled one is plain text.
+function headerSlot(value, widthEm) {
+  const v = value == null || value === "" ? "&nbsp;" : esc(String(value));
+  return `<span class="blank-slot" style="min-width:${widthEm.toFixed(1)}em">${v}</span>`;
 }
 
 // Steps that are printed: all of them in order, except steps switched off (`active === false`, form editor 2d) — a closed step is still printed
@@ -41,11 +43,16 @@ function blankRequestFor(pcu, month) {
 
 const PREVIEW_KEY = "pcuSupply2:formPreview";
 
-// 2h: per-print header options chosen on the print page: the sheet's "วันที่" (free date) and "ประจำเดือน" (only the month
-// after the round); null = dotted for handwriting. Not stored on the request.
+// 2h: per-print header options chosen on the print page: the sheet's "วันที่" (free date) and "ประจำเดือน" (the round month);
+// null = blank for handwriting. Not stored on the request. 2x: + phone (the "โทร" line, per print) and requester_name (who the
+// request prints for — set by the admin, frozen at send; not a user option, carried here so every page builder gets it).
 function normPrintOpts(opts) {
-  return { doc_date: (opts && opts.doc_date) || null, supply_month: (opts && opts.supply_month) || null };
+  return {
+    doc_date: (opts && opts.doc_date) || null, supply_month: (opts && opts.supply_month) || null,
+    phone: (opts && opts.phone) || null, requester_name: (opts && opts.requester_name) || null,
+  };
 }
+const PHONE_RE = /^[0-9+\- ]{0,30}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const printOptsKey = (pcuCode, month) => `pcuSupply2:printOpts:${pcuCode}:${month}`;
 
@@ -74,7 +81,7 @@ function withPrices(form, priceOf) {
 export async function renderPrint(container, app, params) {
   const asAdmin = params && params.get("as") === "admin";
   const isPreview = asAdmin && params.get("preview") === "1";
-  let month, pcu, form, hidden, request;
+  let month, pcu, form, hidden, request, requester = null;
   let printOpts = normPrintOpts(null); // 2h: the 2d preview keeps these blank (no controls)
 
   if (isPreview) {
@@ -108,6 +115,7 @@ export async function renderPrint(container, app, params) {
     }
     pcu = data.pcu;
     request = data.request || blankRequestFor(pcuParam, month);
+    requester = data.requester_name || null; // 2x
     // 2p: print the price the sheet was sent with (price_print), like the server PDF
     const ls = request.lines || {};
     form = withPrices(data.form, (r) => (ls[r.code] && (ls[r.code].price_print ?? ls[r.code].price_snapshot)) ?? r.price);
@@ -120,11 +128,13 @@ export async function renderPrint(container, app, params) {
     const rp = (app.boot.prices && app.boot.prices[month]) || {}; // 2p: price of this round
     form = withPrices(formForRequest(app, request), (r) => rp[r.code] ?? r.price);
     hidden = app.boot.hidden || [];
+    requester = requesterOf(pcu, request); // 2x
   }
 
   const steps = printableSteps(form, request);
   const thisRound = !asAdmin && !isPreview && app.boot ? roundOf(app, month) : null;
   const trialRound = !!(thisRound && thisRound.trial) || (!asAdmin && !isPreview && isTrialMonth(app, month));
+  const sentReq = request.status === "submitted" || request.status === "issued"; // 2x R7: the admin may rename a sent request
   const wrap = document.createElement("div");
   wrap.className = "print-wrap";
 
@@ -139,9 +149,19 @@ export async function renderPrint(container, app, params) {
     </div>
     ${isPreview ? "" : `<div class="print-options">
       <label>ลงวันที่เอกสาร <input type="date" id="print-doc-date"></label>
-      <label>เบิกประจำเดือน <select id="print-supply-month"><option value="">เว้นว่าง (จุดไข่ปลา)</option>${trialRound ? "" : `<option value="${esc(month)}">${esc(monthLabel(month))}</option>`}</select></label>
-      <span class="muted">เว้นว่าง = พิมพ์เป็นจุดไข่ปลาให้เขียนเอง</span>
-    </div>`}
+      <label>เบิกประจำเดือน <select id="print-supply-month"><option value="">เว้นว่าง</option>${trialRound ? "" : `<option value="${esc(month)}">${esc(monthLabel(month))}</option>`}</select></label>
+      <span class="muted">เว้นว่าง = เว้นที่ว่างให้เขียนเอง</span>
+    </div>
+    <div class="print-options">
+      <label>โทร <input type="tel" id="print-phone" maxlength="30" inputmode="tel" autocomplete="tel" placeholder="เว้นว่าง = จุดให้เขียนเอง"></label>
+      ${asAdmin ? "" : `<label><input type="checkbox" id="print-phone-default"> จำเป็นค่าเริ่มต้น</label>`}
+      <span class="muted" id="print-requester">ผู้เบิกในใบ: ${requester ? esc(requester) : "— (ยังไม่ได้ตั้ง · ผู้ดูแลระบบตั้งให้)"}</span>
+    </div>
+    ${asAdmin && sentReq ? `<div class="print-options">
+      <label>แก้ชื่อผู้เบิกในใบนี้ <input type="text" id="print-requester-input" maxlength="80" value="${esc(requester || "")}"></label>
+      <button type="button" class="btn btn-secondary btn-sm" id="btn-set-requester">บันทึกชื่อในใบนี้</button>
+      <span class="muted">มีผลเฉพาะใบนี้ · ชื่อตั้งต้นของ รพ.สต. แก้ที่แท็บ รพ.สต.</span>
+    </div>` : ""}`}
     <div class="print-actions">
       <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
       <button type="button" class="btn btn-secondary" id="btn-do-pdf">ดาวน์โหลด PDF</button>
@@ -206,10 +226,14 @@ export async function renderPrint(container, app, params) {
     renderStatus();
   }
 
-  // 2h: restore the options last used for this PCU + round (a stale value is dropped), reflect them into the controls
+  // 2h: restore the options last used for this PCU + round (a stale value is dropped), reflect them into the controls.
+  // 2x: phone = the remembered one (same key), else the pcu's default (pcu.phone, set by the pcu or the admin).
   const docDateInput = document.getElementById("print-doc-date");
   const supplySelect = document.getElementById("print-supply-month");
+  const phoneInput = document.getElementById("print-phone");
+  const phoneDefault = document.getElementById("print-phone-default");
   const optsKey = printOptsKey(pcu.code, month);
+  let savedPhone;
   try {
     const saved = JSON.parse(localStorage.getItem(optsKey) || "null");
     if (saved && typeof saved === "object") {
@@ -217,18 +241,58 @@ export async function renderPrint(container, app, params) {
         doc_date: typeof saved.doc_date === "string" && DATE_RE.test(saved.doc_date) ? saved.doc_date : null,
         supply_month: saved.supply_month === month ? saved.supply_month : null,
       });
+      if (typeof saved.phone === "string" && PHONE_RE.test(saved.phone)) savedPhone = saved.phone;
     }
   } catch (e) { /* storage unavailable or corrupt: start blank */ }
+  printOpts = normPrintOpts({ ...printOpts, phone: savedPhone !== undefined ? savedPhone : pcu.phone || null, requester_name: requester });
   docDateInput.value = printOpts.doc_date || "";
   supplySelect.value = printOpts.supply_month || "";
+  phoneInput.value = printOpts.phone || "";
 
   function onPrintOptsChange() {
-    printOpts = normPrintOpts({ doc_date: docDateInput.value, supply_month: supplySelect.value });
-    try { localStorage.setItem(optsKey, JSON.stringify(printOpts)); } catch (e) { /* storage unavailable */ }
+    const ph = phoneInput.value.trim();
+    phoneInput.setCustomValidity(PHONE_RE.test(ph) ? "" : "ใช้ได้เฉพาะตัวเลข + - และช่องว่าง");
+    printOpts = normPrintOpts({ doc_date: docDateInput.value, supply_month: supplySelect.value, phone: PHONE_RE.test(ph) ? ph : printOpts.phone, requester_name: requester });
+    const { requester_name, ...remember } = printOpts;
+    try { localStorage.setItem(optsKey, JSON.stringify({ ...remember, phone: printOpts.phone || "" })); } catch (e) { /* storage unavailable */ }
     renderPages();
   }
   docDateInput.addEventListener("change", onPrintOptsChange);
   supplySelect.addEventListener("change", onPrintOptsChange);
+  phoneInput.addEventListener("change", onPrintOptsChange);
+  // 2x R7: admin overrides the requester name of this sent request (adminSetRequestRequester; admin only — a dispenser gets FORBIDDEN)
+  const reqBtn = document.getElementById("btn-set-requester");
+  if (reqBtn) {
+    reqBtn.addEventListener("click", async () => {
+      const name = document.getElementById("print-requester-input").value.trim();
+      if (!name) { await alertDialog("แก้ชื่อผู้เบิก", "<p>กรอกชื่อผู้เบิก</p>"); return; }
+      reqBtn.disabled = true;
+      try {
+        const r = await call("adminSetRequestRequester", { pcu: pcu.code, month, name }, { token: getAdminToken() });
+        requester = r.requester_name; printOpts.requester_name = requester;
+        document.getElementById("print-requester").textContent = "ผู้เบิกในใบ: " + requester;
+        renderPages();
+      } catch (e) {
+        await alertDialog("แก้ชื่อผู้เบิกไม่สำเร็จ", `<p>${esc((e && e.message) || "ลองใหม่อีกครั้ง")}</p>`);
+      } finally { reqBtn.disabled = false; }
+    });
+  }
+  // R8 "จำเป็นค่าเริ่มต้น": the pcu stores the number on screen as its default (pcuSetPhone); the admin sets defaults in the รพ.สต. tab
+  if (phoneDefault) {
+    phoneDefault.addEventListener("change", async () => {
+      if (!phoneDefault.checked) return;
+      onPrintOptsChange();
+      try {
+        const r = await call("pcuSetPhone", { phone: printOpts.phone || "" }, { token: getPcuToken() });
+        pcu.phone = r.phone;
+        if (app.boot && app.boot.pcu) app.boot.pcu.phone = r.phone;
+      } catch (e) {
+        phoneDefault.checked = false;
+        await alertDialog("บันทึกเบอร์ไม่สำเร็จ", `<p>${esc((e && e.message) || "ลองใหม่อีกครั้ง")}</p>`);
+      }
+    });
+    phoneInput.addEventListener("input", () => { phoneDefault.checked = false; });
+  }
 
   renderPages();
 
@@ -246,6 +310,7 @@ export async function renderPrint(container, app, params) {
     const p = asAdmin ? { pcu: pcu.code, month } : { month };
     if (printOpts.doc_date) p.doc_date = printOpts.doc_date;
     if (printOpts.supply_month) p.supply_month = printOpts.supply_month;
+    if (printOpts.phone) p.phone = printOpts.phone; // 2x
     return [asAdmin ? "adminRequestPdf" : "requestPdf", p];
   };
   const tokenNow = () => asAdmin ? getAdminToken() : getPcuToken();
@@ -262,6 +327,7 @@ export async function renderPrint(container, app, params) {
       if (needsSend()) {
         if (!(await trySend(app, month))) return;
         request = requestOf(app, month) || request;
+        requester = requesterOf(pcu, request); printOpts.requester_name = requester; // 2x: frozen at send
         renderPages();
       }
       if (mode === "direct") {
@@ -307,6 +373,7 @@ export async function renderPrint(container, app, params) {
       if (needsSend()) {
         if (!(await trySend(app, month))) return;
         request = requestOf(app, month) || request;
+        requester = requesterOf(pcu, request); printOpts.requester_name = requester; // 2x: frozen at send
         renderPages();
       }
       const token = tokenNow();
@@ -369,13 +436,13 @@ export function buildPrintPage(step, request, pcu, hidden, monthKey, pageNumber,
   tbody.appendChild(rowLabelValue("เรื่อง", step.subject));
   tbody.appendChild(rowLabelValue("เรียน", step.to));
   tbody.appendChild(rowBlank());
-  tbody.appendChild(rowIKhaphachao(pcu));
+  tbody.appendChild(rowIKhaphachao(pcu, printOpts.requester_name));
   tbody.appendChild(rowMonthYear(printOpts));
   appendTableHeader(tbody);
   appendBodyRows(tbody, step, request, hidden);
   appendTotalRow(tbody, step, request, hidden);
   tbody.appendChild(rowBlank());
-  appendSignatureBlock(tbody, step, pageNumber);
+  appendSignatureBlock(tbody, step, pageNumber, printOpts);
 
   table.appendChild(tbody);
   const sheet = document.createElement("div");
@@ -430,11 +497,11 @@ function rowTitle(step) {
 function rowReceiptNo() {
   return tr("row-h20", [
     td("", { colspan: 11, cls: "cell-noborder" }),
-    td("เลขที่ใบเบิก ..............", { colspan: 2, cls: "cell-noborder cell-left" }),
+    td(`เลขที่ใบเบิก ${headerSlot(null, 2.1)}`, { colspan: 2, cls: "cell-noborder cell-left" }),
   ], 20);
 }
 
-// "วันที่" = the document date picked on the print page (opts.doc_date "YYYY-MM-DD"); dotted when none is picked (2h).
+// "วันที่" = the document date picked on the print page (opts.doc_date "YYYY-MM-DD"); blank when none is picked (2h, 2x no dots).
 // It is no longer filled from the request's submitted_at.
 function rowDate(opts) {
   let dayVal = null, monthVal = null, yearVal = null;
@@ -442,7 +509,7 @@ function rowDate(opts) {
   if (m) {
     dayVal = m[2]; monthVal = THAI_MONTHS[m[1] - 1] || null; yearVal = beYear(m[0]);
   }
-  const text = `วันที่ ${fillOrDots("...........", dayVal, true)} /${fillOrDots(".................", monthVal, true)}/${fillOrDots("............", yearVal, true)}`;
+  const text = `วันที่ ${headerSlot(dayVal, 1.7)} /${headerSlot(monthVal, 2.6)}/${headerSlot(yearVal, 1.8)}`;
   return tr("row-h20", [
     td("", { colspan: 7, cls: "cell-noborder" }),
     td(text, { colspan: 3, cls: "cell-noborder cell-left" }),
@@ -462,18 +529,18 @@ function rowBlank() {
   return tr("row-h20", [td("", { colspan: 13, cls: "cell-noborder" })], 20);
 }
 
-function rowIKhaphachao(pcu) {
+function rowIKhaphachao(pcu, requester) {
   const printName = pcu ? pcu.print_name : "";
-  // 2h: PCU14/PCU15 (group "พิเศษ") print the full print_name without the รพ.สต. prefix
+  // 2h: PCU14/PCU15 (group "พิเศษ") print the full print_name without the รพ.สต. prefix · 2x: the requester name after "ข้าพเจ้า"
   const special = !!pcu && pcu.group === "พิเศษ";
-  const text = `ข้าพเจ้า ${SIG_DOTS_LONG} ผู้มีสิทธิเบิกวัสดุของ${special ? "" : "สถานพยาบาลโรงพยาบาลส่งเสริมสุขภาพตำบล"} ${fillOrDots("..........................", printName, true)}`;
+  const text = `ข้าพเจ้า ${headerSlot(requester, 9)} ผู้มีสิทธิเบิกวัสดุของ${special ? "" : "สถานพยาบาลโรงพยาบาลส่งเสริมสุขภาพตำบล"} ${headerSlot(printName, 3.9)}`;
   return tr("row-h20", [
     td("", { colspan: 1, cls: "cell-noborder" }),
     td(text, { colspan: 12, cls: "cell-noborder cell-left" }),
   ], 20);
 }
 
-// "ประจำเดือน … พ.ศ. …" = opts.supply_month ("YYYY-MM" = the round month itself, brief 2j); both slots dotted when null.
+// "ประจำเดือน … พ.ศ. …" = opts.supply_month ("YYYY-MM" = the round month itself, brief 2j); both slots blank when null.
 function rowMonthYear(opts) {
   let monthName = null, be = null;
   if (opts.supply_month) {
@@ -481,7 +548,7 @@ function rowMonthYear(opts) {
     monthName = THAI_MONTHS[month - 1] || null;
     be = beYear(year);
   }
-  const text = `มีความประสงค์จะขอเบิกวัสดุเพื่อใช้ในงานราชการ  ประจำเดือน ${fillOrDots("........................................", monthName, true)} พ.ศ. ${fillOrDots("..........................", be, true)} ดังรายการต่อไปนี้`;
+  const text = `มีความประสงค์จะขอเบิกวัสดุเพื่อใช้ในงานราชการ  ประจำเดือน ${headerSlot(monthName, 6)} พ.ศ. ${headerSlot(be, 3.9)} ดังรายการต่อไปนี้`;
   return tr("row-h20", [td(text, { colspan: 13, cls: "cell-noborder cell-left" })], 20);
 }
 
@@ -573,7 +640,10 @@ function gap(n) {
 
 // Column index reference: A0 B1 C2 D3 E4 F5 G6 H7 I8 J9 K10 L11 M12 (13 total).
 // Every row below must sum its colspans to exactly 13.
-function appendSignatureBlock(tbody, step, pageNumber) {
+// 2x: dotted leaders stay here; the requester name replaces the dots in "( … )" under ผู้เบิก, and the "โทร :" line (xls row 45) under
+// the receiver carries opts.phone (dots when none).
+function appendSignatureBlock(tbody, step, pageNumber, opts = {}) {
+  const requesterLine = opts.requester_name ? esc(`( ${opts.requester_name} )`) : SIG_NAME_LINE;
   tbody.appendChild(tr("row-h20", [
     td("ลงชื่อ", { cls: "cell-noborder cell-right" }),
     td(SIG_DOTS_LONG, { colspan: 4, cls: "cell-noborder cell-center" }),
@@ -585,7 +655,7 @@ function appendSignatureBlock(tbody, step, pageNumber) {
   ], 20));
   tbody.appendChild(tr("row-h20", [
     gap(1),
-    td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
+    td(requesterLine, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1), gap(1), gap(1),
     td(SIG_NAME_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(1),
@@ -624,6 +694,10 @@ function appendSignatureBlock(tbody, step, pageNumber) {
     gap(1),
     td(SIG_DATE_LINE, { colspan: 4, cls: "cell-noborder cell-center" }),
     gap(8),
+  ], 20));
+  tbody.appendChild(tr("row-h20", [
+    td(opts.phone ? `โทร : ${esc(opts.phone)}` : SIG_PHONE_LINE, { colspan: 6, cls: "cell-noborder cell-left" }),
+    gap(7),
   ], 20));
   tbody.appendChild(tr("row-h23", [
     td(`&lt; ${pageNumber} &gt;`, { colspan: 13, cls: "cell-noborder cell-center" }),

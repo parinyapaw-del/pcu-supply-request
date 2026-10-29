@@ -1,5 +1,5 @@
 // admin.js — admin / dispenser actions (functions/API.md §5). ctx.who = {email, role, units, backup}.
-import { err, assertLimitValue, isStr, jparse } from "./http.js";
+import { err, assertLimitValue, isStr, jparse, phoneParam } from "./http.js";
 import {
   SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, insertStatements,
   formForFy, latestForm, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
@@ -12,7 +12,7 @@ import {
   currentMonth, currentRound, fyExcelMonths, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso,
 } from "./time.js";
 import {
-  LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, roundInfo,
+  LINE_COLS, REQ_COLS, getLines, getRequestRow, getRoundRows, issueInfoFrom, requestId, requestObj, requesterFor, roundInfo,
 } from "./views.js";
 import { runBackup } from "./backup.js";
 import { priceFor, priceHistories, roundPriceOverrides } from "./price.js";
@@ -26,7 +26,7 @@ function ctxFy(cfgAll) {
 }
 
 async function assertPcu(DB, code) {
-  const row = await DB.prepare(`SELECT code, name, print_name, "group" AS grp FROM pcus WHERE code = ?`).bind(String(code || "")).first();
+  const row = await DB.prepare(`SELECT code, name, print_name, "group" AS grp, requester_name, phone FROM pcus WHERE code = ?`).bind(String(code || "")).first();
   if (!row) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้: " + code);
   return row;
 }
@@ -165,7 +165,7 @@ export async function adminBootstrap(ctx) {
   const [form, fvRes, pcuRes, reqMonths, roundRes] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT id, fy, created_at, created_by, note FROM form_versions ORDER BY id DESC`).all(),
-    DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_locked_until, pin_fail, pin_custom, login_count, last_login_at FROM pcus ORDER BY code`).all(),
+    DB.prepare(`SELECT code, name, print_name, "group" AS grp, pin_locked_until, pin_fail, pin_custom, login_count, last_login_at, requester_name, phone FROM pcus ORDER BY code`).all(),
     DB.prepare(`SELECT DISTINCT month FROM requests ORDER BY month DESC`).all(),
     DB.prepare(`SELECT * FROM rounds`).all(),
   ]);
@@ -187,6 +187,7 @@ export async function adminBootstrap(ctx) {
           pin_locked_until: r.pin_locked_until && Date.parse(r.pin_locked_until) > nowMs ? r.pin_locked_until : null,
           pin_fail: Number(r.pin_fail) || 0, pin_custom: !!r.pin_custom,
           login_count: Number(r.login_count) || 0, last_login_at: r.last_login_at || null, // 2m
+          requester_name: r.requester_name || null, phone: r.phone || null, // 2x
         }
       : { code: r.code, name: r.name, print_name: r.print_name || r.name, group: r.grp }),
     form: formPublic(form),
@@ -345,7 +346,11 @@ export async function adminGetRequest(ctx, p) {
   return {
     request: reqRow ? requestObj(reqRow, lines, true) : null,
     issue,
-    pcu: { code: pcuRow.code, name: pcuRow.name, print_name: pcuRow.print_name || pcuRow.name, group: pcuRow.grp },
+    pcu: {
+      code: pcuRow.code, name: pcuRow.name, print_name: pcuRow.print_name || pcuRow.name, group: pcuRow.grp,
+      requester_name: pcuRow.requester_name || null, phone: pcuRow.phone || null, // 2x
+    },
+    requester_name: await requesterFor(DB, pcuRow, reqRow), // 2x: the name this request prints with (frozen at send, see views.requesterFor)
     hidden: hid.map((r) => r.item_code),
     form_version_id: form ? form.id : null,
     form: formPublic(form),
@@ -693,19 +698,70 @@ export async function adminPcuEdit(ctx, p) {
   const { DB, who } = ctx;
   const code = String(p.code ?? "").trim().toUpperCase();
   const row = await assertPcu(DB, code);
-  const cur = { code: row.code, name: row.name, print_name: row.print_name || row.name, group: row.grp ?? null };
+  const cur = {
+    code: row.code, name: row.name, print_name: row.print_name || row.name, group: row.grp ?? null,
+    requester_name: row.requester_name || null, phone: row.phone || null,
+  };
   const next = { ...cur };
   if (p.name !== undefined) next.name = pcuName(p.name);
   if (p.print_name !== undefined) next.print_name = pcuPrintName(p.print_name, next.name);
   if (p.group !== undefined) next.group = pcuGroup(p.group);
+  if (p.requester_name !== undefined) next.requester_name = requesterName(p.requester_name, true); // 2x
+  if (p.phone !== undefined) next.phone = phoneParam(p.phone); // 2x
   const diff = {};
-  for (const k of ["name", "print_name", "group"]) if (next[k] !== cur[k]) diff[k] = [cur[k], next[k]];
+  for (const k of ["name", "print_name", "group", "requester_name", "phone"]) if (next[k] !== cur[k]) diff[k] = [cur[k], next[k]];
   if (!Object.keys(diff).length) throw err("BAD_REQUEST", "ไม่มีข้อมูลที่เปลี่ยน");
-  await DB.batch([
-    DB.prepare(`UPDATE pcus SET name = ?, print_name = ?, "group" = ? WHERE code = ?`).bind(next.name, next.print_name, next.group, code),
+  const ts = nowIso();
+  const stmts = [
+    DB.prepare(`UPDATE pcus SET name = ?, print_name = ?, "group" = ?, requester_name = ?, phone = ? WHERE code = ?`)
+      .bind(next.name, next.print_name, next.group, next.requester_name, next.phone, code),
     auditStmt(DB, who.email, who.role, "adminPcuEdit", code, "", JSON.stringify(diff)),
-  ]);
+  ];
+  if (diff.requester_name) {
+    // 2x Q2: one log row per name change (a cleared name is logged as NULL) · rows older than 2 years go on the same write
+    stmts.push(
+      DB.prepare(`INSERT OR IGNORE INTO requester_log (pcu, name, set_at, set_by) VALUES (?,?,?,?)`).bind(code, next.requester_name, ts, who.email),
+      DB.prepare(`DELETE FROM requester_log WHERE pcu = ? AND set_at < ?`).bind(code, new Date(Date.parse(ts) - REQUESTER_LOG_MS).toISOString()),
+    );
+  }
+  await DB.batch(stmts);
   return { pcu: next };
+}
+
+// ---- 2x requester name ------------------------------------------------------------------------------------------------------------------
+const REQUESTER_LOG_MS = 2 * 366 * 86400000; // Q2: the log keeps 2 years
+function requesterName(v, allowEmpty) {
+  if (v === null && allowEmpty) return null;
+  if (typeof v !== "string") throw err("BAD_REQUEST", "ชื่อผู้เบิกไม่ถูกต้อง");
+  const s = v.trim().replace(/\s+/g, " ");
+  if (s.length > 80) throw err("BAD_REQUEST", "ชื่อผู้เบิกยาวได้ไม่เกิน 80 ตัวอักษร");
+  if (!s && !allowEmpty) throw err("BAD_REQUEST", "กรอกชื่อผู้เบิก");
+  return s || null;
+}
+
+// adminRequesterLog{pcu} → {log:[{name, set_at, set_by}]} newest first (name null = cleared)
+export async function adminRequesterLog(ctx, p) {
+  const { DB } = ctx;
+  const row = await assertPcu(DB, p.pcu);
+  const { results } = await DB.prepare(`SELECT name, set_at, set_by FROM requester_log WHERE pcu = ? ORDER BY set_at DESC`).bind(row.code).all();
+  return { log: results.map((r) => ({ name: r.name ?? null, set_at: r.set_at, set_by: r.set_by || "" })) };
+}
+
+// adminSetRequestRequester{pcu, month, name} (R7) — override the name printed on ONE sent request (1–80 chars). Writes only on change.
+export async function adminSetRequestRequester(ctx, p) {
+  const { DB, who } = ctx;
+  const pcuRow = await assertPcu(DB, p.pcu);
+  assertMonthParam(p.month);
+  const name = requesterName(p.name, false);
+  const reqRow = await getRequestRow(DB, pcuRow.code, p.month);
+  if (!reqRow || !(reqRow.status === "submitted" || reqRow.status === "issued")) throw err("NOT_FOUND", "แก้ชื่อผู้เบิกได้เฉพาะใบที่ส่งแล้ว");
+  const before = await requesterFor(DB, pcuRow, reqRow);
+  if (reqRow.requester_name === name) return { requester_name: name };
+  await DB.batch([
+    DB.prepare(`UPDATE requests SET requester_name = ? WHERE id = ?`).bind(name, reqRow.id),
+    auditStmt(DB, who.email, who.role, "adminSetRequestRequester", pcuRow.code, p.month, JSON.stringify([before, name])),
+  ]);
+  return { requester_name: name };
 }
 
 // ---- PIN / hidden --------------------------------------------------------------------------------------------------------------------------

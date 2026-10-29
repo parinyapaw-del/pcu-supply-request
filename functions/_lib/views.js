@@ -5,7 +5,7 @@ import { UNITS } from "./auth.js";
 import { baselineFor } from "./stock.js";
 
 export const REQ_COLS =
-  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at,entry_by";
+  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at,entry_by,requester_name";
 export const LINE_COLS =
   "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from,price_print";
 
@@ -23,6 +23,7 @@ export function requestObj(row, lines, admin = false) {
     admin_note: row.admin_note || null, admin_note_at: row.admin_note_at || null, issued_seen_at: row.issued_seen_at || null,
     edited_after_submit: !!(row.submitted_at && row.updated_at && row.updated_at > row.submitted_at),
     entry_by: row.entry_by || null, // 2w: 'admin' = an admin keyed/edited this request (sticky) · null = the pcu
+    requester_name: row.requester_name ?? null, // 2x: name frozen at send (null = not sent yet, or sent before 2x — see requesterFor)
   };
   if (lines) {
     const m = {};
@@ -43,6 +44,28 @@ export function requestObj(row, lines, admin = false) {
   }
   return out;
 }
+
+// ---- 2x requester name --------------------------------------------------------------------------------------------------
+// The pcu's first logged requester name (requests sent before 2x print with it), or null.
+export async function firstRequester(DB, pcu) {
+  const r = await DB.prepare(`SELECT name FROM requester_log WHERE pcu = ? ORDER BY set_at ASC LIMIT 1`).bind(pcu).first();
+  return (r && r.name) || null;
+}
+// The name printed on a request: sent → requests.requester_name (frozen at send) ?? first logged name ?? the pcu's current name ·
+// not sent → the pcu's current name. null = none set (the sheet prints dots / a blank).
+export async function requesterFor(DB, pcuRow, reqRow) {
+  const cur = (pcuRow && pcuRow.requester_name) || null;
+  if (!reqRow || !(reqRow.status === "submitted" || reqRow.status === "issued")) return cur;
+  if (reqRow.requester_name) return reqRow.requester_name;
+  return (await firstRequester(DB, pcuRow.code)) || cur;
+}
+
+// SQL for `UPDATE requests SET requester_name = <this>` inside a send (bind: pcu, pcu, pcu). Frozen at the FIRST send — a re-send keeps it
+// (Q1/Q2: a sent sheet keeps the name it was sent with; R7 adminSetRequestRequester overrides). A request sent before 2x (first_submitted_at set,
+// requester_name NULL) gets what requesterFor already printed for it: the first logged name, else the current name.
+export const REQUESTER_ON_SEND_SQL =
+  `COALESCE(requester_name, CASE WHEN first_submitted_at IS NULL THEN (SELECT requester_name FROM pcus WHERE code = ?)
+     ELSE COALESCE((SELECT name FROM requester_log WHERE pcu = ? ORDER BY set_at ASC LIMIT 1), (SELECT requester_name FROM pcus WHERE code = ?)) END)`;
 
 export async function getRequestRow(DB, pcu, month) {
   return DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcu, month).first();

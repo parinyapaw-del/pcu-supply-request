@@ -341,14 +341,33 @@ export function renderTab10(container, ctx) {
     });
     if (!res) return;
     const code = res.code.toUpperCase();
-    ts.draft.steps.push({
+    const step = {
       code, order: ts.draft.steps.length + 1, sheet: "แบบ ใหม่", title: "ใบเบิก…", subject: "",
       to: "ผู้อำนวยการโรงพยาบาลอ่างทอง", dispense_unit: "พัสดุ", active: true, rows: []
-    });
+    };
+    copyGroupHeader(step); // 2x R5: a new page takes the header of its dispense unit's pages
+    ts.draft.steps.push(step);
     ts.sel = code; ts.focusIdx = null;
     touch(); drawAll();
     const f = fieldsCard.querySelector("#t10-f-sheet");
     if (f) { f.focus(); f.select(); }
+  }
+
+  // ---- 2x R5: the sheet header (title / subject / to) belongs to the dispense unit: editing it on one page writes every page of that unit
+  const HEADER_KEYS = ["title", "subject", "to"];
+  const groupOf = (s) => ts.draft.steps.filter((x) => x.dispense_unit === s.dispense_unit);
+  function copyGroupHeader(s) {
+    const src = ts.draft.steps.find((x) => x !== s && x.dispense_unit === s.dispense_unit);
+    if (src) HEADER_KEYS.forEach((k) => { s[k] = src[k] || ""; });
+  }
+  function groupLabel(s) {
+    let pageNo = 0;
+    const pages = [];
+    ts.draft.steps.forEach((x) => {
+      if (isActive(x)) pageNo += 1;
+      if (x.dispense_unit === s.dispense_unit) pages.push(isActive(x) ? String(pageNo) : `${x.code} (ปิด)`);
+    });
+    return `หัวใบ (ชื่อเรื่อง / เรื่อง / เรียน) แก้ครั้งเดียวมีผลกับหน้า ${pages.join(", ")} (${s.dispense_unit}) ทั้งปีงบเมื่อบันทึก`;
   }
 
   // ---- page fields -------------------------------------------------------------------------------------------
@@ -361,7 +380,8 @@ export function renderTab10(container, ctx) {
     const text = (key, label, maxlength) => {
       const input = el("input", { type: "text", id: "t10-f-" + key, maxlength, value: s[key] || "", autocomplete: "off" });
       input.addEventListener("input", () => {
-        s[key] = input.value;
+        if (HEADER_KEYS.includes(key)) groupOf(s).forEach((x) => { x[key] = input.value; });
+        else s[key] = input.value;
         touch();
         if (key === "sheet") {
           const chip = stripCard.querySelector(`.t10-chip[data-step="${CSS.escape(s.code)}"] span:nth-child(2)`);
@@ -376,9 +396,10 @@ export function renderTab10(container, ctx) {
     text("to", "เรียน", 120);
     const unit = el("select", { class: "select-input", id: "t10-f-unit" });
     DISPENSE_UNITS.forEach((u) => unit.appendChild(el("option", { value: u, selected: s.dispense_unit === u }, u)));
-    unit.addEventListener("change", () => { s.dispense_unit = unit.value; touch(); });
+    unit.addEventListener("change", () => { s.dispense_unit = unit.value; copyGroupHeader(s); touch(); drawFields(); });
     grid.appendChild(el("label", { class: "admin-form-field" }, [el("span", {}, "หน่วยจ่าย"), unit]));
     fieldsCard.appendChild(grid);
+    fieldsCard.appendChild(el("p", { class: "admin-note", id: "t10-head-group" }, groupLabel(s)));
   }
 
   // ---- rows table ---------------------------------------------------------------------------------------------
@@ -708,7 +729,8 @@ export function renderTab10(container, ctx) {
       }
       const out = await ctx.adminCall("adminFormSave", payload);
       if (out.saved) {
-        toast(`บันทึกฟอร์ม version #${out.form.id} แล้ว`);
+        // 2x R5: out.warnings = a unit whose pages carry different headers (an older form) — shown, never blocks
+        toast(`บันทึกฟอร์ม version #${out.form.id} แล้ว${out.warnings && out.warnings.length ? " · ⚠ " + out.warnings.join(" · ") : ""}`);
         ts.dirty = false;
         clearRequestCache(); // back-dated prices change price_snapshot without touching the requests' updated_at
         await ctx.refreshBootstrap();

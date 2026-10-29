@@ -1,5 +1,5 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
-import { err, assertQty, isStr } from "./http.js";
+import { err, assertQty, isStr, phoneParam } from "./http.js";
 import {
   auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, loadForm, publicConfig,
 } from "./db.js";
@@ -8,7 +8,7 @@ import {
 } from "./auth.js";
 import { currentMonth, currentRound, fyMonths, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
-  getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS,
+  getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS, REQUESTER_ON_SEND_SQL, firstRequester,
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
@@ -28,7 +28,7 @@ export async function pcuLogin(ctx, p) {
   const pin = String(p.pin || "");
   if (!code || !PIN_RE.test(pin)) throw err("BAD_REQUEST", "กรอก รพ.สต. และ PIN 5 หลัก");
   const row = await DB.prepare(
-    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom, stock_mode FROM pcus WHERE code = ?`
+    `SELECT code, name, print_name, "group" AS grp, pin_hash, pin_salt, pin_version, pin_fail, pin_locked_until, pin_custom, stock_mode, requester_name, phone FROM pcus WHERE code = ?`
   ).bind(code).first();
   if (!row) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้");
 
@@ -125,7 +125,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   // 2l: history = every round month from the first round of FY F-1 (F = monthFy(cur)) up to (excluding) prev, newest first
   const histFrom = fyMonths(monthFy(cur) - 1)[0];
 
-  const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes] = await Promise.all([
+  const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes, reqFirst] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(code).all(),
     DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
@@ -140,6 +140,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     pcuMonthView(DB, code, cur, fy),
     pcuMonthView(DB, code, prev, fy),
     DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND status = 'issued' AND issued_seen_at IS NULL`).bind(code).all(),
+    firstRequester(DB, code),
   ]);
 
   // never_prev: active items this PCU never withdrew last fy (only meaningful when we have history for the PCU)
@@ -196,7 +197,11 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
 
   return {
     server_time: nowIso(), current_month: cal, current_round: cur,
-    pcu: { ...pcuPublic(pcuRow), pin_custom: !!pcuRow.pin_custom, stock_mode: pcuRow.stock_mode === "B" ? "B" : "A" }, // 2o
+    pcu: {
+      ...pcuPublic(pcuRow), pin_custom: !!pcuRow.pin_custom, stock_mode: pcuRow.stock_mode === "B" ? "B" : "A", // 2o
+      // 2x: requester name (admin sets it; the pcu only sees it) · default phone · first logged name (sheets sent before 2x print with it)
+      requester_name: pcuRow.requester_name || null, phone: pcuRow.phone || null, requester_first: reqFirst,
+    },
     config: cfg,
     form_version_id: form ? form.id : null,
     form: formPublic(form, PCU_FORM),
@@ -396,8 +401,9 @@ export async function saveLines(ctx, p) {
     }
     fin.push(DB.prepare(
       `UPDATE requests SET status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'submitted' END, form_version_id = ?, submitted_at = ?, updated_at = ?,
-              first_submitted_at = COALESCE(first_submitted_at, ?), submit_count = COALESCE(submit_count,0) + 1 WHERE id = ?`
-    ).bind(latest.id, now, now, now, id));
+              first_submitted_at = COALESCE(first_submitted_at, ?), submit_count = COALESCE(submit_count,0) + 1,
+              requester_name = ${REQUESTER_ON_SEND_SQL} WHERE id = ?`
+    ).bind(latest.id, now, now, now, pcu.code, pcu.code, pcu.code, id)); // 2x: requester name frozen at the first send
     const n = lines.filter((l) => (l.op || 0) + (l.pp || 0) > 0).length;
     fin.push(auditStmt(DB, pcu.code, "pcu", "submit", pcu.code, month, `items=${n} form_version=${latest.id}`));
     await batchChunked(DB, fin);
@@ -440,6 +446,18 @@ export async function pcuSetStockMode(ctx, p) {
     auditStmt(DB, pcu.code, "pcu", "pcuSetStockMode", pcu.code, "", p.mode),
   ]);
   return { stock_mode: p.mode };
+}
+
+// 2x R8: pcuSetPhone{phone} — the pcu's default "โทร" number ("จำเป็นค่าเริ่มต้น" on the print page). "" clears it. Writes only on change.
+export async function pcuSetPhone(ctx, p) {
+  const { DB, pcu } = ctx;
+  const phone = phoneParam(p.phone);
+  if ((pcu.phone || null) === phone) return { phone };
+  await DB.batch([
+    DB.prepare(`UPDATE pcus SET phone = ? WHERE code = ?`).bind(phone, pcu.code),
+    auditStmt(DB, pcu.code, "pcu", "pcuSetPhone", pcu.code, "", phone || ""),
+  ]);
+  return { phone };
 }
 
 // ---- hidden ---------------------------------------------------------------------------------------------------------------------

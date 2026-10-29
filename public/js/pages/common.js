@@ -117,6 +117,14 @@ export function adminEntryTagHtml(request) {
 }
 
 // true when `month` is the trial round (config.trial_month, or a loaded RoundInfo flagged trial).
+// 2x: the requester name a request prints with (same rule as functions/_lib/views.js requesterFor): sent → the name frozen at send
+// ?? the pcu's first logged name ?? its current name · not sent → the current name. null = none set.
+export function requesterOf(pcu, request) {
+  const sent = !!request && (request.status === "submitted" || request.status === "issued");
+  if (sent && request.requester_name) return request.requester_name;
+  return (sent && pcu && pcu.requester_first) || (pcu && pcu.requester_name) || null;
+}
+
 export function isTrialMonth(app, month) {
   const b = (app && app.boot) || {};
   if (b.config && b.config.trial_month && b.config.trial_month === month) return true;

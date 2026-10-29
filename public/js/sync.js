@@ -267,6 +267,7 @@ function applyServerRequest(session, serverReq) {
   r.admin_note = serverReq.admin_note;
   r.admin_note_at = serverReq.admin_note_at;
   r.issued_seen_at = serverReq.issued_seen_at;
+  r.requester_name = serverReq.requester_name ?? null; // 2x: frozen at send (server-owned)
   r.edited_after_submit = !!serverReq.edited_after_submit || (!!r.submitted_at && session.dirtyLines.size > 0);
   if (!session.dirtyMeta) {
     r.last_step = serverReq.last_step;

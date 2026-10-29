@@ -987,10 +987,10 @@ async function main() {
       for (const l of bundle.lines) {
         if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
       }
-      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, hidden: [...pd.hidden].sort(), lines: ls, dd: null, sm: null };
+      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, hidden: [...pd.hidden].sort(), lines: ls, dd: null, sm: null, rq: null, ph: null };
       const keyFor = (lv) => sha256Hex(stableStringify(lv === undefined ? fields : { lv, ...fields }));
       const local = await pdfLib.contentKeyOf(bundle);
-      eq(pdfLib.LAYOUT_VERSION, 3, "pdf.js exports LAYOUT_VERSION = 3 (brief 2h)");
+      eq(pdfLib.LAYOUT_VERSION, 4, "pdf.js exports LAYOUT_VERSION = 4 (brief 2x)");
       ok(local === (await keyFor(pdfLib.LAYOUT_VERSION)) && local !== (await keyFor(pdfLib.LAYOUT_VERSION + 1)) && local !== (await keyFor(undefined)),
         "contentKeyOf hashes lv: LAYOUT_VERSION (key changes with lv; differs from the pre-2g key without lv)");
       eq(dt.content_key, local, "server content key = contentKeyOf() under node (same LAYOUT_VERSION + same fields)");
@@ -1719,7 +1719,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 6, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5/v6 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 7, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5/v6/v7 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2111,10 +2111,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 6, "re-running migration v5 (+ v6) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 7, "re-running migration v5 (+ v6, v7) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 6, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 7, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -2467,8 +2467,9 @@ async function main() {
 
     // edit
     const e1 = await mustOk("adminPcuEdit", { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง" }, ADM2);
-    eq(e1.pcu, { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง", group: "ทดลอง" }, "adminPcuEdit name + print_name → {pcu}");
-    eq((await mustOk("pcuList")).pcus.find((x) => x.code === "PCU00"), e1.pcu, "pcuList reflects the edit");
+    eq(e1.pcu, { code: "PCU00", name: "ทดลองระบบ", print_name: "รพ.สต.ทดลอง", group: "ทดลอง", requester_name: null, phone: null }, "adminPcuEdit name + print_name → {pcu}");
+    const { requester_name: _rq, phone: _ph, ...e1List } = e1.pcu;
+    eq((await mustOk("pcuList")).pcus.find((x) => x.code === "PCU00"), e1List, "pcuList reflects the edit");
     expectErr(await api("adminPcuEdit", { code: "PCU99", name: "x" }, ADM2), "NOT_FOUND", "edit unknown PCU99");
     expectErr(await api("adminPcuEdit", { code: "PCU00" }, ADM2), "BAD_REQUEST", "edit without any field");
     expectErr(await api("adminPcuEdit", { code: "PCU00", name: "ทดลองระบบ" }, ADM2), "BAD_REQUEST", "edit with no actual change");
@@ -3128,6 +3129,132 @@ async function main() {
     await mustOk("adminSetLimitMode", { mode: mode0 }, ADM2);
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
     if (fy0 !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: fy0 }, set_current_fy: true }, ADM2);
+  }
+
+
+  section("2x: requester name (admin sets · frozen at send · per-request override) · phone · print key");
+  {
+    const P = "PCU09", M = CUR;
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const DSP = "req.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSP, role: "dispenser", units: ["พัสดุ"] }, ADM2);
+    const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSP })).token;
+    const pdfLib = await import(new URL("../functions/_lib/pdf.js", import.meta.url));
+    eq(pdfLib.LAYOUT_VERSION, 4, "2x: LAYOUT_VERSION = 4");
+    const tt = (s) => `2026-11-20T10:00:${String(s).padStart(2, "0")}.000Z`;
+
+    // guards
+    expectErr(await api("adminPcuEdit", { code: P, requester_name: "x".repeat(81) }, ADM2), "BAD_REQUEST", "requester_name > 80 chars → BAD_REQUEST");
+    expectErr(await api("adminPcuEdit", { code: P, requester_name: 5 }, ADM2), "BAD_REQUEST", "requester_name not a string → BAD_REQUEST");
+    expectErr(await api("adminPcuEdit", { code: P, phone: "08x-123" }, ADM2), "BAD_REQUEST", "adminPcuEdit phone with a letter → BAD_REQUEST");
+    expectErr(await api("adminRequesterLog", { pcu: P }, DT), "FORBIDDEN", "adminRequesterLog as dispenser → FORBIDDEN");
+    expectErr(await api("adminRequesterLog", { pcu: P }, TP), "FORBIDDEN", "adminRequesterLog with a PCU token → FORBIDDEN");
+    expectErr(await api("adminRequesterLog", { pcu: "PCU99" }, ADM2), "NOT_FOUND", "adminRequesterLog unknown pcu");
+    expectErr(await api("adminSetRequestRequester", { pcu: P, month: M, name: "x" }, DT), "FORBIDDEN", "adminSetRequestRequester as dispenser → FORBIDDEN");
+    eq((await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log, [], "no log before any name is set");
+
+    // admin sets name + phone → 1 log row; the pcu sees both
+    const e1 = await mustOk("adminPcuEdit", { code: P, requester_name: "  นางสาว  ทดสอบ หนึ่ง ", phone: " 081-234 5678 " }, ADM2);
+    eq([e1.pcu.requester_name, e1.pcu.phone], ["นางสาว ทดสอบ หนึ่ง", "081-234 5678"], "adminPcuEdit trims requester_name (inner spaces collapsed) + phone");
+    const l1 = (await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log;
+    ok(l1.length === 1 && l1[0].name === "นางสาว ทดสอบ หนึ่ง" && l1[0].set_by === ADMIN_EMAIL && l1[0].set_at, "name set → 1 log row {name, set_at, set_by}");
+    await mustOk("adminPcuEdit", { code: P, phone: "081-000 0000" }, ADM2);
+    eq((await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log.length, 1, "a phone-only edit writes no log row");
+    const bp = (await mustOk("pcuBootstrap", {}, TP)).pcu;
+    eq([bp.requester_name, bp.phone, bp.requester_first], ["นางสาว ทดสอบ หนึ่ง", "081-000 0000", "นางสาว ทดสอบ หนึ่ง"], "pcuBootstrap.pcu: requester_name + phone + requester_first");
+    const ab = (await mustOk("adminBootstrap", {}, ADM2)).pcus.find((x) => x.code === P);
+    eq([ab.requester_name, ab.phone], ["นางสาว ทดสอบ หนึ่ง", "081-000 0000"], "adminBootstrap.pcus carry requester_name + phone");
+
+    // pcuSetPhone
+    expectErr(await api("pcuSetPhone", { phone: "abc" }, TP), "BAD_REQUEST", "pcuSetPhone: letters → BAD_REQUEST");
+    expectErr(await api("pcuSetPhone", { phone: "1".repeat(31) }, TP), "BAD_REQUEST", "pcuSetPhone: 31 chars → BAD_REQUEST");
+    expectErr(await api("pcuSetPhone", { phone: 812345678 }, TP), "BAD_REQUEST", "pcuSetPhone: a number (not a string) → BAD_REQUEST");
+    expectErr(await api("pcuSetPhone", { phone: "0812345678" }, ADM2), "FORBIDDEN", "pcuSetPhone with an admin token → FORBIDDEN");
+    eq((await mustOk("pcuSetPhone", { phone: "+66 81-111 2222" }, TP)).phone, "+66 81-111 2222", "pcuSetPhone sets the default phone");
+    eq((await mustOk("pcuBootstrap", {}, TP)).pcu.phone, "+66 81-111 2222", "bootstrap shows the phone the pcu set");
+    eq((await mustOk("pcuSetPhone", { phone: "" }, TP)).phone, null, "pcuSetPhone \"\" clears it");
+    await mustOk("pcuSetPhone", { phone: "081-000 0000" }, TP);
+
+    // draft → current name · send → snapshot · rename after send → the sent request keeps the old name
+    await mustOk("saveLines", { month: M, lines: { [A.code]: { op: 3, pp: 0, updated_at: tt(1) } } }, TP);
+    eq((await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2)).requester_name, "นางสาว ทดสอบ หนึ่ง", "draft: requester = the pcu's current name");
+    await mustOk("adminPcuEdit", { code: P, requester_name: "นาย ทดสอบ สอง" }, ADM2);
+    const g1 = await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2);
+    eq([g1.requester_name, g1.request.requester_name], ["นาย ทดสอบ สอง", null], "draft follows a rename at once (no snapshot yet)");
+    const sent = await mustOk("saveLines", { month: M, lines: {}, send: true }, TP);
+    eq(sent.request.requester_name, "นาย ทดสอบ สอง", "send freezes requests.requester_name");
+    const pk0 = await mustOk("requestPdf", { month: M }, TP);
+    await mustOk("adminPcuEdit", { code: P, requester_name: "นาง ทดสอบ สาม" }, ADM2);
+    const g2 = await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2);
+    eq([g2.requester_name, g2.pcu.requester_name], ["นาย ทดสอบ สอง", "นาง ทดสอบ สาม"], "rename after send: the sent request keeps its name, the pcu has the new one");
+    const dt1 = await mustOk("devPrintToken", { pcu: P, month: M });
+    const pd1 = await mustOk("printData", { k: dt1.token });
+    eq([pd1.requester_name, pd1.phone], ["นาย ทดสอบ สอง", null], "printData: requester_name = the frozen name · phone null without the option");
+    eq(dt1.content_key, pk0.content_key, "a rename after send does not change the sent sheet's content key");
+    await mustOk("saveLines", { month: M, lines: { [A.code]: { op: 4, pp: 0, updated_at: tt(2) } }, send: true }, TP);
+    eq((await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2)).requester_name, "นาย ทดสอบ สอง", "a re-send keeps the name frozen at the first send");
+    eq((await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log.map((r) => r.name), ["นาง ทดสอบ สาม", "นาย ทดสอบ สอง", "นางสาว ทดสอบ หนึ่ง"], "log: one row per change, newest first");
+
+    // phone print option: in the key + token + printData
+    expectErr(await api("requestPdf", { month: M, phone: "call me" }, TP), "BAD_REQUEST", "requestPdf: bad phone option → BAD_REQUEST");
+    const pa = await mustOk("requestPdf", { month: M }, TP);
+    const pb = await mustOk("requestPdf", { month: M, phone: "081-999 9999" }, TP);
+    const pb2 = await mustOk("requestPdf", { month: M, phone: "081-999 9999" }, TP);
+    ok(pb.content_key !== pa.content_key && pb2.content_key === pb.content_key, "phone option changes the content key (same phone twice → same key)");
+    eq((await mustOk("requestPdf", { month: M, phone: "" }, TP)).content_key, pa.content_key, "phone \"\" = no phone");
+    const dt2 = await mustOk("devPrintToken", { pcu: P, month: M, phone: "081-999 9999" });
+    eq([dt2.content_key, (await mustOk("printData", { k: dt2.token })).phone], [pb.content_key, "081-999 9999"], "devPrintToken + printData round-trip the phone");
+    ok((await mustOk("adminRequestPdf", { pcu: P, month: M, phone: "081-999 9999" }, ADM2)).content_key === pb.content_key, "adminRequestPdf takes the phone option (same key)");
+
+    // R7: override the name of one sent request
+    expectErr(await api("adminSetRequestRequester", { pcu: P, month: M, name: "" }, ADM2), "BAD_REQUEST", "override with a blank name → BAD_REQUEST");
+    expectErr(await api("adminSetRequestRequester", { pcu: P, month: NEXT, name: "x" }, ADM2), "NOT_FOUND", "override on a round without a sent request → NOT_FOUND");
+    const ov = await mustOk("adminSetRequestRequester", { pcu: P, month: M, name: "นาย แก้ ในใบ" }, ADM2);
+    eq(ov.requester_name, "นาย แก้ ในใบ", "adminSetRequestRequester → {requester_name}");
+    const g3 = await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2);
+    eq([g3.requester_name, g3.pcu.requester_name], ["นาย แก้ ในใบ", "นาง ทดสอบ สาม"], "the override changes only this request");
+    ok((await mustOk("requestPdf", { month: M }, TP)).content_key !== pa.content_key, "the override changes the content key (new PDF)");
+    const au = (await mustOk("adminAuditLog", { limit: 5 }, ADM2)).entries.find((e) => e.action === "adminSetRequestRequester");
+    ok(au && au.pcu === P && au.month === M && au.detail.includes("นาย แก้ ในใบ"), "override audited (adminSetRequestRequester)");
+    eq((await mustOk("pcuGetMonth", { month: M }, TP)).request.requester_name, "นาย แก้ ในใบ", "the pcu sees the overridden name on its request");
+
+    // a request sent before 2x (requester_name NULL) prints with the pcu's first logged name; a re-send freezes that name
+    await mustOk("devRequester", { op: "clear_snapshot", pcu: P, month: M });
+    eq((await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2)).requester_name, "นางสาว ทดสอบ หนึ่ง", "sent before 2x → the first logged name");
+    await mustOk("saveLines", { month: M, lines: { [A.code]: { op: 5, pp: 0, updated_at: tt(3) } }, send: true }, TP);
+    eq((await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2)).request.requester_name, "นางสาว ทดสอบ หนึ่ง", "re-send of a pre-2x request freezes the first logged name");
+
+    // adminSaveLines send (2w) freezes the name too (adminSaveLines needs the round in fy_current, as in the 2w section)
+    const fy0 = (await mustOk("adminBootstrap", {}, ADM2)).config.fy_current;
+    if (fy0 !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570 }, set_current_fy: true }, ADM2);
+    await mustOk("adminSaveLines", { pcu: P, month: PREV, lines: { [A.code]: { op: 1, pp: 0 } }, send: true }, ADM2);
+    eq((await mustOk("adminGetRequest", { pcu: P, month: PREV }, ADM2)).request.requester_name, "นาง ทดสอบ สาม", "adminSaveLines send freezes the current name");
+    if (fy0 !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: fy0 }, set_current_fy: true }, ADM2);
+
+    // log rows older than 2 years are dropped on the next name write
+    await mustOk("devRequester", { op: "old_log", pcu: P });
+    eq((await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log.length, 4, "setup: a 2020 log row");
+    await mustOk("adminPcuEdit", { code: P, requester_name: "" }, ADM2);
+    const l2 = (await mustOk("adminRequesterLog", { pcu: P }, ADM2)).log;
+    ok(l2.length === 4 && l2[0].name === null && !l2.some((r) => r.name === "เก่า"), "clearing the name logs NULL · the > 2 years row is pruned");
+    eq((await mustOk("pcuBootstrap", {}, TP)).pcu.requester_name, null, "cleared requester → null");
+
+    // R5: header (title / subject / to) per dispense unit — a page that differs inside its unit is a warning, never an error
+    {
+      const F = (await mustOk("adminBootstrap", {}, ADM2)).form;
+      const steps = JSON.parse(JSON.stringify(F.steps));
+      const st = steps.find((x) => (x.dispense_unit || "") === "พัสดุ");
+      st.to = "ทดสอบหัวใบต่างจากหน้าอื่น";
+      const sv = await mustOk("adminFormSave", { base_version_id: F.id, note: "2x header warning", form: { steps } }, ADM2);
+      ok(sv.saved && sv.warnings.length === 1 && sv.warnings[0].includes("พัสดุ"), "adminFormSave: a header that differs within unit พัสดุ → saved + 1 warning");
+      for (const x of steps) if (x.dispense_unit === st.dispense_unit) ["title", "subject", "to"].forEach((k) => { x[k] = st[k]; }); // the tab10 editor writes the whole unit
+      const sv2 = await mustOk("adminFormSave", { base_version_id: sv.form.id, note: "2x header restore", form: { steps } }, ADM2);
+      eq(sv2.warnings, [], "same header on every page of each unit → no warning");
+    }
+
+    // restore
+    await mustOk("adminPcuEdit", { code: P, phone: "" }, ADM2);
+    await mustOk("adminUsersRemove", { email: DSP }, ADM2);
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

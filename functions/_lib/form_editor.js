@@ -250,6 +250,19 @@ export async function adminPricePreview(ctx, p) {
   return priceEffect(DB, fyCur, hist, form, changes, currentRound());
 }
 
+// 2x R5: the sheet header (title / subject / to) is edited per dispense unit — every page of one unit should carry the same header.
+// A difference (an older form) is a warning, never an error: [Thai message per unit].
+export function headerWarnings(steps) {
+  const first = new Map(), bad = new Set();
+  for (const s of steps) {
+    const u = s.dispense_unit || "";
+    const h = [s.title || "", s.subject || "", s.to || ""].join("\u0000");
+    if (!first.has(u)) first.set(u, h);
+    else if (first.get(u) !== h) bad.add(u);
+  }
+  return [...bad].map((u) => `หัวใบ (ชื่อเรื่อง/เรื่อง/เรียน) ของหน้าหน่วยจ่าย "${u}" ไม่เหมือนกันทุกหน้า`);
+}
+
 export async function adminFormSave(ctx, p) {
   const { DB, who } = ctx;
   const baseId = p.base_version_id;
@@ -334,7 +347,7 @@ export async function adminFormSave(ctx, p) {
   await batchChunked(DB, stmts);
   const form = await loadForm(DB, newId);
   return {
-    saved: true, form: adminForm(form), versions: await versionsList(DB), diff,
+    saved: true, form: adminForm(form), versions: await versionsList(DB), diff, warnings: headerWarnings(newSteps),
     price_backdate: backdated.map((x) => ({ code: x.code, old: x.old, new: x.price, from_round: x.from_round, to_round: x.to_round, requests: x.requests, lines: x.n_lines, delta: x.delta })),
     price_history: await priceHistoryList(DB, fyCur),
   };

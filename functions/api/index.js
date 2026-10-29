@@ -28,6 +28,7 @@ const PCU = {
   setHidden: pcu.setHidden,
   pcuAck: pcu.pcuAck,
   pcuSetStockMode: pcu.pcuSetStockMode, // 2o
+  pcuSetPhone: pcu.pcuSetPhone, // 2x
   pcuDashboard, // 2q
   requestPdf: pdf.requestPdf,
 };
@@ -60,6 +61,8 @@ const ADMIN = {
   adminRemoveUnlock: admin.adminRemoveUnlock,
   adminPcuAdd: admin.adminPcuAdd,
   adminPcuEdit: admin.adminPcuEdit,
+  adminRequesterLog: admin.adminRequesterLog, // 2x
+  adminSetRequestRequester: admin.adminSetRequestRequester, // 2x
   adminSetPin: admin.adminSetPin,
   adminUnlockPin: admin.adminUnlockPin,
   adminSetHidden: admin.adminSetHidden,
@@ -126,6 +129,12 @@ async function devAction(action, ctx, p) {
   }
   if (action === "devPrintToken") return pdf.devPrintToken(ctx, p); // fresh print token for {pcu, month}
   if (action === "devSetRequestMonth") return pdf.devSetRequestMonth(ctx, p); // back-date a request {pcu, month, new_month} (2b-R)
+  if (action === "devRequester") { // 2x fixtures: {op:"clear_snapshot", pcu, month} = a request sent before 2x · {op:"old_log", pcu} = a 2020 log row
+    if (p.op === "clear_snapshot") await ctx.DB.prepare(`UPDATE requests SET requester_name = NULL WHERE pcu = ? AND month = ?`).bind(String(p.pcu), String(p.month)).run();
+    else if (p.op === "old_log") await ctx.DB.prepare(`INSERT OR IGNORE INTO requester_log (pcu, name, set_at, set_by) VALUES (?, 'เก่า', '2020-01-01T00:00:00.000Z', 'dev')`).bind(String(p.pcu)).run();
+    else throw err("BAD_REQUEST", "op ไม่ถูกต้อง");
+    return { ok: true };
+  }
   throw err("BAD_REQUEST", "ไม่รู้จัก action");
 }
 
@@ -138,7 +147,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

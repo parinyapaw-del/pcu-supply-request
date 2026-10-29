@@ -11,7 +11,7 @@ import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, unlocksOf, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
-  alertDialog, toast,
+  alertDialog, toast, requesterOf,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
 
@@ -1125,6 +1125,7 @@ function renderSummary(app, month, steps) {
       <label class="field-label">ชื่อผู้กรอก (ไม่บังคับ, ไม่พิมพ์ในใบเบิก)
         <input type="text" id="submitter-name" maxlength="120" value="${esc(request ? request.submitter_name || "" : "")}" ${editable ? "" : "disabled"}>
       </label>
+      <p class="muted small" id="requester-line">ผู้เบิกในใบ: ${esc(requesterOf(app.boot.pcu, request) || "— ยังไม่ได้ตั้ง")} (เปลี่ยนได้โดย รพ.)</p>
     </div>
 
     <div class="summary-actions">

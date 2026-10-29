@@ -77,3 +77,13 @@ export function stableStringify(v) {
   if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
   return "{" + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
 }
+
+// 2x: a phone number for the sheet's "โทร" line — digits, +, -, space, ≤ 30 chars (trimmed). null / "" → null. Shared by pcuSetPhone,
+// adminPcuEdit and the print option `phone`.
+export function phoneParam(v) {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string") throw err("BAD_REQUEST", "เบอร์โทรไม่ถูกต้อง");
+  const s = v.trim();
+  if (!/^[0-9+\- ]{0,30}$/.test(s)) throw err("BAD_REQUEST", "เบอร์โทรใช้ได้เฉพาะตัวเลข + - และช่องว่าง ไม่เกิน 30 ตัว");
+  return s || null;
+}

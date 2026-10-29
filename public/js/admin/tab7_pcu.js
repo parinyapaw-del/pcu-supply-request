@@ -1,4 +1,5 @@
-// Tab 7 — รพ.สต. (PIN / รายการที่ซ่อน), admin only (functions/API.md §5: adminSetPin, adminUnlockPin, adminSetHidden).
+// Tab 7 — รพ.สต. (PIN / รายการที่ซ่อน / 2x ชื่อผู้เบิก + โทร), admin only (functions/API.md §5: adminSetPin, adminUnlockPin, adminSetHidden,
+// adminPcuEdit, adminRequesterLog).
 import {
   el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, openModal, formatBangkokDateTime, realPcus, pcuTag, TRIAL_GROUP
 } from "./util.js";
@@ -35,21 +36,25 @@ export function renderTab7(container, ctx) {
       const locked = isLocked(p);
       return `<tr data-pcu="${p.code}">
         <td class="left"><strong>${p.code}</strong> ${escapeHtml(p.name)}${pcuTag(p)}</td>
+        <td class="left">${p.requester_name ? escapeHtml(p.requester_name) : '<span class="badge badge-warn">ยังไม่ได้ตั้ง</span>'}</td>
+        <td class="left">${p.phone ? escapeHtml(p.phone) : '<span class="muted">–</span>'}</td>
         <td class="left">${p.pin_custom ? '<span class="badge badge-success">ตั้ง PIN แล้ว</span>' : '<span class="badge badge-warn" title="ยังใช้ PIN ตั้งต้น 12345">ยังใช้ PIN ตั้งต้น 12345</span>'}</td>
         <td class="left">${locked ? `<span class="badge badge-danger">ล็อก ถึง ${escapeHtml(formatBangkokDateTime(p.pin_locked_until))}</span>` : (p.pin_fail > 0 ? `<span class="badge badge-warn">กรอกผิด ${p.pin_fail} ครั้ง</span>` : '<span class="muted">ปกติ</span>')}</td>
         <td class="left">${(p.login_count || 0) > 0 ? `<strong>${p.login_count}</strong> ครั้ง · ล่าสุด ${escapeHtml(formatBangkokDateTime(p.last_login_at))}` : '<span class="badge badge-muted">ยังไม่เคยเข้า</span>'}</td>
         <td class="num">${nHidden}</td>
         <td class="left actions-cell">
           <button type="button" class="btn btn-secondary btn-sm" data-act="edit">แก้ชื่อ</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-act="log">ประวัติผู้เบิก</button>
           <button type="button" class="btn btn-secondary btn-sm" data-act="pin">ตั้ง PIN</button>
           <button type="button" class="btn btn-secondary btn-sm" data-act="unlock" ${locked || p.pin_fail > 0 ? "" : "disabled"}>ปลดล็อก PIN</button>
           <button type="button" class="btn btn-secondary btn-sm" data-act="hidden">รายการที่ซ่อน</button>
         </td></tr>`;
     }).join("");
-    host.innerHTML = tableScroll(`<table class="admin-table admin-table-wide" id="t7-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">PIN</th><th class="left">สถานะการล็อก</th><th class="left">เข้าใช้ (PIN)</th><th class="num">รายการที่ซ่อน</th><th class="left">การดำเนินการ</th></tr></thead><tbody>${rows}</tbody></table>`);
+    host.innerHTML = tableScroll(`<table class="admin-table admin-table-wide" id="t7-tbl"><thead><tr><th class="left">รพ.สต.</th><th class="left">ชื่อผู้เบิก</th><th class="left">โทร (ค่าเริ่มต้น)</th><th class="left">PIN</th><th class="left">สถานะการล็อก</th><th class="left">เข้าใช้ (PIN)</th><th class="num">รายการที่ซ่อน</th><th class="left">การดำเนินการ</th></tr></thead><tbody>${rows}</tbody></table>`);
     host.querySelectorAll("tr[data-pcu]").forEach((tr) => {
       const code = tr.dataset.pcu;
       tr.querySelector('[data-act="edit"]').addEventListener("click", () => editPcu(code));
+      tr.querySelector('[data-act="log"]').addEventListener("click", () => showRequesterLog(code));
       tr.querySelector('[data-act="pin"]').addEventListener("click", () => setPin(code));
       tr.querySelector('[data-act="unlock"]').addEventListener("click", () => unlockPin(code));
       tr.querySelector('[data-act="hidden"]').addEventListener("click", () => editHidden(code));
@@ -88,13 +93,45 @@ export function renderTab7(container, ctx) {
   async function editPcu(code) {
     const p = b().pcus.find((x) => x.code === code);
     if (!p) return;
-    const res = await formDialog(`แก้ไข ${code}`, nameFields(p), { okText: "บันทึก", intro: "ชื่อในใบพิมพ์ว่าง = ใช้ชื่อเดียวกับชื่อ รพ.สต. · รหัสแก้ไม่ได้" });
+    // 2x: requester name (1 per รพ.สต., printed at "ข้าพเจ้า" and "( ) ผู้เบิก") + default phone ("โทร :" line)
+    const fields = [
+      ...nameFields(p),
+      { key: "requester_name", label: "ชื่อผู้เบิก (พิมพ์ในใบเบิก)", type: "text", maxlength: 80, value: p.requester_name || "" },
+      { key: "phone", label: "โทร (ค่าเริ่มต้น)", type: "text", maxlength: 30, inputmode: "tel", value: p.phone || "" }
+    ];
+    const res = await formDialog(`แก้ไข ${code}`, fields, {
+      okText: "บันทึก",
+      intro: "ชื่อในใบพิมพ์ว่าง = ใช้ชื่อเดียวกับชื่อ รพ.สต. · รหัสแก้ไม่ได้\nชื่อผู้เบิก: มีผลทันทีกับใบที่ยังไม่ส่ง/ส่งหลังแก้ · ใบที่ส่งแล้วคงชื่อเดิม (แก้รายใบได้ที่หน้าพิมพ์ของใบนั้น) · รพ.สต. แก้เองไม่ได้\nโทร: รพ.สต. แก้ได้ตอนพิมพ์",
+      validate: (v) => (/^[0-9+\- ]{0,30}$/.test(v.phone.trim()) ? "" : "เบอร์โทรใช้ได้เฉพาะตัวเลข + - และช่องว่าง")
+    });
     if (!res) return;
+    const body = { code };
+    // send only what changed (adminPcuEdit answers BAD_REQUEST when nothing changes)
+    if (res.name !== p.name) body.name = res.name;
+    if (res.print_name !== (p.print_name || "")) body.print_name = res.print_name;
+    if (res.group !== (p.group || "ทั่วไป")) body.group = res.group;
+    if (res.requester_name.trim() !== (p.requester_name || "")) body.requester_name = res.requester_name;
+    if (res.phone.trim() !== (p.phone || "")) body.phone = res.phone;
+    if (Object.keys(body).length === 1) { toast("ไม่มีข้อมูลที่เปลี่ยน"); return; }
     try {
-      await ctx.adminCall("adminPcuEdit", { code, name: res.name, print_name: res.print_name, group: res.group });
+      await ctx.adminCall("adminPcuEdit", body);
       toast(`บันทึกข้อมูล ${code} แล้ว`);
       await reloadPcus();
     } catch (err) { toast(errMessage(err), "err"); }
+  }
+
+  // 2x: requester name history (kept 2 years)
+  async function showRequesterLog(code) {
+    const p = b().pcus.find((x) => x.code === code);
+    let log;
+    try { log = (await ctx.adminCall("adminRequesterLog", { pcu: code })).log; } catch (err) { toast(errMessage(err), "err"); return; }
+    const body = el("div");
+    body.innerHTML = log.length
+      ? tableScroll(`<table class="admin-table" id="t7-log-tbl"><thead><tr><th class="left">ตั้งเมื่อ</th><th class="left">ชื่อผู้เบิก</th><th class="left">โดย</th></tr></thead><tbody>${log.map((r) =>
+          `<tr><td class="left">${escapeHtml(formatBangkokDateTime(r.set_at))}</td><td class="left">${r.name ? escapeHtml(r.name) : '<span class="muted">(ล้างชื่อ)</span>'}</td><td class="left">${escapeHtml(r.set_by)}</td></tr>`).join("")}</tbody></table>`)
+        + '<p class="admin-note">เก็บประวัติ 2 ปี · ใบที่ส่งก่อนมีระบบชื่อผู้เบิกพิมพ์ด้วยชื่อแรกที่ตั้ง</p>'
+      : '<p class="muted">ยังไม่เคยตั้งชื่อผู้เบิก</p>';
+    openModal(`ประวัติชื่อผู้เบิก — ${code} ${p ? p.name : ""}`, body);
   }
 
   async function setPin(code) {

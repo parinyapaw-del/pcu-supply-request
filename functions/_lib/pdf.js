@@ -2,18 +2,19 @@
 // Actions: requestPdf (PCU), adminRequestPdf (admin|dispenser), printData (public, print token), dev helpers.
 // Contract: functions/API.md §4 / §5 / §6b. The download itself is functions/api/pdf/[id].js.
 // 2b-R: retention (prunePdfFiles), R2 cost guard (PDF_QUOTA) and usage counters (usage.js).
-import { err, sha256Hex, stableStringify } from "./http.js";
+import { err, phoneParam, sha256Hex, stableStringify } from "./http.js";
 import { auditStmt, batchChunked, formForFy, formPublic, loadForm } from "./db.js";
 import { signToken, verifyToken } from "./auth.js";
 import { currentRound, isDate, isMonth, monthFy, monthMinus, nowIso } from "./time.js";
-import { REQ_COLS, getLines, requestId, requestObj } from "./views.js";
+import { REQ_COLS, getLines, requestId, requestObj, requesterFor } from "./views.js";
 import { formPrice, loadPriceHistory, priceFor } from "./price.js";
 import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderStmts } from "./usage.js";
 
 // Bump whenever print.css / print.js change what the sheet looks like: it is part of the content key, so a changed layout is
 // rendered again instead of served from R2 (handoff 2026-10-07 §3.1). 2 = brief 2g (--print-scale 0.78, one Blink engine everywhere).
 // 3 = brief 2h (header date / supply month blank unless chosen at print time; PCU14/15 sentence uses the full print_name).
-export const LAYOUT_VERSION = 3;
+// 4 = brief 2x (header without dotted leaders, requester name at "ข้าพเจ้า" + "( ) ผู้เบิก", "โทร :" line under the receiver).
+export const LAYOUT_VERSION = 4;
 export const PRINT_TOKEN_MS = 120000; // a print token (handed to the renderer inside the URL) lives 2 minutes
 const DEFAULT_RETRY_AFTER = 10;
 const RENDER_TIMEOUT_MS = 60000;
@@ -42,7 +43,7 @@ export const pdfDownloadUrl = (requestId, contentKey) => `/api/pdf/${encodeURICo
 
 // ---- data ---------------------------------------------------------------------------------------------------
 async function getPcuRow(DB, code) {
-  return DB.prepare(`SELECT code, name, print_name, "group" AS grp FROM pcus WHERE code = ?`).bind(String(code || "")).first();
+  return DB.prepare(`SELECT code, name, print_name, "group" AS grp, requester_name FROM pcus WHERE code = ?`).bind(String(code || "")).first();
 }
 
 // Everything the sheet is rendered from. reqRow is null when the PCU has no request for the month.
@@ -50,13 +51,14 @@ async function loadBundle(DB, pcuCode, month) {
   const pcuRow = await getPcuRow(DB, pcuCode);
   if (!pcuRow) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้: " + pcuCode);
   const reqRow = await DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcuRow.code, month).first();
-  if (!reqRow) return { pcuRow, reqRow: null, lines: [], hidden: [], form: null };
-  const [lines, hid, form] = await Promise.all([
+  if (!reqRow) return { pcuRow, reqRow: null, lines: [], hidden: [], form: null, requester: null };
+  const [lines, hid, form, requester] = await Promise.all([
     getLines(DB, reqRow.id),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcuRow.code).all(),
     reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : null, // the version the sheet is printed with (immutable, cached)
+    requesterFor(DB, pcuRow, reqRow), // 2x: the requester name the sheet prints
   ]);
-  return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code), form };
+  return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code), form, requester };
 }
 
 // 2p: the unit price printed for a line = price_print (frozen at send; a back-date never moves it), fallback price_snapshot (rows from before
@@ -65,7 +67,7 @@ const printPrice = (l) => l.price_print ?? l.price_snapshot ?? null;
 
 const isSent = (reqRow) => !!reqRow && (reqRow.status === "submitted" || reqRow.status === "issued");
 
-// 2h print options (per print, never stored on the request): {doc_date:"YYYY-MM-DD"|null, supply_month:"YYYY-MM"|null}.
+// 2h print options (per print, never stored on the request): {doc_date:"YYYY-MM-DD"|null, supply_month:"YYYY-MM"|null, phone (2x):string|null}.
 // absent / null / "" → null · doc_date any valid date · supply_month only the round month itself (2j: round = "ขอเบิกเดือน X") · any other type fails the same
 // checks (isDate / === need a string) → BAD_REQUEST. `month` must already be valid.
 export function printOptsOf(p, month) {
@@ -73,7 +75,7 @@ export function printOptsOf(p, month) {
   const doc_date = pick(p && p.doc_date), supply_month = pick(p && p.supply_month);
   if (doc_date !== null && !isDate(doc_date)) throw err("BAD_REQUEST", "วันที่เอกสารไม่ถูกต้อง");
   if (supply_month !== null && supply_month !== month) throw err("BAD_REQUEST", "เดือนที่เบิกต้องเป็นเดือนของรอบ");
-  return { doc_date, supply_month };
+  return { doc_date, supply_month, phone: phoneParam(p && p.phone) }; // 2x R8: the "โทร" line of this print (never stored on the request)
 }
 
 // Hash of everything that changes what the printed sheet shows (data + LAYOUT_VERSION + 2h print options). Same content → same key →
@@ -81,7 +83,8 @@ export function printOptsOf(p, month) {
 // 2p: + `pr` {code: printed price} for the lines whose printed price differs from the bound form's price — omitted when empty, so the key of a
 // sheet printed at form prices (every request sent before 2p) is unchanged. A back-date never moves price_print → same key → R2 serves the old
 // PDF; a re-send at a new round price changes price_print → new key → new PDF.
-export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form }, opts = {}) {
+// 2x: + `rq` the printed requester name (bundle.requester) and `ph` the phone print option.
+export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form, requester }, opts = {}) {
   const ls = {}, pr = {};
   for (const l of lines) {
     const op = Number(l.op) || 0, pp = Number(l.pp) || 0;
@@ -97,6 +100,8 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form }, opts
     lines: ls,
     dd: opts.doc_date ?? null,
     sm: opts.supply_month ?? null,
+    rq: requester ?? null,
+    ph: opts.phone ?? null,
   };
   if (Object.keys(pr).length) key.pr = pr;
   return sha256Hex(stableStringify(key));
@@ -104,7 +109,7 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form }, opts
 
 export async function makePrintToken(env, pcu, month, contentKey, opts = {}) {
   return signToken(env, {
-    t: "print", pcu, month, ck: contentKey, dd: opts.doc_date ?? null, sm: opts.supply_month ?? null, exp: Date.now() + PRINT_TOKEN_MS,
+    t: "print", pcu, month, ck: contentKey, dd: opts.doc_date ?? null, sm: opts.supply_month ?? null, ph: opts.phone ?? null, exp: Date.now() + PRINT_TOKEN_MS,
   });
 }
 
@@ -315,7 +320,7 @@ export async function printData(ctx, p) {
   const bundle = await loadBundle(DB, payload.pcu, payload.month);
   if (!isSent(bundle.reqRow)) throw err("NOT_FOUND", MSG_NOT_SENT);
   // the sheet must be exactly what the content key was computed from (the PDF is cached under that key)
-  const opts = { doc_date: payload.dd ?? null, supply_month: payload.sm ?? null };
+  const opts = { doc_date: payload.dd ?? null, supply_month: payload.sm ?? null, phone: payload.ph ?? null };
   if ((await contentKeyOf(bundle, opts)) !== payload.ck) throw err("CONFLICT", "ใบเบิกถูกแก้ไขระหว่างสร้าง PDF กรุณาลองใหม่");
   const { pcuRow, reqRow, lines, hidden } = bundle;
   const form = bundle.form || (await formForFy(DB, monthFy(payload.month)));
@@ -327,6 +332,8 @@ export async function printData(ctx, p) {
     hidden,
     doc_date: opts.doc_date,
     supply_month: opts.supply_month,
+    requester_name: bundle.requester, // 2x
+    phone: opts.phone, // 2x
   };
 }
 
@@ -345,7 +352,7 @@ async function printForm(DB, form, lines, month) {
   return { ...pub, steps };
 }
 
-// dev only (router checks DEV_FAKE_GOOGLE): a fresh print token for (pcu, month[, 2h options]) — the tests cannot see the one the server generates.
+// dev only (router checks DEV_FAKE_GOOGLE): a fresh print token for (pcu, month[, 2h/2x options]) — the tests cannot see the one the server generates.
 export async function devPrintToken(ctx, p) {
   if (!isMonth(p.month)) throw err("BAD_REQUEST", "เดือนไม่ถูกต้อง");
   const opts = printOptsOf(p, p.month);

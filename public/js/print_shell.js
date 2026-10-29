@@ -28,7 +28,10 @@ async function main() {
   wrap.appendChild(pages);
   root.innerHTML = "";
   root.appendChild(wrap);
-  renderAllPages(pages, data.form, data.request, data.pcu, data.hidden || [], data.month, { doc_date: data.doc_date ?? null, supply_month: data.supply_month ?? null });
+  renderAllPages(pages, data.form, data.request, data.pcu, data.hidden || [], data.month, {
+    doc_date: data.doc_date ?? null, supply_month: data.supply_month ?? null,
+    phone: data.phone ?? null, requester_name: data.requester_name ?? null, // 2x
+  });
   // the PDF must embed TH Sarabun New: wait until both faces are loaded for the text that is on the page
   await Promise.all([document.fonts.load('16px "TH Sarabun New"'), document.fonts.load('bold 16px "TH Sarabun New"')]);
   await document.fonts.ready;

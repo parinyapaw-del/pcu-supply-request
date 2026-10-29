@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p, v6 = 2w, v7 = 2x (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -115,6 +115,17 @@ const V6 = [
   `UPDATE rounds SET fy = CAST(substr(month, 1, 4) AS INTEGER) + 543 + (CASE WHEN CAST(substr(month, 6, 2) AS INTEGER) >= 10 THEN 1 ELSE 0 END)`,
 ];
 
+// Migration v7 (2x, requester name on the printed sheet): pcus.requester_name (set by admin only) + pcus.phone (default "โทร" line) ·
+// requester_log (one row per name change, rows older than 2 years pruned on write) · requests.requester_name = the name frozen at send
+// (NULL on requests sent before 2x → printed with the pcu's first logged name). Same one-by-one rule.
+const V7 = [
+  `ALTER TABLE pcus ADD COLUMN requester_name TEXT`,
+  `ALTER TABLE pcus ADD COLUMN phone TEXT`,
+  `ALTER TABLE requests ADD COLUMN requester_name TEXT`,
+  `CREATE TABLE IF NOT EXISTS requester_log (
+     pcu TEXT NOT NULL, name TEXT, set_at TEXT NOT NULL, set_by TEXT, PRIMARY KEY (pcu, set_at))`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -123,10 +134,11 @@ export const MIGRATIONS = [
   { v: 4, statements: V4, oneByOne: true, tolerate: /duplicate column/i },
   { v: 5, statements: V5, oneByOne: true, tolerate: /duplicate column/i },
   { v: 6, statements: V6, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 7, statements: V7, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "audit_log",
 ];
 
 let migrated = false;
