@@ -77,6 +77,7 @@ export async function renderLogin(container, app, onLoggedIn) {
     <div id="login-msg" class="notice notice-error" style="display:none"></div>
     <button type="button" class="btn btn-primary btn-lg" id="btn-login">เข้าสู่ระบบ</button>
     <p class="muted login-forgot">ลืม PIN ติดต่อผู้ดูแลระบบ</p>
+    <div class="login-admin"><a class="btn btn-secondary" href="admin.html">เข้าสู่ระบบผู้ดูแล / หน่วยจ่าย (Google)</a></div>
   `;
 
   container.innerHTML = "";

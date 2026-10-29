@@ -204,6 +204,8 @@ button, input, select {
 .pin-key:active { background: var(--muted-bg); }
 .btn-lg { width: 100%; min-height: 52px; font-size: 1.1rem; }
 .login-forgot { text-align: center; margin-top: 14px; }
+.login-admin { text-align: center; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.login-admin a { text-decoration: none; }
 
 /* ---- home page ---- */
 .round-cards { display: grid; gap: 14px; margin: 16px 0; }
