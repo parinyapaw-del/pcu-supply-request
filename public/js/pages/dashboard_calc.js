@@ -55,10 +55,18 @@ export function buildRows(data, mode) {
     const it = (data.items || {})[code] || {};
     const byRound = (data.monthly || {})[code] || {};
     const m = { req: zeros(n), got: zeros(n), used: zeros(n) };
+    const rq = zeros(n); // req qty / req baht per round, kept regardless of mode (heatmap, top 3, CSV, limits)
+    const rb = zeros(n);
+    let gq = 0;
+    let uq = 0;
     rounds.forEach((r, i) => {
       const v = byRound[r];
       if (!v) return;
       SERIES_KEYS.forEach((k) => { m[k][i] = num(v[idx[k]]); });
+      rq[i] = num(v[0]);
+      rb[i] = num(v[1]);
+      gq += num(v[2]);
+      uq += num(v[4]);
     });
     const cum = {
       req: m.req.reduce((a, b) => a + b, 0),
@@ -77,6 +85,14 @@ export function buildRows(data, mode) {
       name: it.name || code,
       unit: it.unit || "",
       group: groupOf(it),
+      inForm: !!(data.items || {})[code],
+      off: !!it.off,
+      rq,
+      rb,
+      cq: rq.reduce((a, b) => a + b, 0),
+      cb: rb.reduce((a, b) => a + b, 0),
+      gq,
+      uq,
       planQty,
       price,
       m,
@@ -201,4 +217,106 @@ export function compact(v) {
   if (a >= 1e6) return f(v / 1e6) + "M";
   if (a >= 1e3) return f(v / 1e3) + "K";
   return f(v);
+}
+
+// ---------------------------------------------------------------- brief 2aa (PCU dashboard cards; all pure)
+
+/** Top `n` rows by cumulative request qty and by baht (both measures regardless of mode). Rows with 0 are skipped. */
+export function top3Rows(rows, n = 3) {
+  const all = rows.map((r) => ({ code: r.code, name: r.name, unit: r.unit, group: r.group, qty: r.cq, baht: r.cb }));
+  const by = (key) => all.filter((r) => r[key] > 0).sort((a, b) => b[key] - a[key] || a.code.localeCompare(b.code)).slice(0, n);
+  return { qty: by("qty"), baht: by("baht") };
+}
+
+/** Σ spent[code] over the given rows (unit-filtered). */
+export function spentSum(rows, spent) {
+  const sp = spent || {};
+  return rows.reduce((a, r) => a + num(sp[r.code]), 0);
+}
+
+/**
+ * Yearly ceiling (Q16): over = cumulative request qty > limit_year (every item, by % desc);
+ * near = >= 80 % and not over (top 3 by %). limits = {code: limit_year}.
+ */
+export function limitStatus(rows, limits) {
+  const over = [];
+  const near = [];
+  const lim = limits || {};
+  rows.forEach((r) => {
+    const l = num(lim[r.code]);
+    if (!(l > 0) || !(r.cq > 0)) return;
+    const e = { code: r.code, name: r.name, unit: r.unit, cum: r.cq, limit: l, pct: r.cq / l };
+    if (r.cq > l) over.push(e);
+    else if (e.pct >= 0.8) near.push(e);
+  });
+  over.sort((a, b) => b.pct - a.pct || a.code.localeCompare(b.code));
+  near.sort((a, b) => b.pct - a.pct || a.code.localeCompare(b.code));
+  return { over, near: near.slice(0, 3), nearTotal: near.length };
+}
+
+/**
+ * Items of the form never requested this FY (R12): in `data.items`, not off, cum req = 0.
+ * prev = requested last FY (prev_items > 0, by prev qty desc); never = not in prev_items either.
+ */
+export function notYetRequested(rows, prevItems) {
+  const pi = prevItems || {};
+  const prev = [];
+  const never = [];
+  rows.forEach((r) => {
+    if (!r.inForm || r.off || r.cq > 0) return;
+    const q = num(pi[r.code]);
+    const e = { code: r.code, name: r.name, unit: r.unit, group: r.group, prevQty: q };
+    (q > 0 ? prev : never).push(e);
+  });
+  prev.sort((a, b) => b.prevQty - a.prevQty || a.code.localeCompare(b.code));
+  never.sort((a, b) => a.name.localeCompare(b.name, "th"));
+  return { prev, never };
+}
+
+/** Stock card rows (Q15) from stock_latest, unit filtered, by name. got null = "รอจ่าย". total = stock + got (null when got is null). */
+export function stockRows(data, unit) {
+  const st = data.stock_latest || {};
+  const items = data.items || {};
+  const out = [];
+  Object.keys(st).forEach((code) => {
+    const e = st[code];
+    if (!e) return;
+    const it = items[code] || {};
+    if (unit !== "all" && groupOf(it) !== unit) return;
+    const stock = num(e.stock);
+    const got = e.got == null ? null : num(e.got);
+    out.push({ code, name: it.name || code, unit: it.unit || "", round: e.round, stock, got, total: got == null ? null : stock + got });
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name, "th") || a.code.localeCompare(b.code));
+}
+
+/** Average per elapsed round (cum req in the row's current measure) and the 12-round projection; null when elapsed <= 0. */
+export function avgPerMonth(cumReq, elapsed) {
+  const e = num(elapsed);
+  return e > 0 ? cumReq / e : null;
+}
+
+/** One CSV field (RFC 4180 quoting). */
+export function csvField(v) {
+  const s = v == null ? "" : String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** CSV text (UTF-8 BOM first) for `rows` (buildRows output; quantities, independent of the on-screen mode). */
+export function buildCsv(data, rows) {
+  const rounds = data.rounds || [];
+  const elapsed = num(data.elapsed);
+  const head = ["รหัส", "รายการ", "หน่วย", "หน่วยจ่าย", ...rounds.map((r) => `ขอเบิก ${shortRound(r)}`),
+    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้รับจริง", "ใช้ไป", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
+  const r2 = (x) => Math.round(x * 100) / 100;
+  const lines = [head.map(csvField).join(",")];
+  rows.forEach((r) => {
+    const avg = avgPerMonth(r.cq, elapsed);
+    lines.push([
+      r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq),
+      r.planQty > 0 ? r.planQty : "", r.planQty > 0 ? `${Math.round((r.cq / r.planQty) * 1000) / 10}%` : "",
+      avg == null ? "" : r2(avg), avg == null ? "" : r2(avg * 12),
+    ].map(csvField).join(","));
+  });
+  return "\uFEFF" + lines.join("\r\n") + "\r\n";
 }

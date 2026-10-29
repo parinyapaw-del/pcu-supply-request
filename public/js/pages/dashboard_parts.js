@@ -3,7 +3,10 @@
 // Charts are hand-written SVG (no library); colors come from the --dv-* tokens in main.css.
 // `ui` (mode / unit / search ...) is module state shared by every user of this module.
 import { formatInt } from "../format.js";
-import { aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact } from "./dashboard_calc.js";
+import {
+  aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact,
+  top3Rows, spentSum, limitStatus, notYetRequested, stockRows, avgPerMonth, buildCsv,
+} from "./dashboard_calc.js";
 
 export function esc(str) {
   return String(str == null ? "" : str)
@@ -20,9 +23,10 @@ export const SERIES = [
 ];
 export const MIXED_UNITS = "หน่วยนับรวม (ต่างชนิด)";
 export const ROW_PAGE = 50;
+export const STOCK_PAGE = 10;
 
 // UI state survives re-opening the page (toggle / unit); the FY and search do not.
-export const ui = { mode: "qty", unit: "all", search: "", showAll: false, limit: ROW_PAGE };
+export const ui = { mode: "qty", unit: "all", search: "", showAll: false, limit: ROW_PAGE, stockLimit: STOCK_PAGE };
 
 export const fullRound = (m) => `ขอเบิก ${shortRound(m)}`;
 export const fmt = (v) => formatInt(v);
@@ -282,60 +286,177 @@ export function groupRowsHtml(rows) {
     .join("")}</ul>`;
 }
 
-export function topHtml(agg) {
-  const { top } = agg;
-  if (!top.length) return `<p class="muted">ยังไม่มีรายการที่ขอเบิก</p>`;
-  const max = top[0].cum.req;
-  return `<ol class="dash-top">${top
+/** Ranked list with a bar per row; `key` = "qty" | "baht" (rows from top3Rows / dash_calc). */
+export function topListHtml(rows, key, emptyText) {
+  if (!rows.length) return `<p class="muted">${esc(emptyText || "ยังไม่มีรายการที่ขอเบิก")}</p>`;
+  const max = Math.max(...rows.map((r) => r[key]));
+  return `<ol class="dash-top">${rows
     .map((r) => `
     <li>
-      <span class="dash-top-name"><span class="dash-top-text">${esc(r.name)}</span> <span class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</span></span>
-      <span class="dash-hbar" aria-hidden="true"><span class="dash-f-req" style="width:${((r.cum.req / max) * 100).toFixed(1)}%"></span></span>
-      <span class="dash-top-val"><strong>${fmt(r.cum.req)}</strong> <span class="muted small">${unitWord()}</span></span>
+      <span class="dash-top-name"><span class="dash-top-text">${esc(r.name)}</span> <span class="muted small">${esc(r.code)}${r.group ? ` · ${esc(r.group)}` : ""}</span></span>
+      <span class="dash-hbar" aria-hidden="true"><span class="dash-f-req" style="width:${max > 0 ? ((r[key] / max) * 100).toFixed(1) : 0}%"></span></span>
+      <span class="dash-top-val"><strong>${fmt(r[key])}</strong> <span class="muted small">${key === "baht" ? "บาท" : esc(r.unit || "หน่วย")}</span></span>
     </li>`)
     .join("")}</ol>`;
 }
 
-export function tableHtml(agg, data) {
-  const { rounds, rows, flagged } = agg;
+/** Two-column card: by qty | by baht. `tops` = {qty:[], baht:[]}. */
+export function twoColCardHtml(title, caption, tops, emptyText) {
+  return `<div class="dash-card">
+      <h3>${esc(title)}</h3>
+      <p class="muted small dash-caption">${esc(caption)}</p>
+      <div class="dash-two">
+        <div><h4 class="dash-sub-h">ตามจำนวน</h4>${topListHtml(tops.qty, "qty", emptyText)}</div>
+        <div><h4 class="dash-sub-h">ตามบาท</h4>${topListHtml(tops.baht, "baht", emptyText)}</div>
+      </div></div>`;
+}
+
+/** Collapsible name list: <details> with a count in the summary. items = [{code,name,unit?, note?}] */
+export function detailsListHtml(summary, items) {
+  if (!items.length) return "";
+  return `<details class="dash-det"><summary>${esc(summary)} (${fmt(items.length)} รายการ)</summary>
+    <ul class="dash-plain">${items.map((r) => `<li>${esc(r.name)} <span class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</span>${r.note ? ` <span class="small">${esc(r.note)}</span>` : ""}</li>`).join("")}</ul></details>`;
+}
+
+// ---------------------------------------------------------------- brief 2aa cards (PCU dashboard + admin per-PCU view)
+export function spentHtml(rows, data) {
+  const total = spentSum(rows, data.spent);
+  return `<div class="dash-card dash-spent"><div class="dash-kpi-label">ใช้ไปสะสมปีงบ ${esc(data.fy)}</div>
+    <div class="dash-kpi-value"><strong>${fmt(total)}</strong> <span class="muted small">บาท</span></div>
+    <p class="muted small dash-caption">คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
+}
+
+export function stockCardHtml(data) {
+  const all = stockRows(data, ui.unit);
+  const hasAny = Object.keys(data.stock_latest || {}).length > 0;
+  const list = all.slice(0, ui.stockLimit);
+  const body = list.map((r) => `<tr>
+      <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</div></th>
+      <td>${esc(shortRound(r.round))}</td>
+      <td class="num">${fmt(r.stock)}</td>
+      <td class="num">${r.got == null ? '<span class="muted">รอจ่าย</span>' : fmt(r.got)}</td>
+      <td class="num strong">${r.total == null ? '<span class="muted">–</span>' : fmt(r.total)}</td></tr>`).join("");
+  const more = all.length > list.length ? `<button type="button" class="btn btn-secondary dash-stock-more">แสดงเพิ่ม (เหลืออีก ${all.length - list.length} รายการ)</button>` : "";
+  return `<div class="dash-card" id="dash-stock-card"><h3>คงเหลือ (stock)</h3>
+    <p class="muted small dash-caption">ต่อรายการ ใช้รอบล่าสุดที่กรอกคงเหลือ (ระบุรอบในแต่ละแถว) · ของเดิม + ได้เพิ่ม = รวม · เฉพาะรายการที่กรอกคงเหลือแล้ว</p>
+    ${!hasAny ? `<p class="muted">ยังไม่ได้กรอกคงเหลือ</p>` : !all.length ? `<p class="muted">ไม่มีรายการในหน่วยจ่ายนี้</p>` : `
+    <div class="table-scroll dash-table-wrap"><table class="dash-table dash-table-sm">
+      <caption class="sr-only">คงเหลือล่าสุดต่อรายการ</caption>
+      <thead><tr><th scope="col" class="dash-name">รายการ</th><th scope="col">รอบ</th><th scope="col" class="num">ของเดิม</th><th scope="col" class="num">ได้เพิ่ม</th><th scope="col" class="num">รวม</th></tr></thead>
+      <tbody>${body}</tbody></table></div>${more}`}</div>`;
+}
+
+export function limitCardHtml(rows, data) {
+  const st = limitStatus(rows, data.limits);
+  if (!st.over.length && !st.near.length) return "";
+  const line = (r) => `<li>${esc(r.name)} <span class="muted small">${esc(r.code)}</span> — <strong>${fmt(r.cum)}</strong> / ${fmt(r.limit)} ${esc(r.unit || "หน่วย")} <span class="small">(${Math.round(r.pct * 100)}%)</span></li>`;
+  return `<div class="notice notice-info dash-card dash-limit" role="note">
+    <h3>เพดานรายปี</h3>
+    <p class="small dash-caption">เพื่อใช้ประมาณการปีถัดไปให้แม่นยำขึ้น (แจ้งให้ทราบเท่านั้น ไม่ได้ห้ามเบิก)</p>
+    ${st.over.length > 5 // a long list stays collapsed (mobile)
+      ? `<details class="dash-det"><summary><strong>เกินเพดานรายปี (${fmt(st.over.length)} รายการ)</strong> — กดเพื่อดูทั้งหมด</summary><ul class="dash-plain">${st.over.map(line).join("")}</ul></details>`
+      : st.over.length ? `<h4 class="dash-sub-h">เกินเพดานรายปี (${fmt(st.over.length)} รายการ)</h4><ul class="dash-plain">${st.over.map(line).join("")}</ul>` : ""}
+    ${st.near.length ? `<h4 class="dash-sub-h">ใกล้เพดาน (≥ 80%${st.nearTotal > st.near.length ? ` · แสดง 3 อันดับแรกจาก ${fmt(st.nearTotal)}` : ""})</h4><ul class="dash-plain">${st.near.map(line).join("")}</ul>` : ""}
+  </div>`;
+}
+
+export function neverCardHtml(rows, data, { hiddenLink } = {}) {
+  const { prev, never } = notYetRequested(rows, data.prev_items);
+  if (!prev.length && !never.length) return "";
+  const prevYear = data.fy ? ` (ปีงบ ${data.fy - 1})` : "";
+  const link = hiddenLink ? ` <a href="#/hidden">ไปหน้าซ่อนรายการ</a>` : "";
+  return `<div class="dash-card"><h3>ยังไม่เคยเบิกปีนี้</h3>
+    <p class="muted small dash-caption">รายการในฟอร์มที่ยังไม่มีการขอเบิกในปีงบ ${esc(data.fy)} (ไม่รวมรายการที่ซ่อน) · ชื่อตามฟอร์มล่าสุด</p>
+    ${prev.length ? detailsListHtml(`ปีก่อนเคยเบิก${prevYear}`, prev.map((r) => ({ ...r, note: `ปีก่อน ${fmt(r.prevQty)}` }))) : ""}
+    ${never.length ? detailsListHtml("ไม่เคยเบิกทั้ง 2 ปี — พิจารณาซ่อนรายการ", never) : ""}
+    ${never.length && link ? `<p class="small">${link}</p>` : ""}</div>`;
+}
+
+/** Heat colour: single-hue (--dv-req) mixed into the surface; capped at 50 % so text in primary ink stays legible in light + dark. */
+export function heatPct(baht, max) {
+  return baht > 0 && max > 0 ? Math.round(8 + (baht / max) * 42) : 0;
+}
+
+export function heatLegendHtml() {
+  return `<div class="dash-heat-legend small muted" aria-hidden="true"><span>สีตามยอดบาทต่อช่อง (ต่ำ</span>${[0.1, 0.35, 0.6, 0.85, 1]
+    .map((f) => `<i style="background:color-mix(in srgb, var(--dv-req) ${Math.round(8 + f * 42)}%, transparent)"></i>`).join("")}<span>สูง) · ไม่ระบายสี = ไม่ได้ขอ</span></div>`;
+}
+
+/** Rows matching the current search / show-all (before paging) — shared by the table and the CSV export. */
+export function visibleRows(agg) {
   const q = ui.search.trim().toLowerCase();
-  let list = rows.filter((r) => {
+  const list = agg.rows.filter((r) => {
     if (q) return r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q);
     return ui.showAll || r.cum.req > 0 || r.cum.got > 0 || r.cum.used > 0;
   });
-  list.sort((a, b) => b.cum.req - a.cum.req || a.name.localeCompare(b.name, "th"));
+  return list.sort((a, b) => b.cum.req - a.cum.req || a.name.localeCompare(b.name, "th"));
+}
+
+export function downloadCsv(data, rows) {
+  const text = buildCsv(data, rows);
+  const pcu = data.pcu && (data.pcu.code || (typeof data.pcu === "string" ? data.pcu : ""));
+  const name = `dashboard_${pcu ? `${pcu}_` : ""}${data.fy}.csv`;
+  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+export function tableHtml(agg, data, { heat } = {}) {
+  const { rounds, rows, flagged } = agg;
+  let list = visibleRows(agg);
   const total = list.length;
   list = list.slice(0, ui.limit);
   const dash = '<span class="muted">–</span>';
   const cell = (v) => (v ? fmt(v) : dash);
+  const elapsed = Number(data.elapsed) || 0;
+  const maxHeat = heat ? Math.max(0, ...list.flatMap((r) => r.rb)) : 0;
+  const roundCell = (r, i) => {
+    if (!heat) return `<td class="num">${cell(r.m.req[i])}</td>`;
+    const q = r.rq[i];
+    const b = r.rb[i];
+    if (!(q > 0) && !(b > 0)) return `<td class="num dash-heatcell">${dash}</td>`;
+    const p = heatPct(b, maxHeat);
+    return `<td class="num dash-heatcell"${p ? ` style="background:color-mix(in srgb, var(--dv-req) ${p}%, transparent)"` : ""}><div>${fmt(q)}</div><div class="dash-heat-sub">${fmt(b)} บาท</div></td>`;
+  };
   const body = list
     .map((r) => {
       const f = flagged.get(r.code);
       const flag = f
         ? ` <span class="badge badge-info dash-flag" title="${esc(f.plan_qty != null ? `สะสม ${fmt(f.cum_qty != null ? f.cum_qty : f.value)} จากแผนปี ${fmt(f.plan_qty)} (ผ่านไป ${f.elapsed}/12 รอบ)` : `สะสม ${fmt(f.value)} เกินเกณฑ์ ${fmt(f.threshold)}`)}">⏱ เบิกเร็วกว่าแผน</span>`
         : "";
+      const avg = avgPerMonth(r.cum.req, elapsed);
       return `<tr>
         <th scope="row" class="dash-name"><div>${esc(r.name)}${flag}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""} · ${esc(r.group)}</div></th>
-        ${r.m.req.map((v) => `<td class="num">${cell(v)}</td>`).join("")}
+        ${rounds.map((_, i) => roundCell(r, i)).join("")}
         <td class="num strong">${cell(r.cum.req)}</td>
         <td class="num">${cell(r.cum.got)}</td>
         <td class="num">${cell(r.cum.used)}</td>
         <td class="num">${r.plan != null ? fmt(r.plan) : dash}</td>
         <td class="num">${esc(pctText(r.pct))}</td>
+        <td class="num">${avg == null ? dash : cell(avg)}</td>
+        <td class="num">${avg == null ? dash : cell(avg * 12)}</td>
       </tr>`;
     })
     .join("");
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
+  const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""}</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""}</p>
+    ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">
-      <table class="dash-table">
+      <table class="dash-table${heat ? " dash-heat" : ""}">
         <thead><tr>
           <th scope="col" class="dash-name">รายการ</th>
           ${rounds.map((m) => `<th scope="col" class="num" title="${esc(fullRound(m))}">${esc(shortRound(m))}</th>`).join("")}
           <th scope="col" class="num">สะสมขอเบิก</th><th scope="col" class="num">ได้รับจริง</th><th scope="col" class="num">ใช้ไป</th>
           <th scope="col" class="num">แผนปี</th><th scope="col" class="num">% แผน</th>
+          <th scope="col" class="num">เฉลี่ย/เดือน</th><th scope="col" class="num">คาดทั้งปี</th>
         </tr></thead>
         <tbody>${body}</tbody>
       </table>
@@ -359,8 +480,8 @@ export function seg(name, options, current, labelId) {
     .join("")}</div>`;
 }
 
-/** Controls row: [fy select] + mode (จำนวน/บาท) + unit filter. `fys` only matters when it has more than one year. */
-export function controlsHtml(data, groups) {
+/** Controls row: [fy select] + mode (จำนวน/บาท; `mode:false` omits it — admin is baht only) + unit filter. `fys` only matters when it has more than one year. */
+export function controlsHtml(data, groups, { mode = true } = {}) {
   const fys = Array.isArray(data.fys) ? data.fys : [];
   const fySel = fys.length > 1
     ? `<label class="dash-ctl"><span class="dash-ctl-label">ปีงบประมาณ</span>
@@ -368,7 +489,7 @@ export function controlsHtml(data, groups) {
     : "";
   return `<div class="dash-controls">
         ${fySel}
-        <div class="dash-ctl"><span class="dash-ctl-label" id="dash-l-mode">แสดงเป็น</span>${seg("mode", [{ value: "qty", label: "จำนวน" }, { value: "baht", label: "บาท" }], ui.mode, "dash-l-mode")}</div>
+        ${mode ? `<div class="dash-ctl"><span class="dash-ctl-label" id="dash-l-mode">แสดงเป็น</span>${seg("mode", [{ value: "qty", label: "จำนวน" }, { value: "baht", label: "บาท" }], ui.mode, "dash-l-mode")}</div>` : ""}
         <div class="dash-ctl"><span class="dash-ctl-label" id="dash-l-unit">หน่วยจ่าย</span>${seg("unit", [{ value: "all", label: "ทั้งหมด" }, ...groups.map((g) => ({ value: g, label: g }))], ui.unit, "dash-l-unit")}</div>
       </div>`;
 }
@@ -377,16 +498,20 @@ export function controlsHtml(data, groups) {
 export function bodyShellHtml() {
   return `<div id="dash-body">
         <div id="dash-kpi"></div>
+        <div id="dash-spent"></div>
         <div id="dash-bars"></div>
         <div id="dash-cum"></div>
+        <div id="dash-stock"></div>
+        <div id="dash-limit"></div>
+        <div id="dash-never"></div>
         <div class="dash-card"><h3>แยกตามหน่วยจ่าย</h3>
           <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ — แสดงทุกหน่วยจ่ายเสมอ กดแถวเพื่อกรองทั้งหน้า</p><div id="dash-groups"></div></div>
-        <div class="dash-card"><h3>10 รายการที่ขอเบิกมากที่สุด</h3>
-          <p class="muted small dash-caption" id="dash-top-cap"></p><div id="dash-top"></div></div>
+        <div id="dash-top"></div>
         <div class="dash-card"><h3>รายการทั้งหมด</h3>
           <div class="dash-tools">
             <input type="text" class="select-input dash-search" placeholder="ค้นหาชื่อหรือรหัสรายการ" aria-label="ค้นหารายการ" autocomplete="off">
             <label class="switch-label"><input type="checkbox" class="dash-showall"> รวมรายการที่ยังไม่เบิก</label>
+            <button type="button" class="btn btn-secondary dash-export" title="ไฟล์ CSV เปิดด้วย Excel ได้">ดาวน์โหลด Excel</button>
           </div>
           <div id="dash-table"></div></div>
       </div>`;
@@ -395,8 +520,9 @@ export function bodyShellHtml() {
 /**
  * Wires the controls + body inside `box` (which holds controlsHtml() and bodyShellHtml()) for a pcuDashboard-shaped payload.
  * `onRender(agg)` runs after every body render (the admin view hangs its extra sections there).
+ * `heat` = heatmap table (admin per-PCU view); `hiddenLink` = link to #/hidden in the never-requested card (PCU page only).
  */
-export function createBody(box, data, { onRender } = {}) {
+export function createBody(box, data, { onRender, heat = false, hiddenLink = false } = {}) {
   let agg = null;
   const $ = (id) => box.querySelector(id);
 
@@ -411,6 +537,7 @@ export function createBody(box, data, { onRender } = {}) {
   function setUnit(u) {
     ui.unit = u;
     ui.limit = ROW_PAGE;
+    ui.stockLimit = STOCK_PAGE;
     syncSeg();
     renderBody();
   }
@@ -418,14 +545,25 @@ export function createBody(box, data, { onRender } = {}) {
   function renderTable() {
     const t = $("#dash-table");
     if (!t || !agg) return;
-    t.innerHTML = tableHtml(agg, data);
+    t.innerHTML = tableHtml(agg, data, { heat });
     const more = t.querySelector(".dash-more");
     if (more) more.addEventListener("click", () => { ui.limit += ROW_PAGE; renderTable(); });
+  }
+
+  function renderStock() {
+    const host = $("#dash-stock");
+    host.innerHTML = stockCardHtml(data);
+    const more = host.querySelector(".dash-stock-more");
+    if (more) more.addEventListener("click", () => { ui.stockLimit += STOCK_PAGE; renderStock(); });
   }
 
   function renderBody() {
     agg = aggregate(data, ui.mode, ui.unit);
     $("#dash-kpi").innerHTML = kpiHtml(agg, data);
+    $("#dash-spent").innerHTML = spentHtml(agg.rows, data);
+    renderStock();
+    $("#dash-limit").innerHTML = limitCardHtml(agg.rows, data);
+    $("#dash-never").innerHTML = neverCardHtml(agg.rows, data, { hiddenLink });
 
     const mixed = ui.mode === "qty" ? ` · ${MIXED_UNITS}` : "";
     const scope = ui.unit === "all" ? "ทุกหน่วยจ่าย" : `หน่วยจ่าย ${ui.unit}`;
@@ -448,8 +586,7 @@ export function createBody(box, data, { onRender } = {}) {
     g.innerHTML = groupsHtml(data);
     g.querySelectorAll(".dash-group").forEach((b) => b.addEventListener("click", () => setUnit(ui.unit === b.dataset.unit ? "all" : b.dataset.unit)));
 
-    $("#dash-top-cap").textContent = `ตามยอดขอเบิกสะสม (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · ${scope}`;
-    $("#dash-top").innerHTML = topHtml(agg);
+    $("#dash-top").innerHTML = twoColCardHtml("3 รายการที่ขอเบิกมากที่สุด", `ยอดขอเบิกสะสมปีงบ · ${scope} · แสดงทั้งตามจำนวนและตามบาท`, top3Rows(agg.rows, 3));
     renderTable();
     if (onRender) onRender(agg);
   }
@@ -464,6 +601,8 @@ export function createBody(box, data, { onRender } = {}) {
     showAll.checked = ui.showAll;
     showAll.addEventListener("change", () => { ui.showAll = showAll.checked; ui.limit = ROW_PAGE; renderTable(); });
     renderBody();
+    const exp = $(".dash-export");
+    if (exp) exp.addEventListener("click", () => { if (agg) downloadCsv(data, visibleRows(agg)); });
   }
 
   return { bind, renderBody, setUnit, syncSeg };

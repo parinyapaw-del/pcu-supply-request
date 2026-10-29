@@ -467,8 +467,11 @@
 @media (max-width: 720px) {
   .adm-two-col { grid-template-columns: minmax(0, 1fr); }
   .dash-kpis.adm-two { grid-template-columns: minmax(0, 1fr); }
+  .dash-kpis.adm-three { grid-template-columns: minmax(0, 1fr); }
 }
-.dash-table.adm-rank { min-width: 780px; }
+.dash-table.adm-rank { min-width: 1020px; }
+.dash-kpis.adm-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.adm-over summary { cursor: pointer; font-weight: 600; }
 .dash-table.adm-anom { min-width: 680px; }
 .adm-anom .adm-rule { display: inline-block; border-radius: 10px; }
 .adm-rank td { white-space: nowrap; }

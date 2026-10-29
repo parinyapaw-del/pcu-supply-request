@@ -2921,6 +2921,56 @@ async function main() {
     eq([Sd.unit, Sd.items.map((x) => x.code)], ["จ่ายกลาง", [K.code]], "dispenser: unit defaults to its own (จ่ายกลาง)");
     eq((await sh({ scope: "fy", unit: "all" }, DT)).data.items.map((x) => x.code), [K.code, X.code], "dispenser may ask for unit all");
 
+    // ---- 2aa: network bottom3 / never · pcus[] max_round / min_round / over_plan (data of N above, before the PCU13 lines below) ----
+    const bot = (o) => Object.keys(o).sort((u, v) => o[u] - o[v] || byForm(u, v)).slice(0, 3);
+    eq(N.network.bottom3, { qty: bot(netQ), baht: bot(netB) }, "2aa network.bottom3 by req qty / req baht (only items requested > 0)");
+    eq(N.network.never, its.map((i) => i.code).filter((c) => !(c in netQ)), "2aa network.never = active form items no PCU requested (PCU00 / trial round do not count) · form order");
+    const mm = (byR) => { const e = Object.entries(byR).filter(([, v]) => v > 0); if (!e.length) return [null, null];
+      const mx = e.reduce((u, v) => (v[1] > u[1] ? v : u)), mn = e.reduce((u, v) => (v[1] < u[1] ? v : u));
+      return [{ round: mx[0], baht: r2(mx[1]) }, { round: mn[0], baht: r2(mn[1]) }]; };
+    const mm98 = mm({ [R1]: a * px + qz * pz + 2 * pw, [R2]: b * px });
+    eq([pc.PCU98.max_round, pc.PCU98.min_round], mm98, "2aa pcus[PCU98] max_round / min_round = req baht of R1 / R2");
+    eq([pc.PCU01.max_round, pc.PCU01.min_round], [{ round: R1, baht: r2(T.PCU01) }, { round: R1, baht: r2(T.PCU01) }], "2aa pcus[PCU01] one round → max = min");
+    eq([pc.PCU02.max_round, pc.PCU02.min_round, pc.PCU02.over_plan], [null, null, { n: 0, codes: [] }], "2aa pcus[PCU02] nothing requested → null / null · over_plan 0");
+    eq([pc.PCU98.over_plan, pc.PCU01.over_plan], [{ n: 0, codes: [] }, { n: 0, codes: [] }], "2aa over_plan: cum = plan (X a+b) / below plan → not over");
+    eq([V.max_round, V.min_round, V.over_plan], [...mm98, { n: 0, codes: [] }], "2aa pcu view max_round / min_round / over_plan = the network row");
+    eq([V.prev_items, V.elapsed], [{ [X.code]: 3 }, 4], "2aa pcu view prev_items = actual_prev 2570 whole year (X 3)");
+    eq(V.spent, { [X.code]: r2((a - 2 + b) * px), [Z.code]: r2(qz * pz), [W.code]: r2(2 * pw) }, "2aa spent (staff view): issued X R1 → got, not issued → req");
+    eq(pdA.data.spent[X.code], r2((a + b) * px), "2aa spent (PCU view): X R1 issued but unit not done → still req");
+    eq([pdA.data.elapsed, pdA.data.prev_items], [4, { [X.code]: 3 }], "2aa pcuDashboard elapsed + prev_items");
+    // over plan: plan W = 1 for PCU98 (cum 2 > 1)
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: FY,
+      plans: { [FY]: { PCU98: { [X.code]: [a + b, 0], [Z.code]: [qz * 10, 0], [W.code]: [1, 0] }, PCU01: { [Y.code]: [qy * 10, 0] } } } } }, ADM2, "2aa: plan W = 1 for PCU98");
+    const N2 = await mustOk("adminDashboard", {}, ADM2);
+    eq(N2.pcus.find((x) => x.code === "PCU98").over_plan, { n: 1, codes: [W.code] }, "2aa pcus[PCU98].over_plan = W (cum 2 > plan 1)");
+    eq((await mustOk("adminDashboard", { pcu: "PCU98" }, ADM2)).over_plan, { n: 1, codes: [W.code] }, "2aa pcu view over_plan = W");
+
+    // ---- 2aa: stock_latest / limits / items.off (PCU13, its own rounds) ----
+    const T13 = (await mustOk("pcuLogin", { pcu: "PCU13", pin: "12345" })).token;
+    const S13 = (ls, month) => api("saveLines", { month, lines: Object.fromEntries(Object.entries(ls).map(([c, [st, q]]) => [c, { stock: st, op: q, pp: 0, updated_at: tsn() }])), send: true },
+      T13, { month: shiftMonth(month, -1) });
+    const s13 = [await S13({ [X.code]: [9, 1], [Y.code]: [5, 0] }, R1), await S13({ [X.code]: [4, 2] }, R2)];
+    ok(s13.every((r) => r.ok && r.data.status === "submitted"), "2aa setup: PCU13 R1 (X stock 9 req 1 · Y stock 5 only) + R2 (X stock 4 req 2) sent");
+    const pd13 = async () => (await mustOk("pcuDashboard", {}, T13));
+    let D13 = await pd13();
+    eq(D13.stock_latest, { [X.code]: { round: R2, stock: 4, got: null }, [Y.code]: { round: R1, stock: 5, got: 0 } },
+      "2aa stock_latest: latest round with a stock per item · got null = requested, not received · stock-only line → got 0");
+    await mustOk("issueLines", { pcu: "PCU13", month: R2, lines: { [X.code]: { issued_total: 1, reason: "out_of_stock" } } }, ADM2);
+    eq((await pd13()).stock_latest[X.code].got, null, "2aa stock_latest (PCU view): issued but unit not done → got still null");
+    eq((await mustOk("adminDashboard", { pcu: "PCU13" }, ADM2)).stock_latest[X.code], { round: R2, stock: 4, got: 1 }, "2aa stock_latest (staff view): got = issued_total");
+    await mustOk("issueDone", { pcu: "PCU13", month: R2, unit: "พัสดุ", done: 1 }, ADM2);
+    D13 = await pd13();
+    eq([D13.stock_latest[X.code], D13.spent[X.code]], [{ round: R2, stock: 4, got: 1 }, r2(2 * px)], "2aa unit done → PCU view got 1 · spent = R1 req 1 + R2 got 1");
+    await mustOk("adminSetLimit", { pcu: "PCU13", code: X.code, limit_year: 2 }, ADM2);
+    D13 = await pd13();
+    ok(D13.limits[X.code] === 2 && Object.values(D13.limits).every((v) => v > 0), "2aa limits = {code: limit_year} of (fy, pcu) (> 0 only)");
+    const hid13 = (await mustOk("pcuBootstrap", {}, T13)).hidden;
+    await mustOk("setHidden", { codes: [...hid13, X.code] }, T13);
+    D13 = await pd13();
+    ok(D13.items[X.code] && D13.items[X.code].off === true && !Object.values(D13.items).some((it) => it.off && it !== D13.items[X.code]),
+      "2aa items.off: hidden item listed for its data only (off true) · shown items have no off");
+    await mustOk("setHidden", { codes: hid13 }, T13);
+
     // restore: trial off, plans 2571 / stats 2570 / actual_prev 2570 as exported before, temporary dispenser removed
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
     await mustOk("adminSetConfig", { key: "trial_month", value: null }, ADM2);

@@ -99,6 +99,44 @@ export function topItemsNetwork(data, unit, n = 3) {
   return { qty: by("qty"), baht: by("baht") };
 }
 
+/**
+ * Bottom `n` items of the network (requested > 0 only) by qty and by baht for the unit filter (brief 2aa Q12).
+ * unit "all" uses the payload's network.bottom3 when present (backend ties), otherwise / for a unit filter: client calc over network.items.
+ */
+export function bottomItemsNetwork(data, unit, n = 3) {
+  const items = data.items || {};
+  const net = (data.network || {}).items || {};
+  const mk = (code) => {
+    const it = items[code] || {};
+    const v = net[code] || [];
+    return { code, name: it.name || code, unit: it.unit || "", group: it.unit_group || "", qty: num(v[0]), baht: num(v[1]) };
+  };
+  const pre = (data.network || {}).bottom3;
+  if (unit === "all" && pre && Array.isArray(pre.qty) && Array.isArray(pre.baht)) {
+    return { qty: pre.qty.slice(0, n).map(mk).filter((r) => r.qty > 0), baht: pre.baht.slice(0, n).map(mk).filter((r) => r.baht > 0) };
+  }
+  const rows = Object.keys(net).filter((c) => unit === "all" || (items[c] || {}).unit_group === unit).map(mk);
+  const by = (key) => rows.filter((r) => r[key] > 0).sort((a, b) => a[key] - b[key] || a.code.localeCompare(b.code)).slice(0, n);
+  return { qty: by("qty"), baht: by("baht") };
+}
+
+/** Items nobody requested (network.never) for the unit filter -> [{code,name,unit,group}] in payload order. */
+export function neverItemsNetwork(data, unit) {
+  const items = data.items || {};
+  return ((data.network || {}).never || [])
+    .filter((c) => unit === "all" || (items[c] || {}).unit_group === unit)
+    .map((code) => {
+      const it = items[code] || {};
+      return { code, name: it.name || code, unit: it.unit || "", group: it.unit_group || "" };
+    });
+}
+
+/** over_plan {n, codes} -> [{code,name,unit}] using data.items names. */
+export function overPlanItems(data, op) {
+  const items = data.items || {};
+  return ((op && op.codes) || []).map((code) => ({ code, name: (items[code] || {}).name || code, unit: (items[code] || {}).unit || "" }));
+}
+
 /** Top `n` by qty / baht for a single PCU, from its pcuDashboard-shaped payload (monthly[code][round] V6), unit filtered. */
 export function topItemsPcu(data, unit, n = 3) {
   const items = data.items || {};
@@ -186,6 +224,9 @@ export function rankRows(data, unit) {
       pattern_note: p.pattern_note || null,
       pattern_prev: p.pattern_prev || null,
       endyear_prev: !!p.endyear_prev,
+      max_round: p.max_round || null, // all-units figures (not affected by the unit filter)
+      min_round: p.min_round || null,
+      over_plan: p.over_plan || null,
       flags: unit === "all" ? num(p.n_flags) : (flagCount.get(p.code) || 0),
     };
   });

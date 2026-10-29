@@ -6,10 +6,11 @@ import { escapeHtml as esc, errMessage } from "./util.js";
 import { shortRound } from "../pages/dashboard_calc.js";
 import {
   ui, ROW_PAGE, fmt, pctText, controlsHtml, bodyShellHtml, createBody, kpiHtml, barChart, lineChart, chartCardHtml,
-  attachTips, legendHtml, groupRowsHtml, SERIES, MIXED_UNITS,
+  attachTips, legendHtml, groupRowsHtml, SERIES, MIXED_UNITS, twoColCardHtml, detailsListHtml,
 } from "../pages/dashboard_parts.js";
 import {
-  RULE_LABEL, RULE_ORDER, adminGroups, isAdminEmpty, overviewAgg, topItemsNetwork, topItemsPcu, groupBreakdown, anomalyRows, rankRows, sortRank,
+  RULE_LABEL, RULE_ORDER, adminGroups, isAdminEmpty, overviewAgg, topItemsNetwork, bottomItemsNetwork, neverItemsNetwork, overPlanItems,
+  groupBreakdown, anomalyRows, rankRows, sortRank,
 } from "./dash_calc.js";
 import { mountShortage } from "./shortage.js";
 
@@ -125,28 +126,19 @@ export function renderTab12(container, ctx) {
   }
 
   // ------------------------------------------------------------------ shared small renderers
-  function topListHtml(rows, key) {
-    if (!rows.length) return `<p class="muted">ยังไม่มีรายการที่ขอเบิก</p>`;
-    const max = rows[0][key];
-    return `<ol class="dash-top">${rows
-      .map((r) => `
-      <li>
-        <span class="dash-top-name"><span class="dash-top-text">${esc(r.name)}</span> <span class="muted small">${esc(r.code)}${r.group ? ` · ${esc(r.group)}` : ""}</span></span>
-        <span class="dash-hbar" aria-hidden="true"><span class="dash-f-req" style="width:${((r[key] / max) * 100).toFixed(1)}%"></span></span>
-        <span class="dash-top-val"><strong>${fmt(r[key])}</strong> <span class="muted small">${key === "baht" ? "บาท" : esc(r.unit || "หน่วย")}</span></span>
-      </li>`)
-      .join("")}</ol>`;
+  function scopeText() {
+    return ui.unit === "all" ? "ทุกหน่วยจ่าย" : `หน่วยจ่าย ${ui.unit}`;
   }
 
-  function top3Html(top) {
-    const scope = ui.unit === "all" ? "ทุกหน่วยจ่าย" : `หน่วยจ่าย ${ui.unit}`;
-    return `<div class="dash-card">
-      <h3>3 รายการที่ขอเบิกมากที่สุด</h3>
-      <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ · ${esc(scope)} · แสดงทั้งตามจำนวนและตามบาท</p>
-      <div class="adm-two-col">
-        <div><h4 class="adm-sub">ตามจำนวน</h4>${topListHtml(top.qty, "qty")}</div>
-        <div><h4 class="adm-sub">ตามบาท</h4>${topListHtml(top.baht, "baht")}</div>
-      </div></div>`;
+  // Q12: top 3 + bottom 3 (requested > 0 only) + "nobody requested" (collapsed names)
+  function top3Html(d) {
+    const scope = scopeText();
+    const never = neverItemsNetwork(d, ui.unit);
+    return twoColCardHtml("3 รายการที่ขอเบิกมากที่สุด", `ยอดขอเบิกสะสมปีงบ · ${scope} · แสดงทั้งตามจำนวนและตามบาท`, topItemsNetwork(d, ui.unit, 3))
+      + twoColCardHtml("3 รายการที่ขอเบิกน้อยที่สุด", `เฉพาะรายการที่มีการขอเบิก (> 0) · ${scope} · แสดงทั้งตามจำนวนและตามบาท`, bottomItemsNetwork(d, ui.unit, 3))
+      + `<div class="dash-card"><h3>ไม่มีใครเบิก ${formatInt(never.length)} รายการ</h3>
+        <p class="muted small dash-caption">รายการในฟอร์มล่าสุดที่ไม่มี รพ.สต. แห่งใดขอเบิกเลยในปีงบนี้ · ${esc(scope)}</p>
+        ${never.length ? detailsListHtml("ดูรายชื่อ", never) : `<p class="muted">ทุกรายการมีคนเบิกแล้ว</p>`}</div>`;
   }
 
   // Anomaly list (flags + info_new). State (rule filter / page) lives in ts so a mode/unit change keeps it.
@@ -202,18 +194,28 @@ export function renderTab12(container, ctx) {
       const arrow = on ? (ts.rank.dir === "asc" ? " ▲" : " ▼") : "";
       return `<th scope="col" class="${cls || ""}" aria-sort="${on ? (ts.rank.dir === "asc" ? "ascending" : "descending") : "none"}"><button type="button" class="adm-sort" data-sort="${key}">${esc(label)}${arrow}</button></th>`;
     };
+    const roundCell = (x) => (x ? `${esc(shortRound(x.round))}<div class="muted small">${fmt(x.baht)} บาท</div>` : `<span class="muted">–</span>`);
+    const overCell = (op) => {
+      if (!op || !(op.n > 0)) return op ? "0" : `<span class="muted">–</span>`;
+      const names = overPlanItems(d, op).map((x) => x.name).join(", ");
+      return `<details class="dash-det adm-over"><summary title="${esc(names)}">${formatInt(op.n)}</summary><ul class="dash-plain">${overPlanItems(d, op).map((x) => `<li>${esc(x.name)} <span class="muted small">${esc(x.code)}</span></li>`).join("")}</ul></details>`;
+    };
     const body = rows.map((r, i) => `<tr>
       <td class="num muted">${i + 1}</td>
       <th scope="row" class="adm-name"><button type="button" class="adm-link" data-pcu="${esc(r.code)}">${esc(r.name)}</button></th>
       <td class="num strong">${fmt(r.req)}</td>
       <td class="num">${fmt(r.got)}</td>
       <td class="num">${esc(pctText(r.pct))}</td>
+      <td class="num">${roundCell(r.max_round)}</td>
+      <td class="num">${roundCell(r.min_round)}</td>
+      <td class="num">${overCell(r.over_plan)}</td>
       <td>${esc(r.pattern || "–")}${r.pattern_note ? `<div class="muted small">(${esc(r.pattern_note)})</div>` : ""}</td>
       <td>${esc(r.pattern_prev || "–")}${r.endyear_prev ? `<div class="muted small">เบิกหนักช่วงท้ายปีงบ</div>` : ""}</td>
       <td class="num">${r.flags > 0 ? `<span class="badge badge-info dash-flag">${formatInt(r.flags)}</span>` : `<span class="muted">–</span>`}</td></tr>`).join("");
     return `<div class="table-scroll dash-table-wrap adm-rank-wrap"><table class="dash-table adm-rank">
       <caption class="sr-only">จัดอันดับ รพ.สต. ตามยอดขอเบิกเป็นบาท</caption>
       <thead><tr><th scope="col" class="num">#</th>${th("name", "รพ.สต.", "adm-name")}${th("req", "ขอเบิก (บาท)", "num")}${th("got", "ได้รับจริง (บาท)", "num")}${th("pct", "% แผน", "num")}
+        <th scope="col" class="num">เดือนสูงสุด</th><th scope="col" class="num">เดือนต่ำสุด</th><th scope="col" class="num">เกินแผน</th>
         <th scope="col">รูปแบบปีนี้</th><th scope="col">รูปแบบปีก่อน</th>${th("flags", "จำนวน flag", "num")}</tr></thead>
       <tbody>${body}</tbody></table></div>`;
   }
@@ -223,11 +225,12 @@ export function renderTab12(container, ctx) {
     const groups = adminGroups(d);
     if (ui.unit !== "all" && !groups.includes(ui.unit)) ui.unit = "all";
     const empty = isAdminEmpty(d);
+    ui.mode = "baht"; // Q11: admin charts / KPIs are baht only (ui is shared module state — the PCU page keeps its own toggle)
     box.classList.remove("is-loading");
     box.innerHTML = `
       <h2>แดชบอร์ดภาพรวมเครือข่าย</h2>
       <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้รับจริง = ที่จ่ายแล้วทุกหน่วย</p>
-      ${controlsHtml(d, groups)}
+      ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
         <div id="adm-kpi"></div><div id="adm-bars"></div><div id="adm-cum"></div>
@@ -247,7 +250,6 @@ export function renderTab12(container, ctx) {
     if (empty) return;
     // the first .dash-controls is this tab's own; the shortage card has its own (data-unit buttons) further down
     const ctl = box.querySelector(".dash-controls");
-    ctl.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { ui.mode = b.dataset.mode; syncSeg(); renderOverviewBody(); }));
     ctl.querySelectorAll("[data-unit]").forEach((b) => b.addEventListener("click", () => setUnit(b.dataset.unit)));
     renderOverviewBody();
   }
@@ -269,6 +271,7 @@ export function renderTab12(container, ctx) {
   function renderOverviewBody() {
     const d = ts.overview;
     const $ = (id) => box.querySelector(id);
+    ui.mode = "baht";
     const agg = overviewAgg(d, ui.mode, ui.unit);
     agg.pctBasis = "baht";
     $("#adm-kpi").innerHTML = kpiHtml(agg, d);
@@ -286,13 +289,13 @@ export function renderTab12(container, ctx) {
       legendHtml(legend), line);
     attachTips($("#dash-cum-card"), line.tips);
 
-    $("#adm-top3").innerHTML = top3Html(topItemsNetwork(d, ui.unit, 3));
+    $("#adm-top3").innerHTML = top3Html(d);
 
     const g = $("#adm-groups");
     g.innerHTML = groupRowsHtml(groupBreakdown(d, ui.mode));
     g.querySelectorAll(".dash-group").forEach((b) => b.addEventListener("click", () => setUnit(ui.unit === b.dataset.unit ? "all" : b.dataset.unit)));
 
-    $("#adm-rank-cap").textContent = `${scope} · ยอดเป็นบาทเสมอ · รูปแบบการเบิก (pattern) คิดจากทุกหน่วยจ่ายของแห่งนั้น ไม่เปลี่ยนตามตัวกรอง · กดชื่อ รพ.สต. เพื่อดูรายแห่ง`;
+    $("#adm-rank-cap").textContent = `${scope} · ยอดเป็นบาทเสมอ · เดือนสูงสุด/ต่ำสุด (เดือนที่ไม่เบิกไม่นับ) และเกินแผน (รายการสะสมขอ > แผนปี) เป็นตัวเลขของทุกหน่วยจ่าย ไม่เปลี่ยนตามตัวกรอง · รูปแบบการเบิก (pattern) คิดจากทุกหน่วยจ่ายของแห่งนั้น ไม่เปลี่ยนตามตัวกรอง · กดชื่อ รพ.สต. เพื่อดูรายแห่ง`;
     const r = $("#adm-rank");
     r.innerHTML = rankTableHtml(d);
     r.querySelectorAll(".adm-sort").forEach((b) => b.addEventListener("click", () => {
@@ -327,19 +330,40 @@ export function renderTab12(container, ctx) {
       </div></div>`;
   }
 
+  // Q13: busiest / quietest month (baht, months with no request not counted) + items over the yearly plan
+  function extremesHtml(d) {
+    const month = (label, x) => `<div class="dash-kpi"><div class="dash-kpi-label">${esc(label)}</div>
+      <div class="dash-kpi-value adm-pattern">${x ? esc(shortRound(x.round)) : "–"}</div>
+      <div class="dash-kpi-sub small muted">${x ? `${fmt(x.baht)} บาท` : "ยังไม่มีข้อมูล"}</div></div>`;
+    const op = d.over_plan;
+    const over = overPlanItems(d, op);
+    return `<div class="dash-card">
+      <h3>เดือนสูงสุด/ต่ำสุด และเกินแผน</h3>
+      <p class="muted small dash-caption">เป็นยอดบาทของทุกหน่วยจ่าย ไม่เปลี่ยนตามตัวกรอง · เดือนที่ไม่ได้เบิกไม่นับ</p>
+      <div class="dash-kpis adm-three">
+        ${month("เดือนบาทสูงสุด", d.max_round)}
+        ${month("เดือนบาทต่ำสุด", d.min_round)}
+        <div class="dash-kpi"><div class="dash-kpi-label">เกินแผนปี</div>
+          <div class="dash-kpi-value adm-pattern">${op ? formatInt(op.n) : "–"} <span class="small muted">รายการ</span></div>
+          <div class="dash-kpi-sub small muted">สะสมขอเบิก > แผนปี</div></div>
+      </div>
+      ${over.length ? detailsListHtml("ดูรายชื่อรายการที่เกินแผน", over) : ""}</div>`;
+  }
+
   function renderDetail() {
     const d = ts.detail;
     // unit groups present in this PCU's payload (items of the form)
     const ordered = adminGroups({ items: d.items, pcus: [], network: {} });
     if (ui.unit !== "all" && !ordered.includes(ui.unit)) ui.unit = "all";
     const empty = !d.monthly || Object.keys(d.monthly).length === 0;
+    ui.mode = "baht";
     box.classList.remove("is-loading");
     const name = (d.pcu && d.pcu.name) || ts.pcu;
     box.innerHTML = `
       <p class="dash-back"><button type="button" class="btn btn-secondary btn-sm" id="adm-back">← กลับภาพรวมเครือข่าย</button></p>
       <h2>${esc(name)} <span class="muted small">${esc((d.pcu && d.pcu.code) || "")}</span></h2>
       <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้รับจริง = ที่จ่ายแล้วทุกหน่วย</p>
-      ${controlsHtml(d, ordered)}
+      ${controlsHtml(d, ordered, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);
     const sel = box.querySelector(".dash-fy");
@@ -349,15 +373,13 @@ export function renderTab12(container, ctx) {
     // extra sections (pattern / top 3 / anomalies) sit between the charts and the unit-group card
     const extra = document.createElement("div");
     extra.id = "adm-extra";
-    extra.innerHTML = `${patternHtml(d)}<div id="adm-top3-pcu"></div><div id="adm-anom-pcu"></div>`;
+    extra.innerHTML = `${patternHtml(d)}${extremesHtml(d)}<div id="adm-anom-pcu"></div>`;
     const anchor = box.querySelector("#dash-groups").closest(".dash-card");
     anchor.parentNode.insertBefore(extra, anchor);
 
     const body = createBody(box, d, {
-      onRender: () => {
-        box.querySelector("#adm-top3-pcu").innerHTML = top3Html(topItemsPcu(d, ui.unit, 3));
-        renderAnomalies();
-      },
+      heat: true,
+      onRender: () => renderAnomalies(),
     });
     body.bind();
   }

@@ -62,7 +62,7 @@ export async function renderDashboard(container, app) {
     const sel = box.querySelector(".dash-fy");
     if (sel) sel.addEventListener("change", () => load(Number(sel.value), true));
     if (empty) return;
-    createBody(box, data).bind();
+    createBody(box, data, { hiddenLink: true }).bind();
   }
 
   await load(null, false);

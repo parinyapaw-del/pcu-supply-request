@@ -192,6 +192,16 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
   flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
            // rule 2 only (Q25): cum_qty (Σ req of fy) > plan_qty × elapsed/12 × 1.2 · elapsed = rounds of `rounds` ≤ currentRound
            // · items with plan_qty 0 skipped · none when elapsed = 0 · ordered as `items`
+  // ---- 2aa (brief 2aa_dashboards.md §6) ----
+  elapsed: 4,                  // rounds of `rounds` ≤ currentRound (same value the pace rule uses)
+           // + items[code].off: true when the item is hidden by this pcu / inactive / on a soft-deleted page (listed only for its data) — absent otherwise
+  stock_latest: { code: {round, stock, got} },
+           // per item (2v links → the new code) the LATEST round whose counted line has stock not null (lines with only a stock count here too) ·
+           // got = issued_total of that line by the view rule (PCU: unit done · staff: issued_total not null) · null = requested but not received yet ·
+           // 0 = the line requested nothing · two linked codes in the same round add up
+  limits: { code: limit_year },  // limits of (fy, pcu) with limit_year > 0 · a linked old code's value lands on the new code when that has none
+  prev_items: { code: qty },     // actual_prev of fy−1 of this pcu, whole year, Σ op+pp (> 0 only) under the linked code
+  spent: { code: baht },         // Q17: Σ over requested lines (received ? got : req) × price (same price as `monthly`) · > 0 only, 2 decimals
 }
 ```
 CPU: 7 parallel queries (+ price_history / the fy−1 form only when a snapshot / prices_prev price is missing) and one JS pass; one request per pcu × round,
@@ -487,11 +497,16 @@ Common rules: **`submitted`/`issued` requests only**, never the trial round (`co
     items:   { code: V6 },                                     // fy-to-date per item (codes with a non-zero V6, item order)
     plan_baht:        { unit_group: number },                  // Σ plan_qty × price in the fy's latest form (non-trial pcus)
     req_baht_on_plan: { unit_group: number },                  // Σ req_baht of the (pcu,item) pairs with plan > 0
-    top3: { qty:[code…], baht:[code…] }                        // by fy-to-date req qty / req baht, all units (> 0 only; ties in item order)
+    top3: { qty:[code…], baht:[code…] },                       // by fy-to-date req qty / req baht, all units (> 0 only; ties in item order)
+    bottom3: { qty:[code…], baht:[code…] },                    // 2aa (Q12): the 3 smallest, same rules (only items requested > 0)
+    never: [code…]                                             // 2aa (Q12): active items of the fy's latest form (active page) no pcu requested (req 0) · form order
   },
   pcus: [ { code, name, req_baht, got_baht, plan_baht, pct_plan,          // pct_plan = Σ req_baht_on_plan / plan_baht (null when plan_baht = 0)
             units: { unit_group: [req_baht, got_baht, plan_baht, req_baht_on_plan] },   // all three unit keys
-            pattern, pattern_prev, pattern_note, endyear_prev, n_flags } ],   // every non-trial pcu, req_baht high → low (ties by code)
+            pattern, pattern_prev, pattern_note, endyear_prev, n_flags,
+            max_round: {round, baht}|null, min_round: {round, baht}|null,   // 2aa (Q13): round of the highest / lowest req baht (all units), rounds with 0 skipped, ties → earlier
+            over_plan: {n, codes:[code…]} } ],                              // 2aa (Q13): items with fy-to-date req qty > plan (plan > 0) · item order
+                                                                            // every non-trial pcu, req_baht high → low (ties by code)
   flags: [ { pcu, code, rule:"p90"|"pace"|"share", round?, value, threshold } ],    // ordered pcu → item order → rule (p90, pace, share) → round
   info_new: [ { pcu, code } ]                                  // ordered pcu → item order
 }
@@ -510,7 +525,8 @@ Common rules: **`submitted`/`issued` requests only**, never the trial round (`co
 
 **`adminDashboard{fy?, pcu}`** — one PCU (code trimmed + upper-cased; unknown or group `ทดลอง` → `NOT_FOUND`). Same shape as `pcuDashboard` (§4.2: `fy, fys, rounds, items, monthly, prev_fy,
 used_coverage, flags`; `fys`/`items` computed for that pcu exactly as there, incl. its hidden items) **but got = staff view**, plus `elapsed`, `pcu:{code,name}`, `top3:{qty,baht}` (that pcu),
-`pattern`, `pattern_prev`, `pattern_note`, `endyear_prev` (same values as its network row) and `info_new:[code…]` (item order). `flags` = every rule, as above without `pcu`, ordered item → rule → round;
+`pattern`, `pattern_prev`, `pattern_note`, `endyear_prev`, 2aa `max_round`, `min_round`, `over_plan` (same values as its network row) and `info_new:[code…]` (item order).
+The 2aa fields of §4.2 (`stock_latest`, `limits`, `prev_items`, `spent`, `items[].off`) are there too — computed with got = staff view. `flags` = every rule, as above without `pcu`, ordered item → rule → round;
 a `pace` flag also carries `cum_qty, plan_qty, elapsed` (the 2q fields). The share rule uses the same network totals as the network view.
 
 **`issueShortage{fy?, scope?, month?, unit?}`** — admin + dispenser (PCU token → `FORBIDDEN`). Read-only, no time window.

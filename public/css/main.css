@@ -625,4 +625,22 @@ button.item-search-hit:hover, button.item-search-hit:focus-visible { background:
 .dash-top-text { font-weight: 600; }
 .dash-top .dash-hbar { align-self: center; }
 .dash-top-val { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* brief 2aa: two-column top/bottom cards, collapsible name lists, stock / limit / spent cards, heatmap table.
+   Heat = --dv-req (single hue) mixed into the surface, capped at 50 % so primary-ink text stays legible in light and dark. */
+.dash-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
+.dash-sub-h { margin: 0 0 6px; font-size: 0.95rem; color: var(--muted); }
+.dash-det { margin: 6px 0; }
+.dash-det summary { cursor: pointer; font-weight: 600; color: var(--accent); min-height: 32px; }
+.dash-plain { margin: 4px 0 8px; padding-left: 20px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.dash-spent .dash-kpi-value { margin: 2px 0; }
+.dash-spent .dash-caption { margin: 0; }
+.dash-limit { border-color: var(--dv-flag-fg); background: var(--dv-flag-bg); color: var(--text); }
+.dash-limit h3 { color: var(--dv-flag-fg); }
+.dash-limit .dash-sub-h { color: var(--text); margin-top: 8px; }
+.dash-stock-more { margin-top: 10px; }
+.dash-heat .dash-heatcell { text-align: right; line-height: 1.25; min-width: 64px; color: var(--text); }
+.dash-heat-sub { font-size: 0.75rem; color: var(--text); opacity: 0.8; }
+.dash-heat-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0 0 6px; }
+.dash-heat-legend i { display: inline-block; width: 22px; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
+@media (max-width: 720px) { .dash-two { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 480px) { .dash-table .dash-name { min-width: 150px; max-width: 170px; } .dash-table { font-size: 0.85rem; } }

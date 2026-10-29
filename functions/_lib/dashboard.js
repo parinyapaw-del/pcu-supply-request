@@ -5,6 +5,8 @@
 // CPU (free tier 10 ms): a fixed handful of queries. One PCU = one JS pass over its lines (≤ items × 12 rows: one request per pcu × round,
 // so a line IS the (round, item) aggregate). The network view never pulls raw lines: SQL GROUP BY (pcu,item) / (round,item) / (pcu,round),
 // p90 compared inside SQL (JOIN stats), only lines without price_snapshot (normally none) come back raw for the priceFor fallback.
+// 2aa (brief 2aa_dashboards.md): PCU payload + stock_latest / limits / prev_items / spent / elapsed · network + bottom3 / never ·
+// pcus[] + max_round / min_round / over_plan — all from the same queries (+ one tiny limits query), no raw network lines.
 import { err } from "./http.js";
 import { DEFAULT_UNIT_BY_STEP, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig } from "./db.js";
 import { TRIAL_GROUP, UNITS } from "./auth.js";
@@ -107,19 +109,43 @@ function top3(valOf, codes, ord) {
   const cmp = cmpCode(ord);
   return codes.filter((c) => valOf(c) > 0).sort((a, b) => valOf(b) - valOf(a) || cmp(a, b)).slice(0, 3);
 }
+// 2aa (Q12): the 3 smallest of the codes with a value > 0, ties in item order
+function bottom3(valOf, codes, ord) {
+  const cmp = cmpCode(ord);
+  return codes.filter((c) => valOf(c) > 0).sort((a, b) => valOf(a) - valOf(b) || cmp(a, b)).slice(0, 3);
+}
+// 2aa (Q13): highest / lowest round by req baht among the rounds with baht > 0 (ties → the earlier round) · none → null
+function maxMinRound(byRound, rounds) {
+  let mx = null, mn = null;
+  for (const m of rounds) {
+    const b = byRound.get(m) || 0;
+    if (!(b > 0)) continue;
+    if (!mx || b > mx.baht) mx = { round: m, baht: b };
+    if (!mn || b < mn.baht) mn = { round: m, baht: b };
+  }
+  const out = (x) => (x ? { round: x.round, baht: r2(x.baht) } : null);
+  return { max_round: out(mx), min_round: out(mn) };
+}
+// 2aa (Q13): items whose fy-to-date req qty > the annual plan (plan > 0) · codes in item order
+function overPlan(plans, cumOf, cmp) {
+  const codes = [];
+  for (const [code, pq] of plans) if (pq > 0 && cumOf(code) > pq) codes.push(code);
+  codes.sort(cmp);
+  return { n: codes.length, codes };
+}
 
 // ---- one PCU (pcuDashboard = PCU view; adminDashboard{pcu} = staff view) ---------------------------------------------------------
 // staff=false: got = issued_total only when the line's dispense unit is done (Q78) · staff=true: got = issued_total whenever not null.
 async function pcuCore(DB, c, pcu, staff) {
   const { cfg, fy, trial, all, rounds, trialArg, elapsed } = c;
-  const [form, lineRes, doneRes, planRes, hidRes, prevRes, monthRes, fyRes] = await Promise.all([
+  const [form, lineRes, doneRes, planRes, hidRes, prevRes, monthRes, fyRes, limRes] = await Promise.all([
     strictForm(DB, fy),
     DB.prepare(
       `SELECT r.month AS m, r.form_version_id AS fv, l.item_code AS c, COALESCE(l.op,0) + COALESCE(l.pp,0) AS q,
-              l.issued_total AS it, l.used AS u, l.price_snapshot AS ps
+              l.issued_total AS it, l.used AS u, l.price_snapshot AS ps, l.stock AS st
          FROM requests r JOIN request_lines l ON l.request_id = r.id
         WHERE r.pcu = ? AND r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT}
-          AND (COALESCE(l.op,0) + COALESCE(l.pp,0) > 0 OR l.used IS NOT NULL)`
+          AND (COALESCE(l.op,0) + COALESCE(l.pp,0) > 0 OR l.used IS NOT NULL OR l.stock IS NOT NULL)`
     ).bind(pcu, all[0], all[11], trialArg).raw(),
     staff ? [] : DB.prepare(
       `SELECT r.month, s.dispense_unit FROM issue_status s JOIN requests r ON r.id = s.request_id
@@ -134,6 +160,7 @@ async function pcuCore(DB, c, pcu, staff) {
     ).bind(fy - 1, pcu).raw(),
     DB.prepare(`SELECT DISTINCT month FROM requests WHERE pcu = ? AND status IN ${SENT}`).bind(pcu).raw(),
     DB.prepare(`SELECT DISTINCT fy FROM form_versions`).raw(),
+    DB.prepare(`SELECT item_code, limit_year FROM limits WHERE fy = ? AND pcu = ? AND limit_year > 0`).bind(fy, pcu).raw(),
   ]);
   if (!form) throw err("NOT_FOUND", `ไม่พบแบบฟอร์มของปีงบ ${fy}`);
 
@@ -146,26 +173,38 @@ async function pcuCore(DB, c, pcu, staff) {
 
   const done = new Set(doneRes.map(([m, u]) => m + "|" + u));
   let hist = null; // price_history of fy — loaded only when a line has no price_snapshot
-  if (lineRes.some((r) => r[6] === null || r[6] === undefined)) hist = await loadPriceHistory(DB, fy);
+  if (lineRes.some((r) => (r[3] > 0 || r[5] !== null) && (r[6] === null || r[6] === undefined))) hist = await loadPriceHistory(DB, fy);
 
   // ---- monthly (one pass) ----
   const monthly = {}, cum = new Map(), withUsed = new Set(), withReq = new Set();
   const roundBaht = new Map(); // round → unrounded req baht (2s pattern)
+  const spent = new Map(); // 2aa (Q17): code → Σ (received ? got : req) × price
+  const stockLatest = new Map(); // 2aa (Q15): code → {round, stock, got} of the latest round whose line has a stock
   const lm = linkMap(form); // 2v: lines of a linked old code count under the code that replaces it
-  for (const [m, fv, code0, q, it, u, ps] of lineRes) {
+  for (const [m, fv, code0, q, it, u, ps, st] of lineRes) {
     const price = ps !== null && ps !== undefined ? ps : priceFor(hist, form.index.has(code0) ? form : formOf(fv), code0, m) ?? 0;
-    let got = 0;
+    let got = 0, received = false;
     if (q > 0 && it !== null && it !== undefined) {
-      if (staff) got = it; // staff view (2s): every unit, no need to wait for done
+      if (staff) received = true; // staff view (2s): every unit, no need to wait for done
       else { // PCU view rule (Q78): figures of DONE units only
         const ent = formOf(fv).index.get(code0);
-        if (ent && done.has(m + "|" + ent.step.dispense_unit)) got = it;
+        received = !!(ent && done.has(m + "|" + ent.step.dispense_unit));
       }
+      if (received) got = it;
     }
     const code = linkedCode(lm, code0);
     const used = u ?? 0;
     if (u !== null && u !== undefined) withUsed.add(code);
-    if (q > 0) { withReq.add(code); cum.set(code, (cum.get(code) || 0) + q); roundBaht.set(m, (roundBaht.get(m) || 0) + q * price); }
+    if (q > 0) {
+      withReq.add(code); cum.set(code, (cum.get(code) || 0) + q); roundBaht.set(m, (roundBaht.get(m) || 0) + q * price);
+      spent.set(code, (spent.get(code) || 0) + (received ? got : q) * price);
+    }
+    if (st !== null && st !== undefined) { // got null = requested but not received yet (PCU view: unit not done) · 0 = nothing requested
+      const g = q > 0 ? (received ? got : null) : 0;
+      const cur = stockLatest.get(code);
+      if (!cur || m > cur.round) stockLatest.set(code, { round: m, stock: st, got: g });
+      else if (m === cur.round) { cur.stock += st; cur.got = cur.got === null && g === null ? null : (cur.got || 0) + (g || 0); } // 2v link pair
+    }
     if (!q && !got && !used) continue;
     const t = ((monthly[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0]);
     const add = [q, q * price, got, got * price, used, used * price];
@@ -186,6 +225,7 @@ async function pcuCore(DB, c, pcu, staff) {
     const has = !!monthly[code];
     const shown = !hidden.has(code) && ent.item.active !== false && ent.step.active !== false;
     if (shown || has) put(code, ent);
+    if (!shown && items[code]) items[code].off = true; // 2aa: hidden / inactive, listed only for its data (never in "ยังไม่เคยเบิก")
   }
   for (const code of Object.keys(monthly)) if (!items[code]) put(code, entOf(code, null));
 
@@ -214,12 +254,23 @@ async function pcuCore(DB, c, pcu, staff) {
     prev_fy = { months, qty: qty.map(r2), baht: baht.map(r2) };
   }
 
+  // ---- 2aa: limits (own code first, else a linked old code's) · prev_items (actual_prev fy−1, whole year, via links) ----
+  const limits = {};
+  for (const [code, ly] of limRes) if (!lm.has(code)) limits[code] = ly;
+  for (const [code, ly] of limRes) { const k = linkedCode(lm, code); if (k !== code && !(k in limits)) limits[k] = ly; }
+  const prev_items = {};
+  for (const [, code, q] of prevRes) { const k = linkedCode(lm, code); prev_items[k] = (prev_items[k] || 0) + q; }
+  const stock_latest = {};
+  for (const [code, v] of stockLatest) stock_latest[code] = v;
+  const spentOut = {};
+  for (const [code, b] of spent) if (b > 0) spentOut[code] = r2(b);
+
   const fys = fysFrom(cfg, trial, monthRes, fyRes);
   return {
     out: {
-      fy, fys, rounds, items, monthly, prev_fy,
+      fy, fys, rounds, elapsed, items, monthly, prev_fy,
       used_coverage: { items_with_used: withUsed.size, items_total: withReq.size },
-      flags,
+      flags, stock_latest, limits, prev_items, spent: spentOut,
     },
     form, lm, prevRes, pricer, cum, roundBaht,
   };
@@ -388,10 +439,12 @@ async function adminPcuView(DB, c, code) {
   // rule 3 (info only): requested this fy, never in actual_prev fy−1 of this pcu (only when the pcu has actual_prev fy−1 rows)
   const info_new = prevRes.length ? codes.filter((k) => (cum.get(k) || 0) > 0 && !prevCodes.has(k)) : [];
 
+  const planOf = new Map(Object.entries(out.items).map(([k, it]) => [k, it.plan_qty]));
   return {
     ...out, flags, elapsed: c.elapsed,
     pcu: { code: row.code, name: row.name },
     top3: { qty: top3((k) => cum.get(k) || 0, reqCodes, ord), baht: top3(bahtOf, reqCodes, ord) },
+    ...maxMinRound(roundBaht, c.rounds), over_plan: overPlan(planOf, (k) => cum.get(k) || 0, cmp),
     pattern, pattern_prev, pattern_note: c.elapsed < FEW_ROUNDS ? "ข้อมูลยังน้อย" : null, endyear_prev, info_new,
   };
 }
@@ -535,6 +588,8 @@ async function adminNetwork(DB, c) {
       pattern: patternOf(elapsedRounds.map((m) => (pr.get(code) && pr.get(code).get(m)) || 0)),
       pattern_prev: pv ? patternOf(pv) : null, pattern_note: note, endyear_prev: pv ? endyearOf(pv) : false,
       n_flags: nFlags.get(code) || 0,
+      ...maxMinRound(pr.get(code) || new Map(), c.rounds),
+      over_plan: overPlan(plans, (k) => (byCode.get(k) ? byCode.get(k)[0] : 0), cmp),
     });
   }
   pcus.sort((a, b) => b.req_baht - a.req_baht || (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
@@ -548,6 +603,9 @@ async function adminNetwork(DB, c) {
       plan_baht: Object.fromEntries(Object.entries(planBaht).map(([u, v]) => [u, r2(v)])),
       req_baht_on_plan: Object.fromEntries(Object.entries(onPlan).map(([u, v]) => [u, r2(v)])),
       top3: { qty: top3((k) => netItems.get(k)[0], netCodes, ord), baht: top3((k) => netItems.get(k)[1], netCodes, ord) },
+      bottom3: { qty: bottom3((k) => netItems.get(k)[0], netCodes, ord), baht: bottom3((k) => netItems.get(k)[1], netCodes, ord) },
+      // active items of the fy's latest form that no PCU requested this fy (Q12) · item order
+      never: [...form.index].filter(([k, ent]) => ent.item.active !== false && ent.step.active !== false && !((netItems.get(k) || [0])[0] > 0)).map(([k]) => k),
     },
     pcus, flags, info_new,
   };
