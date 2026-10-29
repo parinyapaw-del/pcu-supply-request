@@ -75,8 +75,9 @@ export function faqListHtml(faqs) {
 }
 
 /**
- * @param {{getAuth: () => ({token: string, role: string}|null), getContext?: () => object, mineHref?: string}} opts
- * @returns {{open: (view?: string) => void, close: () => void}}
+ * 2ac: `helpHref()` → the manual section of the current page (string) or null (no ❓ there); `helpTarget` = link target (e.g. "_blank").
+ * @param {{getAuth: () => ({token: string, role: string}|null), getContext?: () => object, mineHref?: string, helpHref?: () => (string|null), helpTarget?: string}} opts
+ * @returns {{open: (view?: string) => void, close: () => void, refreshHelp: () => void}}
  */
 export function mountFeedbackWidget(opts) {
   const fab = document.createElement("button");
@@ -93,8 +94,38 @@ export function mountFeedbackWidget(opts) {
   panel.setAttribute("aria-label", "ส่งความคิดเห็น");
   panel.hidden = true;
   document.body.appendChild(panel);
-  document.body.appendChild(fab);
+  // 2ac: ❓ "คู่มือ" sits left of 💬 in one fixed dock (only when the page passes helpHref)
+  let help = null;
+  if (opts.helpHref) {
+    const dock = document.createElement("div");
+    dock.className = "fb-dock no-print";
+    help = document.createElement("a");
+    help.className = "fb-help";
+    help.id = "fb-help";
+    help.setAttribute("aria-label", "คู่มือการใช้งานของหน้านี้");
+    help.innerHTML = `<span class="fb-help-icon" aria-hidden="true">❓</span><span class="fb-help-text">คู่มือ</span>`;
+    if (opts.helpTarget) { help.target = opts.helpTarget; help.rel = "noopener"; }
+    // the href is computed again right before the click follows it (admin tabs change without a hashchange)
+    help.addEventListener("click", refreshHelp);
+    help.addEventListener("pointerenter", refreshHelp);
+    help.addEventListener("focus", refreshHelp);
+    dock.appendChild(help);
+    dock.appendChild(fab);
+    document.body.appendChild(dock);
+    window.addEventListener("hashchange", refreshHelp);
+    refreshHelp();
+  } else {
+    document.body.appendChild(fab);
+  }
   document.body.classList.add("has-fb-fab");
+
+  function refreshHelp() {
+    if (!help) return;
+    let href = null;
+    try { href = opts.helpHref(); } catch (e) { href = null; }
+    help.hidden = !href;
+    if (href) help.setAttribute("href", href);
+  }
 
   let view = "send";
   const draft = { category: "", body: "", anonymous: false, pcu: "" };
@@ -224,5 +255,5 @@ export function mountFeedbackWidget(opts) {
     document.removeEventListener("keydown", onKey);
   }
   fab.addEventListener("click", () => (panel.hidden ? open() : close()));
-  return { open, close };
+  return { open, close, refreshHelp };
 }

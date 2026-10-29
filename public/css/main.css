@@ -698,3 +698,21 @@ body.has-fb-fab { padding-bottom: 72px; } /* the end of every page can scroll cl
   .fb-panel { right: 8px; left: 8px; bottom: 68px; width: auto; max-width: none; max-height: calc(100vh - 84px); }
 }
 @media print { .fb-fab, .fb-panel { display: none !important; } body.has-fb-fab { padding-bottom: 0; } }
+/* ---- 2ac: ❓ next to 💬 (feedback_widget.js helpHref) */
+.fb-dock { position: fixed; right: 16px; bottom: 16px; z-index: 900; display: flex; gap: 8px; align-items: center; }
+.fb-dock .fb-fab { position: static; }
+.fb-help {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 8px 14px; border-radius: 999px;
+  border: 1px solid var(--accent); background: var(--surface); color: var(--accent); font-weight: 600; text-decoration: none;
+  box-shadow: 0 4px 14px rgba(0,0,0,.18);
+}
+.fb-help:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.fb-help[hidden] { display: none; }
+.fb-help-icon { font-size: 1.1rem; line-height: 1; }
+@media (max-width: 720px) {
+  .fb-dock { right: 12px; bottom: 12px; }
+  .fb-help { width: 48px; height: 48px; padding: 0; justify-content: center; }
+  .fb-help-text { display: none; }
+}
+@media print { .fb-dock, .fb-help { display: none !important; } }
+

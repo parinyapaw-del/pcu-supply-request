@@ -21,6 +21,7 @@ import { renderTab10 } from "./admin/tab10_form.js";
 import { renderTab11 } from "./admin/tab11_import.js";
 import { renderTab12 } from "./admin/tab12_dashboard.js";
 import { renderTab13 } from "./admin/tab13_feedback.js";
+import { renderTab14 } from "./admin/tab14_manual.js";
 import { mountFeedbackWidget } from "./feedback_widget.js";
 
 const root = document.getElementById("admin-root");
@@ -41,8 +42,16 @@ const TABS = [
   { id: "tab7", hash: "pcu", label: "รพ.สต. (PIN / รายการที่ซ่อน)", render: renderTab7 },
   { id: "tab8", hash: "users", label: "ผู้ใช้", render: renderTab8 },
   { id: "tab9", hash: "system", label: "ระบบ", render: renderTab9 },
-  { id: "tab13", hash: "feedback", label: "Feedback", render: renderTab13 } // admin only (2ab) — badge = bootstrap.feedback_new
+  { id: "tab13", hash: "feedback", label: "Feedback", render: renderTab13 }, // admin only (2ab) — badge = bootstrap.feedback_new
+  { id: "tab14", hash: "manual", label: "คู่มือ", render: renderTab14, staff: true } // 2ac — dispenser part for everyone, admin part for admin
 ];
+
+// 2ac: ❓ → the manual section of the open tab (#manual?s=<id>); a dispenser has only the dispenser part
+const HELP_OF_TAB = {
+  status: ["a-monthly", "d-excel"], totals: ["a-monthly", "d-excel"], issue: ["d-issue", "d-issue"], excel: ["a-monthly", "d-excel"],
+  dashboard: ["a-monthly"], budget: ["a-sometimes"], prev: ["a-yearly"], limits: ["a-sometimes"], form: ["a-sometimes"],
+  import: ["a-yearly"], pcu: ["a-sometimes"], users: ["a-sometimes"], system: ["a-sometimes"], feedback: ["a-monthly"],
+};
 
 const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }; // fy = ปีงบที่เลือกดู (2i)
 const panels = {}; // tabId -> { section, rendered, lifecycle }
@@ -153,6 +162,7 @@ function showLogin(msg) {
   resetPanels();
   clearRequestCache();
   mountLogin(root, { onLoggedIn: () => boot(), initialError: msg });
+  if (feedbackWidget) feedbackWidget.refreshHelp();
 }
 
 // Every admin call goes through here: an expired token / removed user sends the person back to login.
@@ -243,6 +253,7 @@ function activate(id) {
     p.rendered = true;
   }
   activeTabId = id;
+  if (feedbackWidget) feedbackWidget.refreshHelp();
   if (p.lifecycle && p.lifecycle.onShow) p.lifecycle.onShow();
   try { history.replaceState(null, "", "#" + TABS.find((t) => t.id === id).hash); } catch (e) { /* ignore */ }
   const btn = document.querySelector(`.admin-tabbar button[data-tab="${id}"]`);
@@ -351,8 +362,17 @@ async function boot() {
   }
 }
 
-// 2ab: floating feedback button (admin / dispenser; on the login screen = guest)
-mountFeedbackWidget({
+// 2ab: floating feedback button (admin / dispenser; on the login screen = guest) · 2ac: + ❓ once logged in (not on the manual tab)
+function helpHref() {
+  if (!state.me || !getAdminToken() || !activeTabId) return null;
+  const t = TABS.find((x) => x.id === activeTabId);
+  if (!t || t.hash === "manual") return null;
+  const pair = HELP_OF_TAB[t.hash];
+  const id = pair && (state.isAdmin ? pair[0] : pair[1] || pair[0]);
+  return "#manual" + (id ? "?s=" + id : "");
+}
+const feedbackWidget = mountFeedbackWidget({
+  helpHref,
   getAuth: () => (getAdminToken() && state.me ? { token: getAdminToken(), role: state.me.role } : null),
   getContext: () => {
     const [h, q] = location.hash.replace(/^#/, "").split("?");

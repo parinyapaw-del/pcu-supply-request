@@ -1,0 +1,27 @@
+/* ---- 2ac: user manual (/help + admin tab "คู่มือ") ---- */
+.help-container { max-width: 980px; }
+.help-top-links { display: flex; justify-content: flex-end; margin: 0 0 8px; }
+.help-toc { columns: 2; column-gap: 32px; list-style: none; padding-left: 0; margin: 12px 0 24px; }
+.help-toc li { margin: 4px 0; break-inside: avoid; }
+.help-topic { border-top: 1px solid var(--line); padding-top: 18px; margin-top: 26px; scroll-margin-top: 12px; }
+.help-topic h2 { margin-top: 0; }
+.help-intro { font-size: 1.02rem; }
+.help-shot { margin: 14px 0 22px; }
+.help-imgwrap { position: relative; display: inline-block; vertical-align: top; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); } /* no overflow:hidden — a badge at the image edge stays visible */
+.help-imgwrap img { display: block; max-width: 100%; height: auto; border-radius: 8px; } /* natural size (width attr), never stretched */
+.help-mark { position: absolute; box-sizing: border-box; border: 3px solid #e8590c; border-radius: 6px; box-shadow: 0 0 0 2px rgba(255,255,255,.85); pointer-events: none; }
+.help-mark-n {
+  position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; border-radius: 50%;
+  background: #e8590c; color: #fff; font-weight: 700; font-size: 18px; line-height: 28px; text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+}
+.help-steps { margin: 10px 0 0; padding-left: 1.2em; list-style: none; }
+.help-steps li { margin: 6px 0; }
+.help-after { margin-top: 4px; }
+.help-warn { border: 2px solid var(--danger); background: var(--danger-bg); color: var(--danger); border-radius: 10px; padding: 10px 14px; margin: 12px 0; font-size: 1.15rem; font-weight: 700; }
+.help-warn p { margin: 4px 0; }
+.help-part { margin-top: 30px; padding: 8px 12px; background: var(--muted-bg); border-radius: 8px; }
+@media (max-width: 720px) {
+  .help-toc { columns: 1; }
+  .help-mark { border-width: 2px; }
+  .help-mark-n { width: 22px; height: 22px; line-height: 22px; font-size: 14px; left: -11px; top: -11px; }
+}

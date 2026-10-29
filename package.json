@@ -9,6 +9,7 @@
     "test": "node tools/test_api.mjs"
   },
   "devDependencies": {
+    "puppeteer-core": "^25.16.0",
     "wrangler": "^4.147.0"
   },
   "dependencies": {

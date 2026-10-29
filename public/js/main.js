@@ -230,10 +230,21 @@ function feedbackContext() {
   }
   return c;
 }
+// 2ac: ❓ → the /help section of the current route (opens in a new tab so a half-filled page stays where it was)
+const HELP_OF_ROUTE = { login: "login", pin: "login", home: "send", fill: "fill", hidden: "hidden", print: "print", issue: "send", dashboard: "dashboard", feedback: "ceiling" };
+function helpHref() {
+  const { segments, params } = parseHash();
+  const route = segments[0] || "login";
+  if (route === "print" && params.get("as") === "admin") return null; // admin reprint — not a รพ.สต. page
+  if (route === "fill" && segments[1] === "summary") return "/help#send";
+  return "/help#" + (HELP_OF_ROUTE[route] || "login");
+}
 const feedbackWidget = mountFeedbackWidget({
   getAuth: () => (app.boot && getPcuToken() ? { token: getPcuToken(), role: "pcu" } : null),
   getContext: feedbackContext,
   mineHref: "#/feedback",
+  helpHref,
+  helpTarget: "_blank",
 });
 
 wireFooter();
