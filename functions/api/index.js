@@ -10,6 +10,7 @@ import { adminExportSeed, adminFormGet, adminFormSave, adminPricePreview } from 
 import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
 import { adminDashboard, issueShortage, pcuDashboard } from "../_lib/dashboard.js";
+import { adminSaveLines } from "../_lib/admin_entry.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 
 const PUBLIC = {
@@ -47,6 +48,7 @@ const STAFF = {
 // admin only
 const ADMIN = {
   adminNote: admin.adminNote,
+  adminSaveLines, // 2w — admin keys / edits / sends a request for a pcu
   adminSetRound: admin.adminSetRound,
   adminLockRound: admin.adminLockRound,
   adminSetLimitMode: admin.adminSetLimitMode,

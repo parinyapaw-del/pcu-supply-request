@@ -23,6 +23,7 @@ const BASE = (process.env.API_BASE || "http://localhost:8788").replace(/\/$/, ""
 const CAL = "2026-11";
 const ROUND = "2026-12", PREV_ROUND = "2026-11";
 const CUR = ROUND, PREV = PREV_ROUND, NEXT = "2027-01";
+const FIRST70 = "2026-10"; // 2w: first round of FY2570 (the fy = the supply month itself, Oct … Sep)
 const ADMIN_EMAIL = "parinya.paw@gmail.com";
 
 // ---- dev vars ------------------------------------------------------------------------------------------------------
@@ -113,7 +114,7 @@ function stopServer() {
 // Excel / calendar months of a fiscal year (Oct … Sep — actual_prev columns) and its 12 ROUND months (Nov … Oct, brief 2j)
 const fyExcelMonths = (fy) => { const out = []; let y = fy - 543 - 1, m = 10; for (let i = 0; i < 12; i++) { out.push(`${y}-${String(m).padStart(2, "0")}`); m++; if (m === 13) { m = 1; y++; } } return out; };
 const shiftMonth = (k, d) => { const [y, m] = k.split("-").map(Number); const n = y * 12 + (m - 1) + d; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, "0")}`; };
-const fyRoundMonths = (fy) => fyExcelMonths(fy).map((m) => shiftMonth(m, 1));
+const fyRoundMonths = (fy) => fyExcelMonths(fy); // 2w: the round months of an fy = its Excel months (Oct … Sep)
 const ceil = (x) => Math.ceil(x - 1e-9);
 
 function pct(sorted, q) { // linear interpolation percentile
@@ -364,9 +365,9 @@ async function main() {
   ok(!("older_months" in pb), "older_months removed (2l: replaced by history)");
   eq([pb.next_round.month, pb.next_round.opens_on, pb.next_round.deadline_date, pb.next_round.deadline_source], [NEXT, "2026-12-01", "2026-12-31", "month_end"], "next_round = round 2027-01, opens 2026-12-01, due 2026-12-31 (month end)");
   eq([pb.next_round.fy, pb.next_round.trial, pb.next_round.locked], [2570, false, false], "next_round carries fy/trial/locked (RoundInfo)");
-  eq(pb.history.map((h) => h.month), ["2026-10", "2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12", "2025-11"], "history = every round from FY2569's first (2025-11) up to before prevRound, newest first (12 entries)");
+  eq(pb.history.map((h) => h.month), ["2026-10", "2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12", "2025-11", "2025-10"], "history = every round from FY2569's first (2025-10, 2w) up to before prevRound, newest first (13 entries)");
   ok(pb.history.every((h) => h.status === "not_started" && h.submitted_at === null && h.trial === false && h.locked === false), "history after devReset: all not_started, submitted_at null, not trial, not locked");
-  ok(pb.history.every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,locked,month,status,submitted_at,trial", "history fy 2569 (2026-10 and 2025-11 alike) · entry keys {month,fy,trial,locked,status,submitted_at}");
+  ok(pb.history[0].fy === 2570 && pb.history.slice(1).every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,locked,month,status,submitted_at,trial", "history: 2026-10 is fy 2570 (2w), 2026-09 … 2025-10 fy 2569 · entry keys {month,fy,trial,locked,status,submitted_at}");
   const nev = pb.never_prev;
   const hadAny = new Set(Object.keys(seed.actual_prev["2569"].data["PCU01"] || {}).filter((c) => (seed.actual_prev["2569"].data["PCU01"][c].op.some((x) => x > 0) || seed.actual_prev["2569"].data["PCU01"][c].pp.some((x) => x > 0))));
   ok(nev.length > 0 && nev.every((c) => !hadAny.has(c)) && !nev.includes([...hadAny][0]), "never_prev = items with no FY2569 withdrawal in actual_prev");
@@ -490,11 +491,11 @@ async function main() {
   eq((await mustOk("pcuBootstrap", {}, T3)).unlocks[CUR], { [A.code]: "โรคระบาด" }, "bootstrap.unlocks shows the reason");
   eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).status, "submitted", "limit_unlocks row bypasses enforce for that month");
   ok((await mustOk("adminBootstrap", {}, ADM)).unlocks.some((u) => u.pcu === "PCU03" && u.item_code === A.code && u.month === CUR), "adminBootstrap lists unlocks");
-  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2026-10", reason: "รอบปีงบ 2569" }, ADM);
-  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2027-10", reason: "รอบสุดท้ายปีงบ 2570" }, ADM);
+  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2026-09", reason: "รอบปีงบ 2569" }, ADM);
+  await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: "2027-09", reason: "รอบสุดท้ายปีงบ 2570" }, ADM);
   const ulm = (await mustOk("adminBootstrap", {}, ADM)).unlocks.filter((u) => u.pcu === "PCU03").map((u) => u.month).sort();
-  eq(ulm, [CUR, "2027-10"], "adminBootstrap.unlocks = rounds of FY2570 only (2026-11 … 2027-10): 2026-10 (FY2569) excluded, 2027-10 included");
-  for (const m of ["2026-10", "2027-10"]) await mustOk("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: m }, ADM);
+  eq(ulm, [CUR, "2027-09"], "adminBootstrap.unlocks = rounds of FY2570 only (2026-10 … 2027-09, 2w): 2026-09 (FY2569) excluded, 2027-09 included");
+  for (const m of ["2026-09", "2027-09"]) await mustOk("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: m }, ADM);
   ok((await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM)).ok, "adminRemoveUnlock");
   expectErr(await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM), "NOT_FOUND", "adminRemoveUnlock twice");
   expectErr(await api("saveLines", { month: CUR, lines: {}, send: true }, T3), "OVER_LIMIT", "removing the unlock re-enables enforcement");
@@ -541,7 +542,7 @@ async function main() {
     const h = hb.ok ? Object.fromEntries(hb.data.history.map((x) => [x.month, x])) : {};
     eq(h[CUR] && [h[CUR].locked, h[CUR].status, h[CUR].submitted_at, h[CUR].fy], [true, "draft", null, 2570], "history: locked round row → locked:true · draft request → status draft, submitted_at null");
     eq(h[PREV] && [h[PREV].locked, h[PREV].status], [false, "not_started"], "history: neighbouring round without a request → not_started, unlocked");
-    eq(hb.ok && [hb.data.history.length, hb.data.history[0].month, hb.data.history.at(-1).month], [14, CUR, "2025-11"], "X-Dev-Month 2027-01: history = 2026-12 … 2025-11 (FY2570 so far + all of FY2569)");
+    eq(hb.ok && [hb.data.history.length, hb.data.history[0].month, hb.data.history.at(-1).month], [15, CUR, "2025-10"], "X-Dev-Month 2027-01: history = 2026-12 … 2025-10 (FY2570 so far + all of FY2569)");
   }
   ok((await mustOk("saveLines", { month: PREV, lines: {} }, T6)).status === "draft", "other months are unaffected by the lock");
   await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM);
@@ -728,26 +729,26 @@ async function main() {
   eq((await mustOk("adminBootstrap", {}, ADM2)).config.limit_mode, "warn", "limit_mode untouched");
 
   // ------------------------------------------------------------------------------------------------------------------------
-  section("fiscal-year edge: previous round in FY2569 (form fallback, 2j)");
+  section("fiscal-year edge: previous round in FY2569 (form fallback, 2j/2w)");
   {
     const T9 = (await mustOk("pcuLogin", { pcu: "PCU09", pin: "12345" }, undefined)).token;
-    const o = { month: "2026-10" }; // calendar Oct 2569 → open round 2026-11 (first round of FY2570), previous round 2026-10 (FY2569)
+    const o = { month: "2026-09" }; // 2w: calendar Sep 2569 → open round 2026-10 (first round of FY2570), previous round 2026-09 (FY2569)
     const eb = await api("pcuBootstrap", {}, T9, o);
-    ok(eb.ok && eb.data.rounds[0].month === "2026-11" && eb.data.rounds[1].month === "2026-10", "calendar 2026-10: rounds = [2026-11, 2026-10]");
-    eq(eb.data.rounds.map((r) => [r.fy, r.deadline_date]), [[2570, "2026-10-31"], [2569, "2026-09-30"]], "round 2026-11 → FY2570 due 31 Oct · round 2026-10 → FY2569 due 30 Sep");
-    eq([eb.data.current_month, eb.data.current_round, eb.data.config.fy_current], ["2026-10", "2026-11", 2570], "calendar 2026-10: current_round 2026-11, fy_current fallback 2570");
-    const e1 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T9, o);
+    ok(eb.ok && eb.data.rounds[0].month === "2026-10" && eb.data.rounds[1].month === "2026-09", "calendar 2026-09: rounds = [2026-10, 2026-09]");
+    eq(eb.data.rounds.map((r) => [r.fy, r.deadline_date]), [[2570, "2026-09-30"], [2569, "2026-08-31"]], "round 2026-10 → FY2570 due 30 Sep · round 2026-09 → FY2569 due 31 Aug");
+    eq([eb.data.current_month, eb.data.current_round, eb.data.config.fy_current], ["2026-09", "2026-10", 2570], "calendar 2026-09: current_round 2026-10, fy_current 2570");
+    const e1 = await api("saveLines", { month: "2026-09", lines: { [A.code]: { op: 1, updated_at: t(1) } }, send: true }, T9, o);
     ok(e1.ok && e1.data.status === "submitted" && e1.data.request.form_version_id === eb.data.form_version_id, "FY2569 round (no 2569 form) binds the fy_current form (formForFy)");
-    expectErr(await api("saveLines", { month: "2026-12", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-10: round 2026-12 not open yet");
-    expectErr(await api("saveLines", { month: "2026-09", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-10: round 2026-09 (no request) not open");
+    expectErr(await api("saveLines", { month: "2026-11", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-09: round 2026-11 not open yet");
+    expectErr(await api("saveLines", { month: "2026-08", lines: {} }, T9, o), "BAD_REQUEST", "calendar 2026-09: round 2026-08 (no request) not open");
     const e2 = await api("pcuBootstrap", {}, T9, o);
-    eq([e2.data.history.length, e2.data.history[0].month, e2.data.history.at(-1).month], [11, "2026-09", "2025-11"], "calendar 2026-10: history = 2026-09 … 2025-11 (prevRound 2026-10 is a full card, not history)");
-    const hc = (await mustOk("pcuBootstrap", {}, T9)).history[0];
-    eq(hc, { month: "2026-10", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at }, "calendar CAL: the sent FY2569 round 2026-10 is history[0] with status submitted + submitted_at");
-    eq(e2.data.byMonth["2026-11"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-10");
-    eq(e2.data.byMonth["2026-11"].prev_lines[A.code], { op: 1, pp: 0, stock: null, received: 1, received_src: "requested" }, "…but prev_lines still reads the previous round");
-    ok((await api("saveLines", { month: "2026-11", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-11) works");
-    eq((await mustOk("pcuBootstrap", {}, T9)).byMonth[CUR].used_fy, {}, "calendar CAL: used_fy of round 2026-12 still excludes the FY2569 round 2026-10");
+    eq([e2.data.history.length, e2.data.history[0].month, e2.data.history.at(-1).month], [11, "2026-08", "2025-10"], "calendar 2026-09: history = 2026-08 … 2025-10 (prevRound 2026-09 is a full card, not history)");
+    const hc = (await mustOk("pcuBootstrap", {}, T9)).history.find((h) => h.month === "2026-09");
+    eq(hc, { month: "2026-09", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at }, "calendar CAL: the sent FY2569 round 2026-09 is in history with status submitted + submitted_at");
+    eq(e2.data.byMonth["2026-10"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-09");
+    eq(e2.data.byMonth["2026-10"].prev_lines[A.code], { op: 1, pp: 0, stock: null, received: 1, received_src: "requested" }, "…but prev_lines still reads the previous round");
+    ok((await api("saveLines", { month: "2026-10", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-10) works");
+    eq((await mustOk("pcuBootstrap", {}, T9)).byMonth[CUR].used_fy, {}, "calendar CAL: used_fy of round 2026-12 still excludes the FY2569 round 2026-09");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
@@ -785,14 +786,14 @@ async function main() {
     const xf = await get(`/api/export.xlsx?fy=2570`, { authorization: "Bearer " + ADM2 });
     eq(xf.status, 200, "export by fiscal year → 200");
     ok(/ปีงบ2570/.test(decodeURIComponent((xf.headers.get("content-disposition") || "").split("''")[1] || "")), "fy filename เบิกวัสดุ_ปีงบ2570.xlsx");
-    // 2j: fy= covers the 12 ROUND months of the fy (Nov … Oct) — round 2026-10 (PCU09, sent above) is FY2569, not FY2570
+    // 2w: fy= covers the 12 ROUND months of the fy (Oct … Sep) — round 2026-09 (PCU09, sent above) is FY2569, not FY2570
     const sheetMonths = async (res) => {
       const w = XLSX.read(Buffer.from(await res.arrayBuffer()), { type: "buffer" });
       return [...new Set(XLSX.utils.sheet_to_json(w.Sheets[w.SheetNames[0]], { header: 1 }).slice(1).map((r) => r[0]))].sort();
     };
     const m70 = await sheetMonths(xf);
-    ok(m70.includes(PREV_ROUND) && m70.includes(ROUND) && m70.every((m) => m >= "2026-11" && m <= "2027-10"), `export fy=2570: months within 2026-11 … 2027-10 (${m70.join(",")})`);
-    eq(await sheetMonths(await get(`/api/export.xlsx?fy=2569`, { authorization: "Bearer " + ADM2 })), ["2026-10"], "export fy=2569: only round 2026-10 (the last round of FY2569)");
+    ok(m70.includes(PREV_ROUND) && m70.includes(ROUND) && m70.every((m) => m >= "2026-10" && m <= "2027-09"), `export fy=2570: months within 2026-10 … 2027-09 (${m70.join(",")})`);
+    eq(await sheetMonths(await get(`/api/export.xlsx?fy=2569`, { authorization: "Bearer " + ADM2 })), ["2026-09"], "export fy=2569: only round 2026-09 (the last round of FY2569)");
     eq((await get(`/api/export.xlsx?month=${CUR}`)).status, 401, "export without a token → 401");
     eq((await get(`/api/export.xlsx?month=${CUR}&token=${encodeURIComponent(T1)}`)).status, 403, "export with a PCU token → 403");
     eq((await get(`/api/export.xlsx`, { authorization: "Bearer " + ADM2 })).status, 400, "export without month/fy → 400");
@@ -1718,7 +1719,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 5, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5 re-runs too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 6, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5/v6 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -1980,11 +1981,11 @@ async function main() {
     // ---- history seeded by the import + the 2d edit ----
     const g = await mustOk("adminFormGet", { id: F.id }, ADM2);
     ok(Array.isArray(g.price_history) && g.price_history.length >= seedItems.length, "adminFormGet.price_history: a row per item (seeded by the import)");
-    eq(hrows(g.price_history, X), [[PREV, px0]], "price_history X = [[first round of FY2570, form price]]");
+    eq(hrows(g.price_history, X), [[FIRST70, px0]], "price_history X = [[first round of FY2570 (2026-10, 2w), form price]]");
     const hx = g.price_history.find((h) => h.code === X);
     ok(hx.set_by === ADMIN_EMAIL && hx.set_at && "note" in hx, "price_history rows carry set_by / set_at / note");
     const ha = hrows(g.price_history, A.code);
-    ok(ha.length === 2 && ha[0][0] === PREV && ha[0][1] === A.price && ha[1][0] === CUR, "2d price edit of A without price_from → a row from currentRound (2026-12); the import price stays from 2026-11");
+    ok(ha.length === 2 && ha[0][0] === FIRST70 && ha[0][1] === A.price && ha[1][0] === CUR, "2d price edit of A without price_from → a row from currentRound (2026-12); the import price stays from 2026-10");
 
     // ---- sent requests at the import price ----
     const s1 = [await send(T7, PREV, { [X]: { op: 2, pp: 1 }, [Y]: { op: 4, pp: 0 } }), await send(T7, CUR, { [X]: { op: 5, pp: 0 } }),
@@ -1995,17 +1996,17 @@ async function main() {
 
     // ---- validation ----
     const fsave = (price_from, extra = {}, opts) => api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, px1) }, price_from, ...extra }, ADM2, opts);
-    const r10 = await fsave({ [X]: "2026-10" });
-    expectErr(r10, "BAD_REQUEST", "price_from 2026-10 (FY2569, before the first round of fy_current)");
+    const r10 = await fsave({ [X]: "2026-09" });
+    expectErr(r10, "BAD_REQUEST", "price_from 2026-09 (FY2569, before the first round of fy_current)");
     ok(r10.error && r10.error.message.includes("2570"), "price_from error names the fiscal year (Thai)");
-    expectErr(await fsave({ [X]: "2027-11" }), "BAD_REQUEST", "price_from 2027-11 (after the last round of fy_current)");
+    expectErr(await fsave({ [X]: "2027-10" }), "BAD_REQUEST", "price_from 2027-10 (FY2571, after the last round of fy_current)");
     expectErr(await fsave({ [X]: "2026-13" }), "BAD_REQUEST", "price_from not a month");
     expectErr(await fsave([X]), "BAD_REQUEST", "price_from as an array");
     expectErr(await fsave({ "ZZ-01": CUR }), "BAD_REQUEST", "price_from for a code that is not in the form");
     eq((await mustOk("adminBootstrap", {}, ADM2)).form.id, F.id, "rejected saves created no version");
     const pvBad = async (changes, label, tok = ADM2) => expectErr(await api("adminPricePreview", { changes }, tok), tok === ADM2 ? "BAD_REQUEST" : "FORBIDDEN", label);
     await pvBad([], "adminPricePreview: empty changes");
-    await pvBad([{ code: X, price: 1, from_round: "2026-10" }], "adminPricePreview: from_round outside fy_current");
+    await pvBad([{ code: X, price: 1, from_round: "2026-09" }], "adminPricePreview: from_round outside fy_current");
     await pvBad([{ code: "ZZ-01", price: 1, from_round: PREV }], "adminPricePreview: unknown code");
     await pvBad([{ code: X, price: -1, from_round: PREV }], "adminPricePreview: negative price");
     await pvBad([{ code: X, price: 1, from_round: PREV }, { code: X, price: 2, from_round: PREV }], "adminPricePreview: duplicate code");
@@ -2019,8 +2020,8 @@ async function main() {
     const fut = await mustOk("adminFormSave", { base_version_id: F.id, note: "ราคา X ใหม่ตั้งแต่ ม.ค. 70", form: { steps: stepsWith(X, px1) }, price_from: { [X]: NEXT, [Y]: PREV } }, ADM2);
     ok(fut.saved && findIt(fut.form.steps, X).price === px1, "future price saved: the form holds the latest price");
     eq(fut.price_backdate, [], "future price: price_backdate []");
-    eq(hrows(fut.price_history, X), [[PREV, px0], [NEXT, px1]], "adminFormSave.price_history: X old from 2026-11 · new from 2027-01");
-    eq(hrows(fut.price_history, Y), [[PREV, py0]], "price_from of an item whose price did not change is ignored");
+    eq(hrows(fut.price_history, X), [[FIRST70, px0], [NEXT, px1]], "adminFormSave.price_history: X old from 2026-10 · new from 2027-01");
+    eq(hrows(fut.price_history, Y), [[FIRST70, py0]], "price_from of an item whose price did not change is ignored");
     F = fut.form;
     const aud0 = (await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.find((e) => e.action === "form_save");
     eq(aud0 && JSON.parse(aud0.detail).price_from, { [X]: NEXT }, "audit form_save detail carries price_from of the changed prices");
@@ -2053,13 +2054,13 @@ async function main() {
     const P = pv.data;
     const expX = r2(6 * (px2 - px0)), expY = r2(4 * (py2 - py0));
     eq([P.requests, P.months, P.delta_baht], [2, [PREV, CUR], r2(expX + expY)], `preview: 2 requests, rounds 2026-11 … 2026-12, Δ ${r2(expX + expY)} บาท`);
-    eq(P.per_code.map((x) => [x.code, x.n_lines, x.delta, x.old, x.to_round, x.backdate]), [[X, 1, expX, px0, NEXT, true], [Y, 1, expY, py0, "2027-11", true]],
+    eq(P.per_code.map((x) => [x.code, x.n_lines, x.delta, x.old, x.to_round, x.backdate]), [[X, 1, expX, px0, NEXT, true], [Y, 1, expY, py0, "2027-10", true]],
       "preview per_code: X only in [2026-12, 2027-01) · Y in [2026-11, end of fy)");
     const before = await baht();
     const k7 = (await mustOk("devPrintToken", { pcu: "PCU07", month: CUR })).content_key;
     const bd = await api("adminFormSave", { base_version_id: F.id, note: "แก้ราคาย้อนหลัง", form: { steps: stepsWith(Y, py2, { steps: stepsWith(X, px2) }) }, price_from: { [X]: CUR, [Y]: PREV } }, ADM2, ADM_LATER);
     ok(bd.ok && bd.data.saved, "back-dated adminFormSave");
-    eq(bd.data.price_backdate.map((x) => [x.code, x.old, x.new, x.from_round, x.to_round, x.requests, x.lines, x.delta]), [[X, px0, px2, CUR, NEXT, 1, 1, expX], [Y, py0, py2, PREV, "2027-11", 1, 1, expY]],
+    eq(bd.data.price_backdate.map((x) => [x.code, x.old, x.new, x.from_round, x.to_round, x.requests, x.lines, x.delta]), [[X, px0, px2, CUR, NEXT, 1, 1, expX], [Y, py0, py2, PREV, "2027-10", 1, 1, expY]],
       "adminFormSave.price_backdate = the preview");
     eq(r2((await baht()) - before), P.delta_baht, "preview = real effect: Σ adminRequests.progress.baht moved by exactly delta_baht");
     eq([pp2(await line("PCU07", CUR, X)), pp2(await line("PCU07", PREV, Y))], [[px2, px0], [py2, py0]], "back-date: price_snapshot rewritten, price_print untouched");
@@ -2070,9 +2071,9 @@ async function main() {
     ok(auds.length === 2 && ax.month === CUR && axd.old === px0 && axd.new === px2 && axd.from_round === CUR && axd.requests === 1 && axd.delta === expX,
       "audit price_backdate per code (detail: code, old → new, from_round, n ใบ, Δ บาท)");
     F = bd.data.form;
-    eq(hrows(bd.data.price_history, X), [[PREV, px0], [CUR, px2], [NEXT, px1]], "price_history X after the back-date");
-    eq(hrows(bd.data.price_history, Y), [[PREV, py2]], "Y back-dated to the first round replaces its first-round row");
-    expectErr(await api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, r2(px2 + 1)) }, price_from: { [X]: "2026-10" } }, ADM2, ADM_LATER), "BAD_REQUEST", "back-date before fy_current refused");
+    eq(hrows(bd.data.price_history, X), [[FIRST70, px0], [CUR, px2], [NEXT, px1]], "price_history X after the back-date");
+    eq(hrows(bd.data.price_history, Y), [[FIRST70, py0], [PREV, py2]], "Y back-dated from 2026-11 adds a row (the 2026-10 first-round row stays, 2w)");
+    expectErr(await api("adminFormSave", { base_version_id: F.id, form: { steps: stepsWith(X, r2(px2 + 1)) }, price_from: { [X]: "2026-09" } }, ADM2, ADM_LATER), "BAD_REQUEST", "back-date before fy_current refused");
 
     // ---- PDF after the back-date: old price (price_print) · re-send → new price + new key ----
     const tk7 = await mustOk("devPrintToken", { pcu: "PCU07", month: CUR });
@@ -2110,14 +2111,14 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 5, "re-running migration v5 succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 6, "re-running migration v5 (+ v6) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 5, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 6, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
-    eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, PREV, r.price].join("|")).sort(),
-      "backfill: one row per item of the latest form of the fy, from its first round (2026-11), at the form price");
+    eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
+      "backfill: one row per item of the latest form of the fy, from its first round (2026-10, 2w), at the form price");
     ok(hb.every((h) => h.set_by === "migration v5"), "backfill rows: set_by 'migration v5'");
   }
 
@@ -2130,7 +2131,7 @@ async function main() {
     const itemsOfSteps = (steps) => steps.flatMap((s) => s.rows.filter((r) => r.type === "item").map((r) => ({ ...r, step: s.code })));
     const sortedObj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, sortedObj(o[k])])) : o);
     const byCode = (arr) => [...arr].sort((a, b) => (a.code < b.code ? -1 : a.code > b.code ? 1 : 0));
-    const monthsOld = fyRoundMonths(OLD); // 2j: the 12 rounds of FY2570 = 2026-11 … 2027-10 (actual_prev columns = their submission months)
+    const monthsOld = fyRoundMonths(OLD); // 2w: the 12 rounds of FY2570 = 2026-10 … 2027-09 (actual_prev column = the round month itself)
     await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
     await mustOk("adminSetConfig", { key: "stock_required", value: 0 }, ADM2);
 
@@ -2140,20 +2141,20 @@ async function main() {
     const C = seedItems.find((i) => i.step === "P3");
     // keyed as the open round: calendar month = the month before the round (X-Dev-Month)
     const send = async (tok, month, lines) => api("saveLines", { month, lines, send: true }, tok, { month: shiftMonth(month, -1) });
-    const sent = [ // round months → actual_prev column (= submission month): 2026-11 → Oct · 2027-09 → Aug · 2027-10 → Sep · 2027-01 → Dec · 2027-04 → Mar
-      [T11, "2026-11", { [A.code]: { op: 3, pp: 1 } }],
-      [T11, "2027-09", { [A.code]: { op: 10, pp: 0 } }],
-      [T11, "2027-10", { [A.code]: { op: 2, pp: 4 } }],
-      [T12, "2027-01", { [LABI.code]: { op: 3, pp: 0 }, [A.code]: { op: 7, pp: 1 } }],
-      [T12, "2027-04", { [A.code]: { op: 7, pp: 1 }, [C.code]: { op: 5, pp: 0 } }],
+    const sent = [ // 2w: round month = actual_prev column: 2026-10 → Oct · 2027-08 → Aug · 2027-09 → Sep · 2026-12 → Dec · 2027-03 → Mar
+      [T11, "2026-10", { [A.code]: { op: 3, pp: 1 } }],
+      [T11, "2027-08", { [A.code]: { op: 10, pp: 0 } }],
+      [T11, "2027-09", { [A.code]: { op: 2, pp: 4 } }],
+      [T12, "2026-12", { [LABI.code]: { op: 3, pp: 0 }, [A.code]: { op: 7, pp: 1 } }],
+      [T12, "2027-03", { [A.code]: { op: 7, pp: 1 }, [C.code]: { op: 5, pp: 0 } }],
     ];
     let allSent = true;
     for (const [tok, month, lines] of sent) { const r = await send(tok, month, lines); if (!r.ok || r.data.status !== "submitted") { allSent = false; console.log(JSON.stringify(r)); } }
     ok(allSent, "setup: 5 requests sent in 5 different rounds of FY2570 (PCU11 ×3, PCU12 ×2)");
-    // 2j boundary: the round 2026-10 is FY2569 → never part of FY2570's history
+    // 2w boundary: the round 2026-09 is FY2569 → never part of FY2570's history
     const T10 = (await mustOk("pcuLogin", { pcu: "PCU10", pin: "12345" })).token;
-    const s10 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 9, pp: 9 } }, send: true }, T10, { month: "2026-10" });
-    ok(s10.ok && s10.data.status === "submitted", "setup: PCU10 sends the FY2569 round 2026-10 (must not be counted for FY2570)");
+    const s10 = await api("saveLines", { month: "2026-09", lines: { [A.code]: { op: 9, pp: 9 } }, send: true }, T10, { month: "2026-09" });
+    ok(s10.ok && s10.data.status === "submitted", "setup: PCU10 sends the FY2569 round 2026-09 (must not be counted for FY2570)");
 
     // snapshot of what the DB holds for FY2570 (independent of the code under test): every submitted/issued line with qty
     const reqCells = {};
@@ -2163,13 +2164,13 @@ async function main() {
       for (const r of lst) {
         nReq++; reqMonths.add(m);
         const g = await mustOk("adminGetRequest", { pcu: r.pcu, month: m }, ADM2);
-        for (const [code, l] of Object.entries(g.request.lines)) if ((l.op || 0) + (l.pp || 0) > 0) reqCells[`${r.pcu}|${code}|${shiftMonth(m, -1)}`] = [l.op || 0, l.pp || 0]; // keyed by the Excel column
+        for (const [code, l] of Object.entries(g.request.lines)) if ((l.op || 0) + (l.pp || 0) > 0) reqCells[`${r.pcu}|${code}|${m}`] = [l.op || 0, l.pp || 0]; // keyed by the Excel column (= the round month, 2w)
       }
     }
     ok(nReq >= 7 && Object.keys(reqCells).length >= 9, `setup: snapshot of FY2570 has ${nReq} sent requests / ${Object.keys(reqCells).length} cells (incl. PCU13/PCU14 of the 2d tests)`);
     const tm = {}; // "pcu|code" -> 12 monthly totals
     for (const [k, [op, pp]] of Object.entries(reqCells)) { const [pcu, code, m] = k.split("|"); (tm[pcu + "|" + code] ||= new Array(12).fill(0))[fyExcelMonths(OLD).indexOf(m)] += op + pp; }
-    ok(!Object.keys(reqCells).some((k) => k.startsWith("PCU10|")), "setup: the FY2569 round 2026-10 is not in the FY2570 snapshot");
+    ok(!Object.keys(reqCells).some((k) => k.startsWith("PCU10|")), "setup: the FY2569 round 2026-09 is not in the FY2570 snapshot");
     const expStats = {};
     for (const [k, arr] of Object.entries(tm)) {
       const s = [...arr].sort((a, b) => a - b), ann = arr.reduce((a, b) => a + b, 0);
@@ -2259,7 +2260,7 @@ async function main() {
     ok(S.limits.will_default > 0 && S.limits.in_file === 0, "preview: limits.will_default > 0 (the file has no limits)");
     eq(S.limits.will_default, nLim, "preview: will_default = pairs of plans ∪ stats minus the skipped ones");
     eq(S.config.will_set, ["fy_current"], "preview: config.will_set = fy_current only (the other keys already have values)");
-    eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort().map((m) => shiftMonth(m, -1))], "preview: rollover from_fy / requests_counted / actual_months (Excel column labels = submission months)");
+    eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort()], "preview: rollover from_fy / requests_counted / actual_months (Excel column labels = the round months, 2w)");
     eq(S.rollover.source, { actual_prev: "db", prices_prev: "db", stats: "db" }, "preview: old-fy numbers come from the DB");
     ok(Array.isArray(pv.warnings) && pv.warnings.some((w) => /ปิดแล้ว/.test(w)), "preview: warning that dropped items are kept closed");
 
@@ -2386,17 +2387,18 @@ async function main() {
     eq(pbNew.data.config.fy_current, NEW, "pcuBootstrap.config.fy_current 2571");
     {
       const hist = pbNew.data.history;
-      eq([hist.length, hist[0].month, hist.at(-1).month], [11, "2027-09", "2026-11"], "X-Dev-Month 2027-10 (cur 2027-11, F 2571): history = 2027-09 … 2026-11");
-      ok(hist.every((h) => h.fy === OLD) && !hist.some((h) => h.month === "2026-10"), "history: all FY2570, never reaches back to 2026-10 (FY2569 = F-2)");
+      eq([hist.length, hist[0].month, hist.at(-1).month], [12, "2027-09", "2026-10"], "X-Dev-Month 2027-10 (cur 2027-11, F 2571): history = 2027-09 … 2026-10 (all of FY2570, 2w)");
+      ok(hist.every((h) => h.fy === OLD) && !hist.some((h) => h.month === "2026-09"), "history: all FY2570, never reaches back to 2026-09 (FY2569 = F-2)");
       const hm = Object.fromEntries(hist.map((h) => [h.month, h]));
-      ok(["2026-11", "2027-09"].every((m) => ["submitted", "issued"].includes(hm[m].status) && hm[m].submitted_at) && hm["2027-01"].status === "not_started", "history (PCU11): rounds it sent → submitted + submitted_at, others not_started");
+      ok(["2026-10", "2027-08"].every((m) => ["submitted", "issued"].includes(hm[m].status) && hm[m].submitted_at) && hm["2027-01"].status === "not_started", "history (PCU11): rounds it sent → submitted + submitted_at, others not_started");
       eq([pbNew.data.next_round.month, pbNew.data.next_round.opens_on, pbNew.data.next_round.fy], ["2027-12", "2027-11-01", NEW], "X-Dev-Month 2027-10: next_round 2027-12 opens 2027-11-01");
     }
     eq([pbNew.data.limits[A.code], pbNew.data.plans[A.code]], [[6, 8], [6, 2]], "pcuBootstrap (2027-10): limits / plans of PCU11 are 2571's");
     const stepsNew = pbNew.data.form.steps;
     ok(!itemsOfSteps(stepsNew).some((i) => i.code === REM.code && i.active !== false) && itemsOfSteps(stepsNew).some((i) => i.code === NEWC), "PCU form for 2027-10: new item present, dropped item not active");
-    const pbOldMonth = await mustOk("pcuBootstrap", {}, T11); // current round 2026-12 is still FY2570, but drafts follow fy_current's latest form
-    const v11 = (await mustOk("adminGetRequest", { pcu: "PCU11", month: "2026-11" }, ADM2)).form_version_id;
+    // current round 2026-12 is still FY2570, but drafts follow fy_current's latest form · PCU07 sent the shown round 2026-11 before the rollover
+    const pbOldMonth = await mustOk("pcuBootstrap", {}, (await mustOk("pcuLogin", { pcu: "PCU07", pin: "54321" })).token);
+    const v11 = (await mustOk("adminGetRequest", { pcu: "PCU07", month: PREV }, ADM2)).form_version_id;
     ok(pbOldMonth.form.fy === NEW && v11 === boot0.form.id && pbOldMonth.forms[v11] && pbOldMonth.forms[v11].fy === OLD, "pcuBootstrap: a request sent before the rollover keeps its FY2570 form (forms[old id]); drafts use the new latest form");
     const reqAfter = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
     eq([reqAfter.request, reqAfter.form_version_id, reqAfter.form.fy], [reqBefore.request, reqBefore.form_version_id, OLD], "old requests untouched (same lines, still bound to the old form version)");
@@ -2418,8 +2420,8 @@ async function main() {
     // ---- 2j formForFy: a round whose fy has no form uses fy_current's latest form — not simply the newest version ----
     await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: OLD }, set_current_fy: true }, ADM2); // fy_current back to 2570 (newest form is 2571's)
     const T08 = (await mustOk("pcuLogin", { pcu: "PCU08", pin: "12345" })).token;
-    const s08 = await api("saveLines", { month: "2026-10", lines: { [A.code]: { op: 1 } }, send: true }, T08, { month: "2026-10" });
-    ok(s08.ok && s08.data.request.form_version_id === boot0.form.id, `formForFy: round 2026-10 (fy 2569, no form) binds fy_current 2570's latest form (${boot0.form.id}), not the newest (${ap.rollover.form_version_id})`);
+    const s08 = await api("saveLines", { month: "2026-09", lines: { [A.code]: { op: 1 } }, send: true }, T08, { month: "2026-09" });
+    ok(s08.ok && s08.data.request.form_version_id === boot0.form.id, `formForFy: round 2026-09 (fy 2569, no form) binds fy_current 2570's latest form (${boot0.form.id}), not the newest (${ap.rollover.form_version_id})`);
     const g08 = await mustOk("adminGetRequest", { pcu: "PCU08", month: "2025-11" }, ADM2); // no request, fy 2569 → resolved form
     eq([g08.request, g08.form_version_id], [null, boot0.form.id], "adminGetRequest of an empty FY2569 round resolves the fy_current form (formForFy)");
     eq((await mustOk("adminGetRequest", { pcu: "PCU08", month: "2027-11" }, ADM2)).form_version_id, ap.rollover.form_version_id, "a FY2571 round resolves its own fy's form");
@@ -2533,7 +2535,7 @@ async function main() {
     const ap69 = (seed.actual_prev && seed.actual_prev["2569"]) || { months: fyExcelMonths(2569), data: {} };
     const z = () => new Array(12).fill(0);
     const aOp = z(), aPp = z(), bOp = z();
-    aOp[0] = 4; aOp[1] = 3; aPp[1] = 1; bOp[11] = 2; // Excel 2025-10 (↔ trial round 2026-11: dropped) · 2025-11 (↔ 2026-12) · 2026-09 (↔ 2026-10)
+    aOp[0] = 4; aOp[1] = 3; aPp[1] = 1; bOp[11] = 2; // 2w: Excel 2025-10 (↔ round 2026-10) · 2025-11 (↔ trial round 2026-11: dropped) · 2026-09 (↔ 2027-09)
     await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570,
       plans: { 2570: { ...seed.plans["2570"], [P]: { [A.code]: [100, 20], [B.code]: [10, 2] } } },
       actual_prev: { 2569: { months: ap69.months, data: { ...ap69.data, [P]: { [A.code]: { op: aOp, pp: aPp }, [B.code]: { op: bOp, pp: z() } } } } },
@@ -2598,19 +2600,19 @@ async function main() {
     eq(Object.keys(d.items).sort(), [...new Set([...activeCodes, A.code, B.code, CSI.code, LABI.code])].sort(), "items = active items of the FY2570 form (+ any with data)");
 
     // flags (rule 2 "pace"): elapsed = rounds ≤ currentRound without the trial
-    eq(d.flags, [{ code: B.code, rule: "pace", cum_qty: 12, plan_qty: 12, elapsed: 3 }],
-      "calendar 2027-01: elapsed 3 (2026-12, 2027-01, 2027-02) · B 12 > 12×3/12×1.2 → pace · A 6 ≤ 36 no flag · CSI has no plan → skipped");
+    eq(d.flags, [{ code: B.code, rule: "pace", cum_qty: 12, plan_qty: 12, elapsed: 4 }],
+      "calendar 2027-01: elapsed 4 (2026-10, 2026-12, 2027-01, 2027-02 — 2w) · B 12 > 12×4/12×1.2 → pace · A 6 ≤ 36 no flag · CSI has no plan → skipped");
     const dE1 = await mustOk("pcuDashboard", {}, TP);
-    eq(dE1.flags.map((f) => [f.code, f.elapsed]), [[B.code, 1]], "calendar 2026-11: elapsed 1 (trial 2026-11 not counted)");
+    eq(dE1.flags.map((f) => [f.code, f.elapsed]), [[B.code, 2]], "calendar 2026-11: elapsed 2 (2026-10 + 2026-12; trial 2026-11 not counted)");
 
-    // prev_fy: actual_prev 2569 aligned to rounds (round X ↔ Excel month X−1 a year earlier)
+    // prev_fy: actual_prev 2569 aligned to rounds (2w: round X ↔ Excel month X a year earlier)
     const pp69 = abD.prev && abD.prev["2569"] ? abD.prev["2569"].prices : {};
     const pa = pp69[A.code] ?? fItem(A.code).price, pb = pp69[B.code] ?? fItem(B.code).price;
     const pv = d.prev_fy;
     ok(pv && pv.months.length === 11 && pv.qty.length === 11 && pv.baht.length === 11, "prev_fy arrays aligned to rounds (11 entries)");
-    eq([pv.months[0], pv.months[10]], ["2025-11", "2026-09"], "prev_fy.months[i] = Excel month of rounds[i] one year earlier (2026-12 ↔ 2025-11)");
+    eq([pv.months[0], pv.months[1], pv.months[10]], ["2025-10", "2025-12", "2026-09"], "prev_fy.months[i] = Excel month of rounds[i] one year earlier (2026-10 ↔ 2025-10 · 2025-11 ↔ trial round skipped)");
     const qx = z().slice(0, 11); qx[0] = 4; qx[10] = 2;
-    eq(pv.qty, qx, "prev_fy.qty: 2025-11 → 4 (OP 3 + PP 1) · 2026-09 → 2 · 2025-10 (↔ trial round) dropped");
+    eq(pv.qty, qx, "prev_fy.qty: 2025-10 → 4 · 2026-09 → 2 · 2025-11 (↔ trial round 2026-11) dropped");
     ok(near(pv.baht[0], r2(4 * pa)) && near(pv.baht[10], r2(2 * pb)) && pv.baht.slice(1, 10).every((x) => x === 0), `prev_fy.baht = qty × prices_prev 2569 (${pa}, ${pb})`);
 
     // CSI's unit marked done later → got appears
@@ -2656,7 +2658,7 @@ async function main() {
   {
     // FY2571 (fy_current here, no request yet) = fully controlled data · trial round 2027-11 · PCU00 = group ทดลอง · PCU98 / PCU01 / PCU11 / PCU12
     const FY = 2571, TRIAL = "2027-11", R1 = "2027-12", R2 = "2028-01";
-    const AT = { month: R2 }; // calendar 2028-01 → currentRound 2028-02: elapsed = 2027-12, 2028-01, 2028-02 (trial dropped) = 3
+    const AT = { month: R2 }; // calendar 2028-01 → currentRound 2028-02: elapsed = 2027-10, 2027-12, 2028-01, 2028-02 (trial dropped) = 4 (2w)
     const r2 = (x) => Math.round(x * 100) / 100, r4 = (x) => Math.round(x * 10000) / 10000;
     const patternOf = (vals) => { // thresholds.json rules (same order as the backend)
       const annual = vals.reduce((a, v) => a + v, 0), act = vals.filter((v) => v > 0).length, s = vals.filter((v) => v > 0).sort((a, b) => b - a);
@@ -2749,7 +2751,7 @@ async function main() {
     const nr = await api("adminDashboard", {}, ADM2, AT);
     ok(nr.ok, "adminDashboard (network) at calendar 2028-01" + (nr.ok ? "" : ` (${nr.error.code}: ${nr.error.message})`));
     const N = nr.data;
-    eq([N.fy, N.elapsed, N.rounds], [FY, 3, fyRoundMonths(FY).filter((m) => m !== TRIAL)], "network: fy = fy_current 2571, elapsed 3, rounds without the trial round");
+    eq([N.fy, N.elapsed, N.rounds], [FY, 4, fyRoundMonths(FY).filter((m) => m !== TRIAL)], "network: fy = fy_current 2571, elapsed 4, rounds without the trial round");
     ok(N.fys.includes(2571) && N.fys.includes(2570) && N.fys[0] === 2571, `network: fys newest first incl. 2571 + 2570 (${N.fys})`);
     ok(!N.pcus.some((x) => x.code === "PCU00") && N.pcus.length === 16, "network: pcus = every PCU except group ทดลอง (16, PCU00 left out)");
     const pc = Object.fromEntries(N.pcus.map((x) => [x.code, x]));
@@ -2776,7 +2778,7 @@ async function main() {
     // flags: rule 1 (p90 of stats 2570), rule 2 (pace), rule 4 (share) — ordered pcu → item → rule → round
     const share98 = (a + b) * px / ((a + b + 2) * px), thr98 = 2 * T.PCU98 / Tnet;
     const fShare = { pcu: "PCU98", code: X.code, rule: "share", value: r4(share98), threshold: r4(thr98) };
-    const fPace = { pcu: "PCU98", code: X.code, rule: "pace", value: a + b, threshold: r2((a + b) * 3 / 12 * 1.2) };
+    const fPace = { pcu: "PCU98", code: X.code, rule: "pace", value: a + b, threshold: r2((a + b) * 4 / 12 * 1.2) };
     eq(N.flags, [
       { pcu: "PCU01", code: X.code, rule: "p90", round: R1, value: 1, threshold: 0.5 },
       { pcu: "PCU98", code: X.code, rule: "p90", round: R1, value: a, threshold: a - 1 },
@@ -2807,14 +2809,14 @@ async function main() {
     const vr = await api("adminDashboard", { pcu: "pcu98" }, ADM2, AT);
     ok(vr.ok, "adminDashboard{pcu:'pcu98'} (code upper-cased)" + (vr.ok ? "" : ` (${vr.error.code}: ${vr.error.message})`));
     const V = vr.data;
-    eq([V.fy, V.pcu, V.elapsed, V.rounds.length], [FY, { code: "PCU98", name: pc.PCU98.name }, 3, 11], "pcu view: fy, pcu {code,name}, elapsed, rounds");
+    eq([V.fy, V.pcu, V.elapsed, V.rounds.length], [FY, { code: "PCU98", name: pc.PCU98.name }, 4, 11], "pcu view: fy, pcu {code,name}, elapsed, rounds");
     eq(V.monthly[X.code][R1], [a, r2(a * px), a - 2, r2((a - 2) * px), 0, 0], "pcu view monthly X R1: got = issued_total although the unit is not done (staff view)");
     ok(!(TRIAL in V.monthly[X.code]), "pcu view: trial round not counted");
     const pdA = await api("pcuDashboard", { fy: FY }, tok.PCU98, AT);
     ok(pdA.ok && pdA.data.monthly[X.code][R1][2] === 0, "pcuDashboard (PCU view) of the same line: got 0 while the unit is not done");
     eq(V.flags, [
       { code: X.code, rule: "p90", round: R1, value: a, threshold: a - 1 },
-      { code: X.code, rule: "pace", value: a + b, threshold: fPace.threshold, cum_qty: a + b, plan_qty: a + b, elapsed: 3 },
+      { code: X.code, rule: "pace", value: a + b, threshold: fPace.threshold, cum_qty: a + b, plan_qty: a + b, elapsed: 4 },
       { code: X.code, rule: "share", value: fShare.value, threshold: fShare.threshold },
     ], "pcu view flags: every rule (no pcu field) · pace also carries cum_qty / plan_qty / elapsed");
     const q98 = { [X.code]: a + b, [Z.code]: qz, [W.code]: 2 }, bb98 = { [X.code]: (a + b) * px, [Z.code]: qz * pz, [W.code]: 2 * pw };
@@ -2877,7 +2879,7 @@ async function main() {
     const findIt = (steps, code) => items(steps).find((r) => r.code === code);
     const r2 = (x) => Math.round(x * 100) / 100;
     await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
-    const FY = (await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, first = `${FY - 544}-11`;
+    const FY = (await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, first = `${FY - 544}-10`; // 2w: first round of the fy = October
     const devMonth0 = devMonth;
     devMonth = `${FY - 544}-12`; // calendar Dec → round Jan of FY (a round of fy_current)
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
@@ -3037,6 +3039,95 @@ async function main() {
     const b3 = await mustOk("adminBootstrap", {}, ADM2);
     ok(!(b3.stats.data[P] && b3.stats.data[P][X.code]), "2v: after unlink X has no stats");
     devMonth = devMonth0;
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2w: fy = the supply month (Oct … Sep) · admin keys a request for a pcu (adminSaveLines) · trial round without a month");
+  {
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const fy0 = b0.config.fy_current, mode0 = b0.config.limit_mode, trial0 = b0.config.trial_month;
+    if (fy0 !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570 }, set_current_fy: true }, ADM2);
+    const P = "PCU05", M = FIRST70; // a past round: calendar CAL 2026-11 → currentRound 2026-12, prevRound 2026-11
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const DSP = "entry.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSP, role: "dispenser", units: ["พัสดุ"] }, ADM2);
+    const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSP })).token;
+    await mustOk("adminSetLimitMode", { mode: "enforce" }, ADM2);
+    await mustOk("adminSetLimit", { pcu: P, code: A.code, limit_month: 1, limit_year: 1 }, ADM2);
+    await mustOk("adminLockRound", { month: M, locked: 1 }, ADM2);
+    const AL = (pp) => ({ pcu: P, month: M, ...pp });
+    const gl = async (pcu, month, code) => (await mustOk("adminGetRequest", { pcu, month }, ADM2)).request.lines[code];
+
+    // fy edges through the API (rounds[].fy / adminDashboard rounds)
+    const eb = await api("pcuBootstrap", {}, TP, { month: "2027-09" }); // calendar Sep 2570 → open round 2027-10 = first round of FY2571
+    eq(eb.ok && eb.data.rounds.map((r) => [r.month, r.fy]), [["2027-10", 2571], ["2027-09", 2570]], "2w: round 2027-10 → FY2571 · 2027-09 → FY2570 (monthFy = fy of the supply month)");
+    const dn = await mustOk("adminDashboard", { fy: 2570 }, ADM2);
+    eq([dn.rounds.length, dn.rounds[0], dn.rounds[11]], [12, "2026-10", "2027-09"], "2w: adminDashboard FY2570 rounds = 12, 2026-10 … 2027-09");
+
+    // guards
+    expectErr(await api("saveLines", { month: M, lines: { [A.code]: { op: 1 } } }, TP), "BAD_REQUEST", "2w setup: the pcu cannot key the past round itself");
+    expectErr(await api("adminSaveLines", AL({ lines: {} }), TP), "FORBIDDEN", "adminSaveLines with a PCU token → FORBIDDEN");
+    expectErr(await api("adminSaveLines", AL({ lines: {} }), DT), "FORBIDDEN", "adminSaveLines as dispenser → FORBIDDEN");
+    expectErr(await api("adminSaveLines", { pcu: P, month: "2026-09", lines: {} }, ADM2), "BAD_REQUEST", "adminSaveLines: round of FY2569 → BAD_REQUEST");
+    expectErr(await api("adminSaveLines", { pcu: P, month: NEXT, lines: {} }, ADM2), "BAD_REQUEST", "adminSaveLines: round after currentRound → BAD_REQUEST");
+    expectErr(await api("adminSaveLines", { pcu: "PCU77", month: M, lines: {} }, ADM2), "NOT_FOUND", "adminSaveLines: unknown pcu → NOT_FOUND");
+    expectErr(await api("adminSaveLines", AL({ lines: { "ZZ-01": { op: 1 } } }), ADM2), "BAD_REQUEST", "adminSaveLines: unknown code → BAD_REQUEST");
+    expectErr(await api("adminSaveLines", AL({ lines: { [A.code]: { op: -1 } } }), ADM2), "BAD_REQUEST", "adminSaveLines: negative qty → BAD_REQUEST");
+
+    // create (locked past round, over the ceiling) → draft, then send
+    const s1 = await mustOk("adminSaveLines", AL({ lines: { [A.code]: { op: 5, pp: 1, stock: 3 }, [CSI.code]: { op: 2, pp: 0 } } }), ADM2);
+    eq([s1.status, s1.submitted, s1.request.entry_by, s1.request.lines[A.code].op, s1.request.lines[A.code].pp, s1.request.lines[A.code].stock],
+      ["draft", false, "admin", 5, 1, 3], "adminSaveLines creates the request in a locked past round (draft, entry_by admin)");
+    const s2 = await mustOk("adminSaveLines", AL({ lines: {}, send: true }), ADM2);
+    ok(s2.status === "submitted" && s2.submitted && typeof s2.request.lines[A.code].price_snapshot === "number" && s2.request.lines[A.code].price_print === s2.request.lines[A.code].price_snapshot,
+      "send: submitted · price_snapshot = price_print stamped · limit enforce + over the ceiling does not block");
+    eq((await mustOk("adminRequests", { month: M }, ADM2)).requests.find((r) => r.pcu === P).entry_by, "admin", "adminRequests rows carry entry_by");
+    eq((await mustOk("pcuGetMonth", { month: M }, TP)).request.entry_by, "admin", "PCU view: request.entry_by = admin (tag คีย์โดย admin)");
+    await mustOk("adminSaveLines", AL({ lines: { [A.code]: { op: 5, pp: 1, stock: 3 } } }), ADM2);
+    const au = (await mustOk("adminAuditLog", { limit: 5 }, ADM2)).entries.find((e) => e.action === "admin_lines");
+    ok(au && au.actor === ADMIN_EMAIL && au.pcu === P && au.month === M && au.detail.startsWith("changed=0"), "unchanged values write no line (audit admin_lines changed=0)");
+    eq((await mustOk("adminGetRequest", { pcu: P, month: M }, ADM2)).request.edited_after_submit, false, "an unchanged save does not mark the request edited after submit");
+
+    // dispenser time window: open for an admin-keyed request, closed for a normal one
+    const T6 = (await mustOk("pcuLogin", { pcu: "PCU06", pin: "12345" })).token;
+    ok((await mustOk("saveLines", { month: PREV, lines: { [A.code]: { op: 2, pp: 0, updated_at: new Date().toISOString() } }, send: true }, T6)).submitted, "setup: PCU06 sends round 2026-11 itself");
+    const late = { month: NEXT }; // calendar 2027-01: rounds 2026-11 and 2026-10 are past the dispenser window
+    expectErr(await api("issueLines", { pcu: "PCU06", month: PREV, lines: { [A.code]: { issued_total: 2 } } }, DT, late), "FORBIDDEN", "dispenser: a normal request past the window → FORBIDDEN (unchanged)");
+    expectErr(await api("issueItem", { month: PREV, item_code: A.code, entries: { PCU06: { issued_total: 2 } } }, DT, late), "FORBIDDEN", "dispenser issueItem past the window, no admin-keyed request → FORBIDDEN");
+    const il = await api("issueLines", { pcu: P, month: M, lines: { [A.code]: { issued_total: 6 } } }, DT, late);
+    ok(il.ok && il.data.request.lines[A.code].issued_total === 6, "dispenser: an admin-keyed request has no time limit (issueLines)");
+    const ii = await api("issueItem", { month: M, item_code: A.code, entries: { [P]: { issued_total: 6 } } }, DT, late);
+    eq(ii.ok && ii.data.updated, [P], "dispenser issueItem past the window: the admin-keyed request is written");
+    ok((await api("issueDone", { pcu: P, month: M, unit: "พัสดุ", done: 1 }, DT, late)).ok, "dispenser issueDone on the admin-keyed request past the window");
+
+    // Q7: admin edits an issued line below the issued figure → clamp
+    const c1 = await mustOk("adminSaveLines", AL({ lines: { [A.code]: { op: 2, pp: 1 } } }), ADM2);
+    eq(c1.clamped, [{ code: A.code, from: 6, to: 3 }], "clamp: issued 6 → new request 3 reported in clamped");
+    const la = await gl(P, M, A.code);
+    eq([la.op, la.pp, la.stock, la.issued_total, la.issued_op, la.issued_pp, la.issue_reason], [2, 1, 3, 3, 2, 1, null], "clamp: issued_total = requested, OP/PP split recomputed, reason cleared · stock kept (key not sent)");
+    const c2 = await mustOk("adminSaveLines", AL({ lines: { [A.code]: { op: 4, pp: 1 } } }), ADM2);
+    const lb = await gl(P, M, A.code);
+    eq([c2.clamped, lb.issued_total, lb.issued_op, lb.issued_pp, lb.issue_reason, lb.issue_note], [[], 3, 2, 1, "other", "ปรับยอดขอโดย admin"], "raising the request above the issued figure: no clamp, line becomes short (reason other)");
+    ok((await mustOk("issueDone", { pcu: P, month: M, unit: "จ่ายกลาง", done: 1 }, ADM2)).request.status === "issued", "setup: both units done → issued");
+    const c3 = await mustOk("adminSaveLines", AL({ lines: { [CSI.code]: { op: 1, pp: 0 } } }), ADM2);
+    eq([c3.status, c3.clamped, (await gl(P, M, CSI.code)).issued_total], ["issued", [{ code: CSI.code, from: 2, to: 1 }], 1], "admin edits an issued request: stays issued, the done page's figure is clamped");
+    const c4 = await mustOk("adminSaveLines", AL({ lines: { [CSI.code]: { op: 0, pp: 0 } } }), ADM2);
+    eq([c4.clamped, (await gl(P, M, CSI.code)).issued_total], [[{ code: CSI.code, from: 1, to: 0 }], 0], "request 0 → issued figure clamped to 0");
+
+    // trial round = a month outside every fy's rounds (2026-09), shown without a month
+    await mustOk("adminSetConfig", { key: "trial_month", value: "2026-09" }, ADM2);
+    const ht = (await mustOk("pcuBootstrap", {}, TP)).history.find((h) => h.month === "2026-09");
+    eq(ht && [ht.trial, ht.fy], [true, 2569], "trial_month 2026-09: history row flagged trial (fy 2569, outside FY2570)");
+    const dt = await mustOk("adminDashboard", { fy: 2570 }, ADM2);
+    eq(dt.rounds.length, 12, "trial round 2026-09 does not reduce FY2570's 12 rounds");
+
+    // restore
+    await mustOk("adminSetConfig", { key: "trial_month", value: trial0 }, ADM2);
+    await mustOk("adminLockRound", { month: M, locked: 0 }, ADM2);
+    await mustOk("adminResetLimit", { pcu: P, item_code: A.code }, ADM2);
+    await mustOk("adminSetLimitMode", { mode: mode0 }, ADM2);
+    await mustOk("adminUsersRemove", { email: DSP }, ADM2);
+    if (fy0 !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: fy0 }, set_current_fy: true }, ADM2);
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

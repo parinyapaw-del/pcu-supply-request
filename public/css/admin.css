@@ -477,3 +477,11 @@
 .adm-rank td { white-space: nowrap; }
 .adm-rank td .small { white-space: normal; }
 .sh-table { min-width: 420px; }
+
+/* 2w — admin keys a request for a pcu (tab1_entry.js) */
+.admin-modal.entry-modal { max-width: 980px; }
+.entry-table td { vertical-align: middle; }
+.entry-table .num-input { width: 76px; min-height: 34px; }
+.entry-table .num-input[data-dirty="1"] { background: var(--warn-bg); border-color: var(--warn); }
+.entry-table tr.row-hidden td { opacity: 0.6; }
+.entry-table tr.section-row td { background: var(--bg); }

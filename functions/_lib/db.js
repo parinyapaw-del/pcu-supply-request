@@ -90,7 +90,8 @@ const V4 = [
 
 // Migration v5 (2p, price effective from a round): price_history + request_lines.price_print (spec 2o-2s §4.1). Same one-by-one rule.
 // Backfill (re-runnable): price_print = price_snapshot where still NULL · one price_history row per item of the LATEST form version of every fy
-// that has a form, from_round = the fy's first round (fyMonths(fy)[0] = "<fy-544>-11", e.g. FY2570 → 2026-11), INSERT OR IGNORE.
+// that has a form, from_round = the fy's first round (2w: fyMonths(fy)[0] = "<fy-544>-10", e.g. FY2570 → 2026-10), INSERT OR IGNORE.
+// (Before 2w the first round was "<fy-544>-11"; databases migrated then are realigned by v6.)
 const V5 = [
   `CREATE TABLE IF NOT EXISTS price_history (
      fy INTEGER NOT NULL, item_code TEXT NOT NULL, from_round TEXT NOT NULL, price REAL NOT NULL, set_by TEXT, set_at TEXT, note TEXT,
@@ -98,11 +99,20 @@ const V5 = [
   `ALTER TABLE request_lines ADD COLUMN price_print REAL`,
   `UPDATE request_lines SET price_print = price_snapshot WHERE price_print IS NULL AND price_snapshot IS NOT NULL`,
   `INSERT OR IGNORE INTO price_history (fy, item_code, from_round, price, set_by, set_at, note)
-     SELECT fv.fy, json_extract(r.value, '$.code'), printf('%04d-11', fv.fy - 544), COALESCE(json_extract(r.value, '$.price'), 0),
+     SELECT fv.fy, json_extract(r.value, '$.code'), printf('%04d-10', fv.fy - 544), COALESCE(json_extract(r.value, '$.price'), 0),
             'migration v5', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'backfill: latest form of the fy'
        FROM form_versions fv, json_each(fv.data, '$.steps') s, json_each(s.value, '$.rows') r
       WHERE fv.id IN (SELECT MAX(id) FROM form_versions GROUP BY fy)
         AND json_extract(r.value, '$.type') = 'item' AND json_extract(r.value, '$.code') IS NOT NULL`,
+];
+
+// Migration v6 (2w, fy = the supply month itself Oct … Sep; admin keys requests for a pcu): requests.entry_by ('admin' = keyed/edited by an
+// admin, sticky; NULL = the pcu) + realign data written under the 2j fy (first round "<fy-544>-11"): price_history rows at the old first
+// round move to the new one "<fy-544>-10" (UPDATE OR IGNORE — a row already there wins) · rounds.fy recomputed from the month. Re-runnable.
+const V6 = [
+  `ALTER TABLE requests ADD COLUMN entry_by TEXT`,
+  `UPDATE OR IGNORE price_history SET from_round = printf('%04d-10', fy - 544) WHERE from_round = printf('%04d-11', fy - 544)`,
+  `UPDATE rounds SET fy = CAST(substr(month, 1, 4) AS INTEGER) + 543 + (CASE WHEN CAST(substr(month, 6, 2) AS INTEGER) >= 10 THEN 1 ELSE 0 END)`,
 ];
 
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
@@ -112,6 +122,7 @@ export const MIGRATIONS = [
   { v: 3, statements: V3, oneByOne: true, tolerate: /duplicate column/i },
   { v: 4, statements: V4, oneByOne: true, tolerate: /duplicate column/i },
   { v: 5, statements: V5, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 6, statements: V6, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
@@ -287,7 +298,7 @@ export async function latestForm(DB, fy) {
 
 // 2j: the form a ROUND month resolves against when nothing is bound — latest version of the round's fy, else of fy_current
 // (`fyCurrent`; read from config when omitted), else the newest version of any fy. null when no versions exist at all.
-// (The trial round 2026-10 is fy 2569, which has no form version → it uses the fy_current form.)
+// (The trial round 2026-09 is fy 2569, which has no form version → it uses the fy_current form.)
 export async function formForFy(DB, fy, fyCurrent) {
   const strict = async (f) => {
     const row = await DB.prepare(`SELECT id FROM form_versions WHERE fy = ? ORDER BY id DESC LIMIT 1`).bind(f).first();

@@ -5,7 +5,7 @@ import { UNITS } from "./auth.js";
 import { baselineFor } from "./stock.js";
 
 export const REQ_COLS =
-  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at";
+  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at,entry_by";
 export const LINE_COLS =
   "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from,price_print";
 
@@ -22,6 +22,7 @@ export function requestObj(row, lines, admin = false) {
     submit_count: Number(row.submit_count) || 0,
     admin_note: row.admin_note || null, admin_note_at: row.admin_note_at || null, issued_seen_at: row.issued_seen_at || null,
     edited_after_submit: !!(row.submitted_at && row.updated_at && row.updated_at > row.submitted_at),
+    entry_by: row.entry_by || null, // 2w: 'admin' = an admin keyed/edited this request (sticky) · null = the pcu
   };
   if (lines) {
     const m = {};
@@ -76,7 +77,7 @@ export async function getRound(DB, month, deadlineDay, trialMonth) {
 
 // ---- PCU month view -------------------------------------------------------------------------------------------------
 // Σ(op+pp) of this PCU's submitted/issued requests in the same fiscal year as `month`, excluding `month` itself.
-// FY = round FY (2j): fyMonths(monthFy(month)) = Nov … Oct round months.
+// FY = round FY (2w): fyMonths(monthFy(month)) = Oct … Sep round months.
 export async function usedFyFor(DB, pcu, month) {
   const ms = fyMonths(monthFy(month));
   const { results } = await DB.prepare(

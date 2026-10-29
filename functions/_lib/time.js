@@ -39,17 +39,18 @@ export function monthMinus(m, n) {
 // calMonth = currentMonth() · currentRound = nextMonth(calMonth) (open for keying) · prevRound = calMonth (still editable).
 export const currentRound = (d) => nextMonth(currentMonth(d));
 
-// Fiscal year (พ.ศ.) of a ROUND month key = FY of its submission month prevMonth(m). 2026-11 → 2570 · 2026-10 → 2569.
+// Fiscal year (พ.ศ.) of a ROUND month key = FY of the supply month itself (2w — reverses 2j §1.2): Oct … Sep.
+// 2026-10 → 2570 (first round of 2570, keyed in Sep 2026) · 2027-09 → 2570 · 2027-10 → 2571.
 export function monthFy(m) {
-  const [y, mo] = prevMonth(m).split("-").map(Number);
+  const [y, mo] = m.split("-").map(Number);
   return y + (mo >= 10 ? 1 : 0) + 543;
 }
-// The 12 ROUND month keys of a fiscal year. FY2570 = 2026-11 … 2027-10.
+// The 12 ROUND month keys of a fiscal year. FY2570 = 2026-10 … 2027-09 (2w: = fyExcelMonths — round X ↔ Excel column X).
 export function fyMonths(fy) {
-  return fyExcelMonths(fy).map(nextMonth);
+  return fyExcelMonths(fy);
 }
-// The 12 Excel/calendar month keys of a fiscal year (Oct … Sep). FY2569 = 2025-10 … 2026-09. Used only for imported data
-// (actual_prev / stats / seed import + export / adminBootstrap.prev[fy].months) — index 0 = October.
+// The 12 Excel/calendar month keys of a fiscal year (Oct … Sep). FY2569 = 2025-10 … 2026-09. Used for imported data
+// (actual_prev / stats / seed import + export / adminBootstrap.prev[fy].months) — index 0 = October. Same list as fyMonths (2w).
 export function fyExcelMonths(fy) {
   const startYear = fy - 543 - 1;
   const out = [];

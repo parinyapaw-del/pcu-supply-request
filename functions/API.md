@@ -19,12 +19,15 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   before (X−1). `calMonth` = the Bangkok calendar month at request time (`currentMonth()`, honours `X-Dev-Month` in dev) ·
   **`currentRound` = `nextMonth(calMonth)`** (open for keying) · **`prevRound` = `calMonth`** (still editable). PCU home = currentRound + prevRound.
   A round "exists" implicitly; `rounds` rows are created lazily when an admin sets a deadline / lock / note.
-- Fiscal year (พ.ศ.) of a round = FY of its submission month: `monthFy(m) = fy(prevMonth(m))` with `fy(c) = CE_year + (c.month >= 10 ? 1 : 0) + 543`
-  → round `2026-11` = FY2570 (the first round of 2570) · round `2026-10` = FY2569. `fyMonths(fy)` = the 12 **round** months: FY2570 = `2026-11` … `2027-10`.
-  `fyExcelMonths(fy)` = the old calendar list Oct … Sep (`2025-10` … `2026-09` for 2569) — used **only** for imported/Excel-shaped data
-  (`actual_prev`, `stats`, seed import/export, `adminBootstrap.prev[fy].months`). `config.fy_current` defaults to `monthFy(currentRound)`.
+- Fiscal year (พ.ศ.) of a round = **FY of the supply month itself** (2w — reverses 2j §1.2): `monthFy(m) = CE_year + (m.month >= 10 ? 1 : 0) + 543`
+  → round `2026-10` (ขอเบิก ต.ค. 69, keyed in Sep 2026) = FY2570, its first round · round `2027-09` = FY2570 · `2027-10` = FY2571.
+  `fyMonths(fy)` = the 12 **round** months Oct … Sep: FY2570 = `2026-10` … `2027-09` — the same list as `fyExcelMonths(fy)` (imported/Excel-shaped
+  data: `actual_prev`, `stats`, seed import/export, `adminBootstrap.prev[fy].months`), so round X ↔ Excel column X (the hospital's "ต.ค." column
+  = what was issued for "ขอเบิก ต.ค."). `config.fy_current` defaults to `monthFy(currentRound)`. The first round of fy F+1 opens for keying on
+  1 Sep of fy F; until fy F+1 is opened (§5.4) it resolves fy_current's form / prices / ceilings (`formForFy` fallback) and the admin page warns.
 - **Trial round** (2j): `config.trial_month` (`"YYYY-MM"` or `null`) marks one round as practice only → every RoundInfo has `trial: month === trial_month`.
-  Nothing else changes for it (it can be submitted; its data stays in its own fy).
+  Nothing else changes for it (it can be submitted; its data stays in its own fy). 2w: production uses `2026-09` (outside FY2570, FY2569 has no form →
+  fy_current form); the UI shows it as **"ทดลอง"** with no month (PCU home/fill/print, admin round pickers) and it is never counted.
 - Removed (1.5) actions return `BAD_REQUEST` with a Thai hint: `submit`, `withdraw` (use `saveLines{send:true}`; no withdraw),
   `adminReceive`, `adminReturn` (→ `adminNote`), `adminSetMode` (→ `adminSetLimitMode`). Unknown action → `BAD_REQUEST`.
 
@@ -126,7 +129,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   unlocks:{ "2026-11": { code: "<reason>" } },               // for the 2 shown rounds
   byMonth: { "2026-11": {                                    // for the 2 shown rounds (also returned by pcuGetMonth)
       request: RequestObj | null,
-      used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Nov … Oct rounds), excluding that round
+      used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Oct … Sep rounds, 2w), excluding that round
       prev_lines: { code: {op,pp,stock,received,received_src:"issued"|"requested"} }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
                                      // rows with op+pp>0 OR stock set; stock null = no baseline; received = issued_total when the item's unit is done
                                      // (issue_status) and issued_total not null, else op+pp; {} if no request / draft. The trial round is an ordinary baseline.
@@ -139,7 +142,8 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
-               edited_after_submit:bool, lines: { code: {stock,op,pp,used,adj,adj_reason,calc_from,updated_at} },   // 2o: used/adj/adj_reason/calc_from (null when unset), PCU + admin views
+               edited_after_submit:bool, entry_by:'admin'|null,   // 2w: 'admin' = an admin keyed/edited this request (sticky) → tag "คีย์โดย admin" (PCU + admin views)
+               lines: { code: {stock,op,pp,used,adj,adj_reason,calc_from,updated_at} },   // 2o: used/adj/adj_reason/calc_from (null when unset), PCU + admin views
                issued?: { code: {total,op,pp,reason:"out_of_stock"|"other"|null,note:string|null} } }   // issued: PCU view only, see below
 IssueInfo = { units_total, units_done, done:bool, complete, incomplete, issued_seen_at|null,
               units: { "พัสดุ"|"จ่ายกลาง"|"LAB": {needed:bool, done:bool, done_at|null, done_by|null, lines:n, issued_lines:n} } }
@@ -179,7 +183,7 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // baht = qty × price_snapshot (fallback priceFor(fy, code, round), 2p) — same price for req/got/used · baht rounded to 2 decimals
   prev_fy: { months:["2025-11", …], qty:[…], baht:[…] } | null,
            // actual_prev of fy−1 for this pcu, ALIGNED TO `rounds` (same length, index i ↔ rounds[i]): months[i] = the Excel/calendar month of the
-           // same round one year earlier = monthMinus(rounds[i], 13) (round X ↔ Excel month X−1, as tab 4 / fyExcelMonths). qty = Σ op+pp,
+           // same round one year earlier = monthMinus(rounds[i], 12) (2w: round X ↔ Excel month X, as tab 4 / fyExcelMonths). qty = Σ op+pp,
            // baht = qty × prices_prev(fy−1) (fallback: price in the latest form of fy−1, else of fy) · null when this pcu has no actual_prev row in fy−1
   used_coverage: { items_with_used, items_total },   // codes with ≥ 1 counted line whose used is not null · codes with req > 0 in fy
   flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
@@ -210,6 +214,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `issueItem` (staff) | `month, item_code, entries:{pcu:{issued_total, reason?, note?}}` | `{updated:[pcu], skipped:[{pcu, why}]}` — §5.3 |
 | `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price (= priceFor(month), 2p),dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
 | `adminNote` | `pcu, month, note` (empty/blank clears) | `{request}` — creates a `draft` row if none; status unchanged |
+| `adminSaveLines` (2w) | `pcu, month, lines:{code:{op?,pp?,stock?,used?}}, send?:bool` | `{saved_at, status, submitted, clamped:[{code,from,to}], request: RequestObj(admin view)}` — §5.1b |
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
 | `adminLockRound` | `month, locked:0\|1` | `{round}` |
 | `adminSetLimitMode` | `mode:"off"\|"warn"\|"enforce"` | `{config}` |
@@ -265,7 +270,7 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
   stats:  { fy: <fy_current-1>, data: { pcu: { code: [median_m, p90_m, annual_qty] } } },   // basis for limits/reset
   limits: { pcu: { code: {limit_month, limit_year, source, updated_by, updated_at, note} } },   // fy_current
-  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fyMonths(fy_current) (round months Nov … Oct)
+  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fyMonths(fy_current) (round months Oct … Sep, 2w)
   hidden: { pcu: [code] },
   prev: { "2569": { months:["2025-10",...,"2026-09"],   /* = fyExcelMonths(fy): Excel columns Oct … Sep, unchanged by 2j */ actual:{ pcu:{ code:{op:[12],pp:[12]} } }, plans:{ pcu:{code:[op,pp]} }, prices:{code:price} } },  // one entry per fy in actual_prev
   months: ["2026-10", ...],                                            // months having any request, newest first
@@ -278,6 +283,19 @@ RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, locked:bool
 ```
 `deadline_date` = `rounds.deadline_date` if set, else `config.deadline_day` (clamped to the month length) **of the submission month `prevMonth(month)`**,
 else the last day of `prevMonth(month)` (2j: round 2026-11 → `2026-10-31`; round 2026-10 → `2026-09-30`). `deadline_source` = `round|config|month_end`.
+
+### 5.1b Admin keys a request for a pcu (2w — `functions/_lib/admin_entry.js`) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
+`adminSaveLines{pcu, month, lines:{code:{op?,pp?,stock?,used?}}, send?}` — paper sheets of past rounds / any correction (spec 2w-2aa Q6/Q7/R4):
+- `month` ∈ `fyMonths(fy_current)` and ≤ currentRound, else `BAD_REQUEST`; unknown pcu → `NOT_FOUND`; code not in the fy's latest form (or the bound
+  version) / qty not an integer 0–99999 → `BAD_REQUEST` (nothing written). **Skips** deadline, round lock, limits (any mode), stock_required, and the
+  "page already issued" rule.
+- Creates the request (draft) if missing. A key not sent keeps the stored value; sending `stock`/`used` clears `calc_from` (typed from paper).
+  Only lines whose `stock/op/pp/used/calc_from` change are written (D1 quota). Any write sets `requests.entry_by = 'admin'` (sticky) + `updated_at`.
+- A line with an issued figure: `issued_total = min(old, new op+pp)` and `issued_op/pp` re-split OP-first; equal to the request → reason/note cleared,
+  below it → reason kept (or `other` + note "ปรับยอดขอโดย admin"). Every decrease is reported in `clamped`.
+- `send:true` → status `submitted` (an `issued` request stays `issued`), `form_version_id` = fy's latest, `submitted_at`, `submit_count+1`, and
+  `price_snapshot = price_print = priceFor(round)` on every line (2p). Editing an already-sent request without `send` re-stamps prices too and
+  moves `submitted_at` to the save time (no "แก้หลังส่ง" flag). Audit `admin_lines` (`changed=n items=n send=0|1 clamped=…`); stock chain recalc (2o).
 
 ### 5.2 Form editor + seed export (2d) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
 A form version is immutable. "Editing" the form = `adminFormSave` inserts a new `form_versions` row (`data = {fy, note, steps}`, `fy` = the base's fy,
@@ -350,6 +368,8 @@ Who: admin, or a dispenser (role `dispenser`, `units` subset of {พัสดุ
 - **Request** must exist with status `submitted` or `issued` -> else `NOT_FOUND` "ยังไม่ได้ส่งใบเบิก". Only lines with `op+pp > 0` ("requested") can be issued -> else `BAD_REQUEST`; unknown code -> `BAD_REQUEST`.
 - **Dispenser limits**: every touched line's unit must be in its `units` else `FORBIDDEN`; writes allowed only while `calMonth <= request month` (2j: round m is dispensed in m−1 and m — until the end of the round month)
   else `FORBIDDEN` "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)" — applies to undo (`done:0`) and `issueItem` too, never to reads (`adminItemIssue`). Admin (incl. backup login): unlimited.
+  **2w (R4):** no time limit on a request with `entry_by = 'admin'`. `issueItem` past the window writes only the admin-keyed requests among `entries`
+  (the others → `skipped` with the window message); `FORBIDDEN` only when none of them is admin-keyed.
 - **Values**: `issued_total` = integer `0 … requested`, or `null` = clear the line (all `issued_*`, reason, note, `issued_at`, `issued_by` -> `null`). `> requested` -> `BAD_REQUEST` "จ่ายเกินขอไม่ได้ (ขอ n)";
   not an integer / `< 0` / key missing -> `BAD_REQUEST`. `issued_total < requested` -> `reason` in `out_of_stock` | `other` required; `other` needs a non-blank `note` (trimmed, <= 200 chars; `out_of_stock` may carry a note too);
   `issued_total == requested` -> `reason`/`note` stored as `null` (whatever was sent). Writes set `issued_at = now`, `issued_by` = actor e-mail (`"backup"` for the backup login).
@@ -406,7 +426,7 @@ plans:{rows, per_pcu:{pcu:{op,pp,total}}, network:{op,pp,total}}, limits:{in_fil
    `confirm !== "เปิดปีงบ <fy>"` → `BAD_REQUEST` · then the file is validated (as the preview). Nothing is written before the guards and validation pass.
 2. Old fy `o = fy_current`; each block is taken from the file when it has `…[o]`, otherwise derived from the DB: `actual_prev[o]` = per (round ∈ `fyMonths(o)`, pcu, item) the `op`,`pp` of requests with status
    `submitted`/`issued` (only rows with op+pp > 0), written in Excel shape: `months = fyExcelMonths(o)` and round `fyMonths(o)[i]` goes to column `i`
-   (= its submission month `prevMonth(round)`; 2j — e.g. round 2026-11 → column "2026-10") · `prices_prev[o]` = prices of the latest form of `o` (every item, closed ones included) · `stats[o]` = per (pcu,item) the 12 monthly totals `op+pp` (0 for missing months):
+   (2w: = the round month itself, e.g. round 2026-10 → column "2026-10"; under 2j it was the submission month) · `prices_prev[o]` = prices of the latest form of `o` (every item, closed ones included) · `stats[o]` = per (pcu,item) the 12 monthly totals `op+pp` (0 for missing months):
    `median_m` = median, `p90_m` = numpy-linear percentile 90 (sorted, rank `0.9·(n−1)`, interpolated), `annual_qty` = Σ, only `annual_qty > 0`, rounded to 2 decimals.
 3. `limits[seed.fy]` when the file has none for that fy: per (pcu,item) of `plans[seed.fy]` ∪ `stats[o]` (known pcus): `limit_year = plan_op+plan_pp` (0 → null); `limit_month = ceil(p90_m)` if `p90_m > 0`
    (source `stat<o−2500>`, e.g. `stat70`) else `ceil(limit_year/12×2)` (source `plan<fy−2500>`); a row is skipped when both are null (same rule as `adminResetLimit`). Rows are written like import rows (`updated_by:"import"`).
@@ -501,7 +521,7 @@ issued + used, 916 flags): network JS ≈ 3 ms warm / ≈ 12 ms cold (fresh proc
 reads the fy's lines ~5 times (D1 rows read ≈ 5 × lines + 2 × actual_prev rows per open).
 
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
-`month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2j: FY2570 = rounds `2026-11` … `2027-10`; the plan/form of the scope = that fy, form via `formForFy`).
+`month=` = that one round · `fy=` = the 12 **round** months `fyMonths(fy)` (2w: FY2570 = rounds `2026-10` … `2027-09`; the plan/form of the scope = that fy, form via `formForFy`).
 `Content-Disposition: attachment; filename*=UTF-8''เบิกวัสดุ_2026-10.xlsx` (or `เบิกวัสดุ_ปีงบ2570.xlsx`). Errors: HTTP 400/401/403 with the usual JSON body.
 Three sheets (Thai headers): **รายบรรทัด** (one row per line with op+pp>0 or issued data: เดือน · รพ.สต. · หน้า · รหัส · รายการ · หน่วย · ราคา(snapshot, else the round's price priceFor — 2p) ·
 OP · PP · รวม · เป็นเงิน · จ่ายจริง OP/PP/รวม (blank until issued; `0` = issued zero) · เหตุผล (`out_of_stock` -> "ของหมด/รอจัดซื้อ", `other` -> the typed note) · สถานะ · เวลาส่ง(Bangkok) · form version · 2o (appended): ใช้ไป · ปรับยอด · เหตุผลปรับยอด (ได้รับเพิ่ม · ยืม/คืน · หมดอายุ/เสียหาย · นับใหม่ · อื่น ๆ); all statuses) ·
@@ -613,7 +633,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -627,7 +647,8 @@ pcus(code PK, name, print_name, "group", pin_hash, pin_salt, pin_version, pin_fa
 form_versions(id PK AUTOINCREMENT, fy, created_at, created_by, note, data JSON, data_hash)   -- data = FORMAT.md `form` object {fy,note,steps}
 rounds(month PK, fy, deadline_date, locked, locked_at, locked_by, note)
 requests(id PK 'PCU01_2026-10', pcu, month, status, form_version_id, submitter_name, last_step, created_at, updated_at,
-         first_submitted_at, submitted_at, submit_count, admin_note, admin_note_at, issued_seen_at)   UNIQUE(pcu,month)
+         first_submitted_at, submitted_at, submit_count, admin_note, admin_note_at, issued_seen_at,
+         entry_by)   UNIQUE(pcu,month)   -- v6 (2w): TEXT 'admin' (an admin keyed/edited it, sticky) | NULL
 request_lines(request_id, item_code, stock, op, pp, price_snapshot, updated_at,
               issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by,
               used, adj, adj_reason, calc_from,    -- v4 (2o): used INTEGER · adj INTEGER · adj_reason TEXT · calc_from TEXT ('used'|'stock'|NULL)
@@ -656,7 +677,8 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   `adj_reason TEXT` / `calc_from TEXT` (same one-by-one / "duplicate column" rule; tested by re-running it with `devRerunMigration{v:4}`).
   **v5** (2p) = `CREATE TABLE IF NOT EXISTS price_history …` + `ALTER TABLE request_lines ADD COLUMN price_print REAL` (same rule) + backfill
   `UPDATE request_lines SET price_print = price_snapshot WHERE price_print IS NULL AND price_snapshot IS NOT NULL` + `INSERT OR IGNORE INTO price_history` one row
-  per item of the **latest form version of every fy that has one** (`json_each` over `form_versions.data`), `from_round = fyMonths(fy)[0]` (`printf('%04d-11', fy-544)`),
+  per item of the **latest form version of every fy that has one** (`json_each` over `form_versions.data`), `from_round = fyMonths(fy)[0]` (`printf('%04d-10', fy-544)` since 2w; v6 moves rows written at the old 2j first round `<fy-544>-11` to `-10` with
+  `UPDATE OR IGNORE` and recomputes `rounds.fy` from the month),
   price = that form's price, `set_by 'migration v5'`. Re-runnable (`devRerunMigration{v:5}`; dev-only `clear_price_history:true` empties the table first to check the backfill).
   `price_history` is in `TABLES`. Later fys: `adminImportApply` (2e, opening a fy) and `adminImportSeed` (first form of an fy) seed the same rows
   (INSERT OR IGNORE, set_by = actor); `adminFormSave` maintains them (§5.2).

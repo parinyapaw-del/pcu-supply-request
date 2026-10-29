@@ -1,8 +1,9 @@
 // Tab 1 — สถานะรอบ (phase 2.md §5.2 / functions/API.md §5 adminRequests, adminSetRound, adminLockRound, adminNote).
-import { formatMoney } from "../format.js";
+import { formatMoney, fiscalYearOf, fiscalYearStartMonthKey } from "../format.js";
 import { getAdminToken } from "../api.js";
 import { requestPdfReady, startPdfDownload } from "../pdf_client.js";
 import { DISPENSE_UNITS } from "./compute.js";
+import { openEntry } from "./tab1_entry.js";
 import {
   el, escapeHtml, tableScroll, formatBangkokDateTime, formatBangkokTimeSec, formatDateThai, monthLong,
   confirmDialog, formDialog, toast, errMessage, isTrialPcu, realPcus, pcuTag
@@ -29,6 +30,10 @@ export function unitStripHtml(issue) {
 
 // Status text for one request row (or null = ไม่มีใบ).
 function statusCell(req) {
+  const tag = req && req.entry_by === "admin" ? ` <span class="badge badge-info" data-role="admin-entry" title="admin คีย์/แก้ใบนี้แทน รพ.สต.">คีย์โดย admin</span>` : "";
+  return statusCellInner(req) + tag;
+}
+function statusCellInner(req) {
   const lines = req ? (req.progress && req.progress.lines) || 0 : 0;
   if (!req || (req.status === "draft" && lines === 0 && !req.last_step)) {
     return `<span class="badge badge-muted">ยังไม่เริ่ม</span>`;
@@ -140,8 +145,8 @@ export function renderTab1(container, ctx) {
   function drawHeader() {
     const round = currentRound();
     header.innerHTML = "";
-    const title = el("h2", {}, `รอบ ขอเบิก ${monthLong(tabState.month)}`);
-    if (round && round.trial) title.appendChild(el("span", { class: "badge badge-warn badge-trial", id: "t1-trial-badge" }, "ทดลอง"));
+    const title = el("h2", {}, round && round.trial ? "รอบทดลอง" : `รอบ ขอเบิก ${monthLong(tabState.month)}`); // 2w: the trial round has no month
+    if (round && round.trial) title.appendChild(el("span", { class: "badge badge-warn badge-trial", id: "t1-trial-badge" }, "ไม่นับสถิติ"));
     header.appendChild(title);
     if (!round) { header.appendChild(el("p", { class: "muted" }, "ไม่มีข้อมูลรอบ")); return; }
     const row = el("div", { class: "round-row" });
@@ -214,6 +219,9 @@ export function renderTab1(container, ctx) {
     drawHeader();
     const reqs = {};
     (tabState.data ? tabState.data.requests : []).forEach((r) => { reqs[r.pcu] = r; });
+    // 2w: admin entry — any round of fy_current up to the open round (not the trial round)
+    const canEnter = isAdmin && !(currentRound() && currentRound().trial) && tabState.month <= ctx.roundMonth()
+      && tabState.month >= fiscalYearStartMonthKey(ctx.fyCurrent()) && fiscalYearOf(tabState.month) === ctx.fyCurrent();
     const rows = state.bootstrap.pcus.map((pcu) => {
       const req = reqs[pcu.code] || null;
       const baht = req && req.progress ? req.progress.baht : 0;
@@ -229,6 +237,7 @@ export function renderTab1(container, ctx) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="pdf" data-pcu="${pcu.code}" title="ดาวน์โหลดใบเบิกเป็น PDF">PDF</button>`);
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="issue" data-pcu="${pcu.code}" title="บันทึกจ่ายจริงของใบนี้">จ่าย</button>`);
       }
+      if (isAdmin && canEnter) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="entry" data-pcu="${pcu.code}" title="admin คีย์/แก้ใบแทน รพ.สต.">คีย์/แก้ใบ</button>`);
       if (isAdmin) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}">โน้ตขอให้แก้</button>`);
         if (req && req.admin_note) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="clear-note" data-pcu="${pcu.code}">ล้างโน้ต</button>`);
@@ -259,6 +268,9 @@ export function renderTab1(container, ctx) {
     tableHost.querySelectorAll('[data-act="pdf"]').forEach((b) => b.addEventListener("click", () => downloadPdf(b)));
     tableHost.querySelectorAll('[data-act="issue"]').forEach((b) => b.addEventListener("click", () => {
       location.hash = `#issue?pcu=${encodeURIComponent(b.dataset.pcu)}&month=${encodeURIComponent(tabState.month)}`;
+    }));
+    tableHost.querySelectorAll('[data-act="entry"]').forEach((b) => b.addEventListener("click", () => {
+      openEntry(ctx, b.dataset.pcu, tabState.month, { onSaved: () => load(false) });
     }));
     tableHost.querySelectorAll('[data-act="note"]').forEach((b) => b.addEventListener("click", () => editNote(b.dataset.pcu, reqs[b.dataset.pcu])));
     tableHost.querySelectorAll('[data-act="clear-note"]').forEach((b) => b.addEventListener("click", () => saveNote(b.dataset.pcu, "")));

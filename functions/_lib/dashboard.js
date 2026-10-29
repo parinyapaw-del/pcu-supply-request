@@ -198,12 +198,12 @@ async function pcuCore(DB, c, pcu, staff) {
     }
   }
 
-  // ---- prev_fy: actual_prev of fy−1 aligned to `rounds` (round X ↔ Excel month X−1 of the previous year = monthMinus(X, 13)) ----
+  // ---- prev_fy: actual_prev of fy−1 aligned to `rounds` (2w: round X ↔ Excel month X of the previous year = monthMinus(X, 12)) ----
   const pricer = prevPricer(DB, fy, form);
   let prev_fy = null;
   if (prevRes.length) {
     if (prevRes.some((r) => r[3] === null || r[3] === undefined)) await pricer.ensure();
-    const months = rounds.map((m) => monthMinus(m, 13));
+    const months = rounds.map((m) => monthMinus(m, 12));
     const idx = new Map(months.map((m, i) => [m, i]));
     const qty = new Array(months.length).fill(0), baht = new Array(months.length).fill(0);
     for (const [m, code, q, pr] of prevRes) {

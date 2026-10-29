@@ -18,25 +18,24 @@ export function partsToMonthKey(year, month) {
   return `${year}-${String(month).padStart(2, "0")}`;
 }
 
-// Thai fiscal year (ต.ค.–ก.ย.), applied to a ROUND month (brief 2j): a round named "ขอเบิกเดือน X" is keyed in X-1,
-// so the FY of round X is the FY of its submission month X-1. Round 2026-11 (พ.ย. 69) -> FY 2570 (first round of
-// 2570); round 2026-10 -> FY 2569. FY number is itself a BE year number.
+// Thai fiscal year (ต.ค.–ก.ย.) of a ROUND month = FY of the supply month itself (2w — reverses 2j): round 2026-10
+// (ต.ค. 69, keyed in Sep 2026) -> FY 2570 (first round of 2570); round 2026-09 -> FY 2569. FY number is a BE year number.
 export function fiscalYearOf(monthKey) {
-  const { year, month } = monthKeyToParts(prevMonthKey(monthKey));
+  const { year, month } = monthKeyToParts(monthKey);
   const be = beYear(year);
   return month >= 10 ? be + 1 : be;
 }
 
-// CE month key of the first ROUND month (November) of a given Thai fiscal year (FY2570 -> "2026-11").
+// CE month key of the first ROUND month (October) of a given Thai fiscal year (FY2570 -> "2026-10").
 export function fiscalYearStartMonthKey(fy) {
   const ceYear = fy - 1 - 543;
-  return partsToMonthKey(ceYear, 11);
+  return partsToMonthKey(ceYear, 10);
 }
 
-// CE month key of the last ROUND month (October) of a given Thai fiscal year (FY2570 -> "2027-10").
+// CE month key of the last ROUND month (September) of a given Thai fiscal year (FY2570 -> "2027-09").
 export function fiscalYearEndMonthKey(fy) {
   const ceYear = fy - 543;
-  return partsToMonthKey(ceYear, 10);
+  return partsToMonthKey(ceYear, 9);
 }
 
 export function formatMonthKeyThai(monthKey) {

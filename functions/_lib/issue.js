@@ -1,6 +1,7 @@
 // issue.js — บันทึกจ่ายจริง (phase 2c): issueLines · issueAll · issueDone · issueItem · adminItemIssue (functions/API.md §5.3).
 // Staff = admin or dispenser (ctx.who = {email, role, units, backup}). A dispenser may only touch lines whose step.dispense_unit is one of
-// its units, and only while calMonth <= the round month (round m is dispensed in m−1 and m, brief 2j). Every write rides in the same D1 batch as its audit row.
+// its units, and only while calMonth <= the round month (round m is dispensed in m−1 and m, brief 2j) — except on a request keyed by an admin
+// (requests.entry_by = 'admin', 2w R4: no time limit). Every write rides in the same D1 batch as its audit row.
 import { err, isStr } from "./http.js";
 import { auditStmt, batchChunked, formForFy } from "./db.js";
 import { UNITS } from "./auth.js";
@@ -20,8 +21,10 @@ const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 // ---- guards -------------------------------------------------------------------------------------------------------
 const isDispenser = (who) => who.role === "dispenser";
 
-function assertWindow(who, month) {
-  if (isDispenser(who) && currentMonth() > month) throw err("FORBIDDEN", "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)");
+const WINDOW_MSG = "หมดเวลาแก้ไขการจ่าย (แก้ได้ถึงสิ้นเดือนถัดไป)";
+const windowClosed = (who, month, reqRow) => isDispenser(who) && currentMonth() > month && !(reqRow && reqRow.entry_by === "admin");
+function assertWindow(who, month, reqRow) {
+  if (windowClosed(who, month, reqRow)) throw err("FORBIDDEN", WINDOW_MSG);
 }
 function assertUnitAllowed(who, unit) {
   if (isDispenser(who) && !who.units.includes(unit)) throw err("FORBIDDEN", `ไม่มีสิทธิ์จ่ายรายการของหน่วย "${unit}"`);
@@ -116,7 +119,7 @@ export async function issueLines(ctx, p) {
     if (!line || req <= 0) throw err("BAD_REQUEST", `รายการ ${code} ไม่ได้ขอในใบเบิกนี้`);
     plan.push({ code, line, v: parseIssueInput(p.lines[code], req) });
   }
-  assertWindow(who, p.month);
+  assertWindow(who, p.month, reqRow);
 
   const ts = nowIso();
   const stmts = plan.map((x) => lineUpdate(DB, reqRow.id, x.code, x.line, x.v, ts, who.email));
@@ -136,7 +139,7 @@ export async function issueAll(ctx, p) {
     assertUnitAllowed(who, p.unit);
     units = [p.unit];
   } else units = isDispenser(who) ? UNITS.filter((u) => who.units.includes(u)) : [...UNITS];
-  assertWindow(who, p.month);
+  assertWindow(who, p.month, reqRow);
 
   const ts = nowIso();
   const stmts = [];
@@ -156,7 +159,7 @@ export async function issueDone(ctx, p) {
   const want = p.done === 1 || p.done === true || p.done === "1";
   if (!want && !(p.done === 0 || p.done === false || p.done === "0")) throw err("BAD_REQUEST", "done ต้องเป็น 0 หรือ 1");
   assertUnitAllowed(who, p.unit);
-  assertWindow(who, p.month);
+  assertWindow(who, p.month, reqRow);
 
   const needed = neededUnits(form, lines);
   if (want && !needed.has(p.unit)) throw err("BAD_REQUEST", `หน่วย "${p.unit}" ไม่มีรายการที่ขอในใบเบิกนี้`);
@@ -208,7 +211,7 @@ async function itemContext(DB, who, month, code) {
 async function itemRequests(DB, month, code) {
   const [res, doneRes] = await Promise.all([
     DB.prepare(
-      `SELECT r.id, r.pcu, r.status, r.form_version_id, p.name AS pcu_name, l.op, l.pp, l.issued_total, l.issued_op, l.issued_pp, l.issue_reason, l.issue_note
+      `SELECT r.id, r.pcu, r.status, r.form_version_id, r.entry_by, p.name AS pcu_name, l.op, l.pp, l.issued_total, l.issued_op, l.issued_pp, l.issue_reason, l.issue_note
          FROM requests r JOIN request_lines l ON l.request_id = r.id AND l.item_code = ? LEFT JOIN pcus p ON p.code = r.pcu
         WHERE r.month = ? AND r.status IN ('submitted','issued') AND (COALESCE(l.op,0) + COALESCE(l.pp,0)) > 0 ORDER BY r.pcu`
     ).bind(code, month).all(),
@@ -254,7 +257,6 @@ export async function issueItem(ctx, p) {
   const pcuCodes = Object.keys(p.entries);
   if (!pcuCodes.length) throw err("BAD_REQUEST", "ไม่มี รพ.สต. ที่จะบันทึก");
   if (pcuCodes.length > MAX_ENTRIES) throw err("BAD_REQUEST", "จำนวน รพ.สต. มากเกินไป");
-  assertWindow(who, p.month);
 
   const [{ rows }, pcuRes, reqRes] = await Promise.all([
     itemRequests(DB, p.month, p.item_code),
@@ -271,6 +273,9 @@ export async function issueItem(ctx, p) {
     return unitOfCode(formCache.get(r.form_version_id), p.item_code) || ent.step.dispense_unit;
   };
 
+  // time window (2w): past it a dispenser may still write the requests keyed by an admin; none of the entries is one → FORBIDDEN as before
+  const late = windowClosed(who, p.month, null);
+  if (late && !pcuCodes.some((c) => byPcu.has(c) && byPcu.get(c).entry_by === "admin")) throw err("FORBIDDEN", WINDOW_MSG);
   const plan = [], skipped = [];
   for (const pcuCode of pcuCodes) {
     const r = byPcu.get(pcuCode);
@@ -279,6 +284,7 @@ export async function issueItem(ctx, p) {
       skipped.push({ pcu: pcuCode, why: !known.has(pcuCode) ? "ไม่พบ รพ.สต. นี้" : st !== "submitted" && st !== "issued" ? NOT_SENT : "ไม่ได้ขอรายการนี้" });
       continue;
     }
+    if (late && r.entry_by !== "admin") { skipped.push({ pcu: pcuCode, why: WINDOW_MSG }); continue; }
     if (isDispenser(who) && !who.units.includes(await unitFor(r))) { skipped.push({ pcu: pcuCode, why: "รายการนี้อยู่นอกหน่วยจ่ายของคุณในใบเบิกนี้" }); continue; }
     plan.push({ r, v: parseIssueInput(p.entries[pcuCode], (r.op || 0) + (r.pp || 0)) }); // a bad entry rejects the whole call before any write
   }

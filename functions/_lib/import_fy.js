@@ -9,7 +9,7 @@ import { assertLinks, canonSteps, diffSteps, rebindStmt } from "./form_editor.js
 import { sha256Hex, stableStringify } from "./http.js";
 import { adminImportSeed, formRecord, validateSeed } from "./importer.js";
 import { defaultLimit } from "./admin.js";
-import { currentRound, fyExcelMonths, fyMonths, monthFy, nowIso, prevMonth } from "./time.js";
+import { currentRound, fyExcelMonths, fyMonths, monthFy, nowIso } from "./time.js";
 
 const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
 const round2 = (x) => Math.round((x + 1e-9) * 100) / 100; // same rounding as tools/build_seed_2570.py r2()
@@ -124,8 +124,8 @@ function percentile(sorted, q) {
 const median = (sorted) => { const n = sorted.length, h = n >> 1; return n % 2 ? sorted[h] : (sorted[h - 1] + sorted[h]) / 2; };
 
 // {months, data:{pcu:{code:{op:[12],pp:[12]}}}} + stats {pcu:{code:[median,p90,annual]}} + counts, from submitted/issued requests of `o`
-// 2j: the requests counted are the 12 ROUND months of `o` (fyMonths, Nov … Oct); the block is written in Excel shape (months =
-// fyExcelMonths(o), Oct … Sep) — round m lands in the column of its submission month prevMonth(m) (slot i ↔ round fyMonths(o)[i]).
+// 2w: the requests counted are the 12 ROUND months of `o` (fyMonths, Oct … Sep); the block is written in Excel shape (months =
+// fyExcelMonths(o), the same Oct … Sep) — round m lands in column m (slot i ↔ round fyMonths(o)[i]).
 // actual_months are reported in those Excel labels too (they are what the "ปีก่อน" tab will show).
 // 2v: `lm` (linkMap of the closing fy's form) — lines of a linked old code count under the code that replaces it.
 async function deriveFromRequests(DB, o, lm) {
@@ -164,7 +164,7 @@ async function deriveFromRequests(DB, o, lm) {
     actual_rows: actualRows,
     stats_rows: Object.values(stats).reduce((a, o2) => a + Object.keys(o2).length, 0),
     requests_counted: cntRes.results.reduce((a, r) => a + r.n, 0),
-    actual_months: cntRes.results.map((r) => prevMonth(r.month)),
+    actual_months: cntRes.results.map((r) => r.month),
   };
 }
 

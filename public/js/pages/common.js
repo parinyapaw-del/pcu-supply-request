@@ -59,7 +59,9 @@ export function monthLabel(monthKey) {
 export { shortMonthKeyThai };
 
 // Brief 2j: a round is named after the month the supplies are for -> "ขอเบิก พฤศจิกายน 2569".
-export function roundTitle(monthKey) {
+// 2w: the trial round has no month — it is just "ทดลอง" (pass the RoundInfo, or `true`, as `trial`).
+export function roundTitle(monthKey, trial) {
+  if (trial === true || (trial && trial.trial)) return "ทดลอง";
   return `ขอเบิก ${monthLabel(monthKey)}`;
 }
 
@@ -104,8 +106,22 @@ export function currentRoundTagHtml(app, month) {
   return isCurrentRound(app, month) ? ' <span class="badge badge-info round-current-tag">รอบปัจจุบัน</span>' : "";
 }
 
+// 2w: the trial round's title already reads "ทดลอง" (roundTitle) — the badge is only for places that keep a month title.
 export function trialBadgeHtml(round) {
-  return round && round.trial ? ' <span class="badge badge-trial">ทดลอง</span>' : "";
+  return round && round.trial ? ' <span class="badge badge-trial">ไม่นับสถิติ</span>' : "";
+}
+
+// 2w: "คีย์โดย admin" tag of a request the admin keyed/edited for the pcu (requests.entry_by = 'admin').
+export function adminEntryTagHtml(request) {
+  return request && request.entry_by === "admin" ? ' <span class="badge badge-info admin-entry-tag" title="ผู้ดูแลระบบคีย์/แก้ใบนี้แทน">คีย์โดย admin</span>' : "";
+}
+
+// true when `month` is the trial round (config.trial_month, or a loaded RoundInfo flagged trial).
+export function isTrialMonth(app, month) {
+  const b = (app && app.boot) || {};
+  if (b.config && b.config.trial_month && b.config.trial_month === month) return true;
+  const r = b.rounds ? roundOf(app, month) : null;
+  return !!(r && r.trial);
 }
 
 // "กรุณาส่งภายใน …" (trial round: "กรอกภายใน …").
@@ -115,7 +131,7 @@ export function deadlineText(round) {
 }
 
 export function trialNote(round) {
-  return `ใช้ฝึกกรอกให้ชิน ไม่ต้องส่งจริง · ข้อมูลรอบนี้อยู่ในปีงบ ${round.fy} ไม่นับในปีงบถัดไป`;
+  return "ใช้ฝึกกรอกให้ชิน ไม่ต้องส่งจริง · ใบทดลองไม่มีเดือน ไม่นับในสถิติหรือปีงบใด ๆ";
 }
 
 // Months shown on the home page as editable rounds (current + previous).

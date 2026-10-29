@@ -17,7 +17,7 @@ function colWidths(ws, widths) {
 }
 
 export async function buildExport(DB, { month, fy }) {
-  const months = month ? [month] : fyMonths(fy); // 2j: fy = its 12 ROUND months (Nov … Oct)
+  const months = month ? [month] : fyMonths(fy); // fy = its 12 ROUND months (2w: Oct … Sep)
   const scopeFy = month ? monthFy(month) : fy;
   const ph = months.map(() => "?").join(",");
 

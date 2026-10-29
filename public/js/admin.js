@@ -60,7 +60,7 @@ function fyList() {
   const set = new Set([fyCurrent()]);
   Object.keys(b.prev || {}).forEach((f) => set.add(Number(f)));
   (b.form_versions || []).forEach((v) => set.add(Number(v.fy)));
-  (b.rounds || []).forEach((r) => set.add(fiscalYearOf(r.month)));
+  (b.rounds || []).forEach((r) => { if (!r.trial) set.add(fiscalYearOf(r.month)); }); // 2w: the trial round belongs to no fy
   return [...set].filter((f) => Number.isFinite(f) && f > 0).sort((a, c) => c - a);
 }
 function fySelected() { return state.fy; }
@@ -70,8 +70,10 @@ function roundMonth() {
   const b = state.bootstrap;
   return b.current_round || nextMonthKey(b.current_month);
 }
-// Label of a round month in pickers: "ขอเบิก <เดือน>" + "(รอบปัจจุบัน)" for the open round (brief 2j §5).
+const trialMonth = () => (state.bootstrap && state.bootstrap.config && state.bootstrap.config.trial_month) || null;
+// Label of a round month in pickers: "ขอเบิก <เดือน>" + "(รอบปัจจุบัน)" for the open round (brief 2j §5) · the trial round = "ทดลอง" (2w).
 function monthLabel(m) {
+  if (m && m === trialMonth()) return "ทดลอง (ไม่นับสถิติ)";
   return `ขอเบิก ${monthLong(m)}` + (m === roundMonth() ? " (รอบปัจจุบัน)" : "");
 }
 // Months of the selected year that have a round / a request, or are the open round — newest first.
@@ -79,7 +81,11 @@ function fyMonths() {
   const b = state.bootstrap;
   const set = new Set((b.rounds || []).map((r) => r.month));
   set.add(roundMonth());
-  return [...set].filter((m) => fiscalYearOf(m) === state.fy).sort().reverse();
+  // 2w: the trial round (no month) is listed last under the fy that starts right after it
+  const t = trialMonth();
+  const list = [...set].filter((m) => m !== t && fiscalYearOf(m) === state.fy).sort().reverse();
+  if (t && set.has(t) && fiscalYearOf(nextMonthKey(t)) === state.fy) list.push(t);
+  return list;
 }
 // Month a month-based tab opens on: the open round for its year, else the newest month of the chosen year (or null).
 function defaultMonth() {
@@ -87,6 +93,18 @@ function defaultMonth() {
   if (fiscalYearOf(r) === state.fy) return r;
   return fyMonths()[0] || null;
 }
+// 2w §3.2: round "ขอเบิก ต.ค." (first round of fy F+1) opens for keying on 1 Sep — remind the admin to open fy F+1 from August.
+// While it is not open the new rounds use the fy_current form / prices / ceilings (server fallback).
+function nextFyWarning() {
+  if (!state.isAdmin) return "";
+  const b = state.bootstrap, F = fyCurrent();
+  const cal = b.current_month || "";
+  const nextFy = F + 1, startCe = nextFy - 1 - 543; // first round of F+1 = <startCe>-10, keyed from <startCe>-09-01
+  if (fiscalYearOf(roundMonth()) > F) return `รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} เปิดกรอกแล้ว แต่ยังไม่ได้เปิดปีงบ ${nextFy} — ตอนนี้ใช้แบบฟอร์ม/ราคา/เพดานของปีงบ ${F} ไปก่อน · เปิดปีงบ ${nextFy} ที่แท็บ "นำเข้า"`;
+  if (cal === `${startCe}-08`) return `ต้องเปิดปีงบ ${nextFy} ก่อน 1 ก.ย. ${nextFy - 1} (รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} = รอบแรกของปีงบ ${nextFy} เริ่มกรอก 1 ก.ย.) — แท็บ "นำเข้า"`;
+  return "";
+}
+
 // Notice for tabs that only work on the current fiscal year.
 function fyNotice(what) {
   return el("div", { class: "notice notice-info admin-fy-notice" },
@@ -252,6 +270,8 @@ function renderShell() {
   meBox.appendChild(logoutBtn);
   header.appendChild(meBox);
   shell.appendChild(header);
+  const fyWarn = nextFyWarning();
+  if (fyWarn) shell.appendChild(el("div", { class: "notice notice-trial admin-fy-open-warn", id: "admin-fy-open-warn", role: "status" }, fyWarn));
 
   const tabs = visibleTabs();
   const tabbar = el("div", { class: "admin-tabbar", role: "tablist" });

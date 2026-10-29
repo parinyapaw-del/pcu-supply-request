@@ -10,7 +10,7 @@ import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, unlocksOf, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
-  requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote,
+  requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
   alertDialog, toast,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
@@ -220,7 +220,7 @@ function refreshStatusChip(app, month) {
   const session = sync.getSession(pcuCode(app), month);
   const st = requestStatus(requestOf(app, month), roundOf(app, month), session && session.conflict);
   const round = roundOf(app, month);
-  el.innerHTML = `<span class="muted">${esc(roundTitle(month))}${round ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, month)} <span class="badge ${st.cls}">${esc(st.label)}</span>` +
+  el.innerHTML = `<span class="muted">${esc(roundTitle(month, round))}${round && !round.trial ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, month)}${adminEntryTagHtml(requestOf(app, month))} <span class="badge ${st.cls}">${esc(st.label)}</span>` +
     st.extra.map((e) => ` <span class="badge ${e.cls}">${esc(e.label)}</span>`).join("");
 }
 

@@ -4,7 +4,7 @@
 import { getOrderedSteps } from "../data.js";
 import {
   esc, pcuCode, requestOf, requestStatus,
-  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote,
+  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
 } from "./common.js";
 import * as sync from "../sync.js";
 import { fiscalYearOf, fiscalYearStartMonthKey, prevMonthKey } from "../format.js";
@@ -62,7 +62,7 @@ function cardHtml(app, round) {
   return `
   <div class="round-card${locked ? " round-card-locked" : ""}" data-month="${esc(round.month)}">
     <div class="round-card-head">
-      <h3>${round.trial ? "ทดลองกรอก — " : ""}${esc(roundTitle(round.month))} <span class="muted fy-tag">ปีงบ ${esc(round.fy)}</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, round.month)}</h3>
+      <h3>${esc(roundTitle(round.month, round))}${round.trial ? "" : ` <span class="muted fy-tag">ปีงบ ${esc(round.fy)}</span>`}${trialBadgeHtml(round)}${currentRoundTagHtml(app, round.month)}${adminEntryTagHtml(request)}</h3>
       <span class="round-status">${badgesHtml(st)}</span>
     </div>
     ${note ? `<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(note)}</div>` : ""}
@@ -83,7 +83,7 @@ function collapsedHtml(app, round) {
   const issue = monthData(app, round.month).issue;
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(round.month)}">
-    <summary><strong>${esc(roundTitle(round.month))}</strong>${trialBadgeHtml(round)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
@@ -124,7 +124,7 @@ function historyStatusBadge(h) {
 }
 
 function historyRowHtml(h) {
-  const title = `<strong>${esc(roundTitle(h.month))}</strong>${trialBadgeHtml(h)}`;
+  const title = `<strong>${esc(roundTitle(h.month, h))}</strong>${trialBadgeHtml(h)}`;
   if (h.status === "not_started") {
     return `
   <div class="round-card round-card-collapsed round-row-none" data-month="${esc(h.month)}">
