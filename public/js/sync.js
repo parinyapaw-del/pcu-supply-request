@@ -268,6 +268,8 @@ function applyServerRequest(session, serverReq) {
   r.admin_note_at = serverReq.admin_note_at;
   r.issued_seen_at = serverReq.issued_seen_at;
   r.requester_name = serverReq.requester_name ?? null; // 2x: frozen at send (server-owned)
+  r.no_order = !!serverReq.no_order; // 2af: "เดือนนี้ไม่เบิก" (server-owned)
+  if (serverReq.issued) r.issued = serverReq.issued;
   r.edited_after_submit = !!serverReq.edited_after_submit || (!!r.submitted_at && session.dirtyLines.size > 0);
   if (!session.dirtyMeta) {
     r.last_step = serverReq.last_step;
@@ -361,7 +363,7 @@ async function runSave(session) {
       session.lastOutcome = "offline";
       notify(session, "offline");
       scheduleRetry(session);
-    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED") && fixRefusedQty(session, err)) {
+    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED" || err.code === "NO_ORDER") && fixRefusedQty(session, err)) {
       // 2ad: the server keeps the requested quantity of these lines (issue recorded / item cancelled) — the stored op/pp are back on
       // screen, the rest of each line (คงเหลือ / ใช้ไป) and every other dirty line go out again right away.
       session.lastOutcome = "ok";
@@ -446,6 +448,35 @@ export async function sendRequest(pcu, month) {
       { token: getPcuToken() }
     );
     applyServerRequest(session, data.request);
+    session.lastSavedAt = new Date();
+    notify(session, "saved");
+    return data;
+  } catch (err) {
+    if (err instanceof ApiError && err.code === "CONFLICT") {
+      session.conflict = true;
+      session.conflictMessage = err.message || "";
+      notify(session, "conflict");
+    }
+    throw err;
+  }
+}
+
+/**
+ * 2af: "เดือนนี้ไม่เบิก" on (pcuNoOrder — clears every requested qty on the server) / off (pcuNoOrderCancel — back to a draft).
+ * Flushes autosave first; the server's request then replaces the session's lines. Throws ApiError: HAS_LOCKED_LINES{items} · CONFLICT ·
+ * NETWORK (unsaved edits could not reach the server).
+ */
+export async function setNoOrder(pcu, month, on) {
+  await flush(pcu, month);
+  const session = getSession(pcu, month) || initSession(pcu, month, null);
+  if (session.conflict) throw new ApiError("CONFLICT", session.conflictMessage || "รอบนี้ปิดรับแล้ว");
+  if (session.dirtyLines.size || session.dirtyMeta) {
+    throw new ApiError("NETWORK", "ยังบันทึกขึ้น server ไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่");
+  }
+  try {
+    const data = await call(on ? "pcuNoOrder" : "pcuNoOrderCancel", { month }, { token: getPcuToken() });
+    applyServerRequest(session, data.request);
+    saveMirror(session);
     session.lastSavedAt = new Date();
     notify(session, "saved");
     return data;

@@ -196,6 +196,7 @@ export function requestStatus(request, round, conflict) {
   const locked = !!(round && round.locked) || !!conflict;
   const base = (() => {
     if (!request || request.status === "not_started") return { label: "ยังไม่เริ่ม", cls: "badge-muted", extra: [] };
+    if (request.no_order) return { label: "ไม่เบิก", cls: "badge-info", extra: [] }; // 2af
     if (request.status === "issued") return { label: "จ่ายแล้ว", cls: "badge-success", extra: [] };
     if (request.status === "submitted") {
       const t = formatThaiDateTime(request.submitted_at);
@@ -212,6 +213,39 @@ export function requestStatus(request, round, conflict) {
 export function statusText(request) {
   const s = requestStatus(request, null, false);
   return s.label + (s.extra.length ? ` (${s.extra.map((e) => e.label).join(", ")})` : "");
+}
+
+// ---------------- 2af: เดือนนี้ไม่เบิก ----------------
+// Asks first (warns that requested quantities are cleared), refuses politely when a line's quantity is locked, then calls
+// sync.setNoOrder. Returns true when the server changed the month (caller re-renders).
+export async function noOrderFlow(app, month, on) {
+  const request = requestOf(app, month);
+  const title = roundTitle(month, roundOf(app, month));
+  if (on) {
+    const lines = (request && request.lines) || {};
+    if (Object.values(lines).some((l) => l && l.qty_locked)) {
+      await alertDialog("แจ้ง \"ไม่เบิก\" ไม่ได้", `<p>${esc(title)} มีรายการที่บันทึกจ่ายหรือแจ้งได้รับของแล้ว จึงเปลี่ยนเป็น "ไม่เบิก" ไม่ได้ — ใบเดือนนี้คงไว้ตามเดิม</p>`);
+      return false;
+    }
+    const n = Object.values(lines).filter((l) => l && (Number(l.op) || 0) + (Number(l.pp) || 0) > 0).length;
+    const ok = await confirmDialog(`${title} — เดือนนี้ไม่เบิก`,
+      `<p>ระบบจะส่งใบเปล่าสถานะ <strong>"ไม่เบิก"</strong> ให้ผู้ดูแล (นับว่าส่งแล้ว ไม่มีการจ่ายของ)</p>`
+      + (n ? `<p class="notice notice-warn">ยอดขอที่กรอกไว้ ${n} รายการ จะถูกล้างเป็นว่างทั้งหมด (คงเหลือยังอยู่)</p>` : "")
+      + `<p class="muted small">เปลี่ยนใจได้ — กด "ยกเลิก ไม่เบิก" แล้วกรอกใหม่ได้จนปิดรอบ</p>`, "ยืนยัน ไม่เบิก");
+    if (!ok) return false;
+  } else {
+    const ok = await confirmDialog(`${title} — ยกเลิก "ไม่เบิก"`, `<p>กลับไปกรอกยอดขอได้ตามปกติ — อย่าลืมกดส่งใบเบิกอีกครั้งก่อนปิดรอบ</p>`, "ยกเลิก ไม่เบิก", "ไม่เปลี่ยน");
+    if (!ok) return false;
+  }
+  try {
+    await sync.setNoOrder(pcuCode(app), month, on);
+    toast(on ? `แจ้ง "ไม่เบิก" ${title} แล้ว` : `ยกเลิก "ไม่เบิก" แล้ว — กรอกและส่งใบเบิกได้`);
+    return true;
+  } catch (err) {
+    if (err && String(err.code || "").startsWith("AUTH_")) throw err;
+    await alertDialog(on ? "แจ้ง \"ไม่เบิก\" ไม่สำเร็จ" : "ยกเลิกไม่สำเร็จ", `<p>${esc(err.message || "")}</p>`);
+    return false;
+  }
 }
 
 // ---------------- dialog / toast ----------------

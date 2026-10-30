@@ -5,16 +5,28 @@ import { UNITS } from "./auth.js";
 import { baselineFor } from "./stock.js";
 
 export const REQ_COLS =
-  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at,entry_by,requester_name";
+  "id,pcu,month,status,form_version_id,submitter_name,last_step,created_at,updated_at,first_submitted_at,submitted_at,submit_count,admin_note,admin_note_at,issued_seen_at,entry_by,requester_name,no_order";
 export const LINE_COLS =
   "item_code,stock,op,pp,price_snapshot,updated_at,issued_total,issued_op,issued_pp,issue_reason,issue_note,issued_at,issued_by,used,adj,adj_reason,calc_from,price_print";
 
 export const requestId = (pcu, month) => `${pcu}_${month}`;
 
 // 2ad: the requested quantity (op/pp) of a line is frozen once a dispenser/admin recorded its issue (issued_total set) — stock / used / adj
-// stay editable until the round closes. The one place for this rule (saveLines + the PCU view's `qty_locked`); 2af adds "PCU reported received".
+// stay editable until the round closes. The one place for this rule (saveLines + the PCU view's `qty_locked` + pcuNoOrder).
+// 2af: … or once the PCU reported what it received for that line (rcv_qty, from getLines' join of received_reports).
 export function lineQtyLocked(l) {
-  return !!l && l.issued_total !== null && l.issued_total !== undefined;
+  return !!l && ((l.issued_total !== null && l.issued_total !== undefined) || (l.rcv_qty !== null && l.rcv_qty !== undefined));
+}
+
+// 2af: the PCU's received report of a line → fields spread into a RequestObj line (nothing when not reported — absent ≠ qty 0).
+// `issued` = the issue figure the viewer may compare with (admin: issued_total · PCU: only lines of done units, see pcuMonthView).
+// mismatch: reported and an issue figure exists and they differ · false when both exist and agree · absent when either side is missing.
+export function receivedFields(l, issued, admin) {
+  if (!l || l.rcv_qty === null || l.rcv_qty === undefined) return {};
+  const out = { rcv_qty: l.rcv_qty, rcv_date: l.rcv_date ?? null, rcv_note: l.rcv_note ?? null, rcv_at: l.rcv_at ?? null };
+  if (admin) out.rcv_by = l.rcv_by ?? null;
+  if (issued !== null && issued !== undefined) out.mismatch = l.rcv_qty !== issued;
+  return out;
 }
 
 export function requestObj(row, lines, admin = false) {
@@ -30,6 +42,7 @@ export function requestObj(row, lines, admin = false) {
     edited_after_submit: !!(row.submitted_at && row.updated_at && row.updated_at > row.submitted_at),
     entry_by: row.entry_by || null, // 2w: 'admin' = an admin keyed/edited this request (sticky) · null = the pcu
     requester_name: row.requester_name ?? null, // 2x: name frozen at send (null = not sent yet, or sent before 2x — see requesterFor)
+    no_order: !!row.no_order, // 2af: "เดือนนี้ไม่เบิก" — status 'submitted' (counts as sent), no requested line, no issue work
   };
   if (lines) {
     const m = {};
@@ -43,10 +56,13 @@ export function requestObj(row, lines, admin = false) {
             price_print: l.price_print ?? null, // 2p/2z: the price printed on the sheet (= price_snapshot since 2z: a price change rewrites both)
             issued_total: l.issued_total ?? null, issued_op: l.issued_op ?? null, issued_pp: l.issued_pp ?? null,
             issue_reason: l.issue_reason ?? null, issue_note: l.issue_note ?? null, issued_at: l.issued_at ?? null, issued_by: l.issued_by ?? null,
+            ...receivedFields(l, l.issued_total, true), // 2af
           }
-        : { stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, ...(lineQtyLocked(l) ? { qty_locked: true } : {}) };
+        : { stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, ...(lineQtyLocked(l) ? { qty_locked: true } : {}),
+            ...receivedFields(l, null, false) }; // 2af: `mismatch` is added by pcuMonthView (only against issues of done units)
     }
     out.lines = m;
+    if (admin) out.mismatch_count = lines.filter((l) => receivedFields(l, l.issued_total, true).mismatch === true).length; // 2af
   }
   return out;
 }
@@ -76,8 +92,14 @@ export const REQUESTER_ON_SEND_SQL =
 export async function getRequestRow(DB, pcu, month) {
   return DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcu, month).first();
 }
+// 2af: each line carries the PCU's received report (rcv_qty … rcv_by; all null = not reported) — lineQtyLocked reads rcv_qty.
+const RCV_COLS = "rr.qty AS rcv_qty, rr.received_date AS rcv_date, rr.note AS rcv_note, rr.reported_at AS rcv_at, rr.reported_by AS rcv_by";
 export async function getLines(DB, reqId) {
-  const { results } = await DB.prepare(`SELECT ${LINE_COLS} FROM request_lines WHERE request_id = ?`).bind(reqId).all();
+  const { results } = await DB.prepare(
+    `SELECT ${LINE_COLS.split(",").map((c) => "l." + c).join(",")}, ${RCV_COLS}
+       FROM request_lines l LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code
+      WHERE l.request_id = ?`
+  ).bind(reqId).all();
   return results;
 }
 
@@ -219,7 +241,12 @@ export async function pcuMonthView(DB, pcu, month, fallbackFy) {
       const form = await formOfRequest(DB, reqRow, fallbackFy);
       issue = issueInfoFrom(form, reqRow.issued_seen_at, lines, units.results, { pcuView: true });
       request.issued = pcuIssuedMap(form, lines, units.results);
+      for (const [code, v] of Object.entries(request.issued)) { // 2af: mismatch only against what the PCU can see (done units)
+        const ln = request.lines[code];
+        if (ln && ln.rcv_qty !== undefined) ln.mismatch = ln.rcv_qty !== v.total;
+      }
     }
+    request.mismatch_count = Object.values(request.lines).filter((l) => l.mismatch === true).length; // 2af
   }
   const unlocks = {};
   for (const u of unlocksRes.results) unlocks[u.item_code] = u.reason || "";

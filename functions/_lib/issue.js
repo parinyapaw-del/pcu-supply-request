@@ -7,7 +7,7 @@ import { auditStmt, batchChunked, formForFy } from "./db.js";
 import { UNITS } from "./auth.js";
 import { currentMonth, isMonth, monthFy, nowIso } from "./time.js";
 import {
-  formOfRequest, getLines, getRequestRow, issueInfoFrom, neededUnits, requestObj, requestedQty, unitOfCode,
+  formOfRequest, getLines, getRequestRow, issueInfoFrom, neededUnits, receivedFields, requestObj, requestedQty, unitOfCode,
 } from "./views.js";
 import { recalcAfterIssue } from "./stock.js";
 import { loadPriceHistory, priceFor } from "./price.js";
@@ -211,8 +211,10 @@ async function itemContext(DB, who, month, code) {
 async function itemRequests(DB, month, code) {
   const [res, doneRes] = await Promise.all([
     DB.prepare(
-      `SELECT r.id, r.pcu, r.status, r.form_version_id, r.entry_by, p.name AS pcu_name, l.op, l.pp, l.issued_total, l.issued_op, l.issued_pp, l.issue_reason, l.issue_note
+      `SELECT r.id, r.pcu, r.status, r.form_version_id, r.entry_by, p.name AS pcu_name, l.op, l.pp, l.issued_total, l.issued_op, l.issued_pp, l.issue_reason, l.issue_note,
+              rr.qty AS rcv_qty, rr.received_date AS rcv_date, rr.note AS rcv_note
          FROM requests r JOIN request_lines l ON l.request_id = r.id AND l.item_code = ? LEFT JOIN pcus p ON p.code = r.pcu
+         LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code
         WHERE r.month = ? AND r.status IN ('submitted','issued') AND (COALESCE(l.op,0) + COALESCE(l.pp,0)) > 0 ORDER BY r.pcu`
     ).bind(code, month).all(),
     DB.prepare(`SELECT request_id, dispense_unit FROM issue_status WHERE request_id IN (SELECT id FROM requests WHERE month = ?)`).bind(month).all(),
@@ -240,6 +242,7 @@ export async function adminItemIssue(ctx, p) {
       issued_total: r.issued_total ?? null, issued_op: r.issued_op ?? null, issued_pp: r.issued_pp ?? null,
       reason: r.issue_reason ?? null, note: r.issue_note ?? null,
       unit_done: !!(doneBy.get(r.id) && doneBy.get(r.id).has(unit)),
+      ...receivedFields(r, r.issued_total, false), // 2af: rcv_qty / rcv_date / rcv_note / rcv_at(null) / mismatch
     });
   }
   const it = ent.item;

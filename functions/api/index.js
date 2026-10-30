@@ -35,6 +35,9 @@ const PCU = {
   pcuAck: pcu.pcuAck,
   pcuSetStockMode: pcu.pcuSetStockMode, // 2o
   pcuSetPhone: pcu.pcuSetPhone, // 2x
+  pcuNoOrder: pcu.pcuNoOrder, // 2af
+  pcuNoOrderCancel: pcu.pcuNoOrderCancel, // 2af
+  pcuReceivedSave: pcu.pcuReceivedSave, // 2af
   pcuDashboard, // 2q
   requestPdf: pdf.requestPdf,
 };
@@ -106,6 +109,7 @@ const ADMIN = {
   adminAnnouncementList: notices.adminAnnouncementList,
   adminAnnouncementSave: notices.adminAnnouncementSave,
   adminAnnouncementDelete: notices.adminAnnouncementDelete,
+  adminReceivedReport: admin.adminReceivedReport, // 2af
 };
 const REMOVED = {
   submit: "ไม่มี action submit แล้ว — ใช้ saveLines พร้อม send:true",
@@ -152,7 +156,7 @@ async function devAction(action, ctx, p) {
   if (action === "devSetRequestMonth") return pdf.devSetRequestMonth(ctx, p); // back-date a request {pcu, month, new_month} (2b-R)
   if (action === "devDeleteRequest") { // 2ad tests: drop a fixture request {pcu, month} (+ its lines / issue rows; + limits of `limits_fy` for the pcu)
     const id = `${String(p.pcu)}_${String(p.month)}`;
-    const st = ["request_lines", "issue_status"].map((t) => ctx.DB.prepare(`DELETE FROM ${t} WHERE request_id = ?`).bind(id));
+    const st = ["request_lines", "issue_status", "received_reports"].map((t) => ctx.DB.prepare(`DELETE FROM ${t} WHERE request_id = ?`).bind(id));
     st.push(ctx.DB.prepare(`DELETE FROM requests WHERE id = ?`).bind(id));
     if (Number.isInteger(p.limits_fy)) st.push(ctx.DB.prepare(`DELETE FROM limits WHERE fy = ? AND pcu = ?`).bind(p.limits_fy, String(p.pcu)));
     await ctx.DB.batch(st);

@@ -168,6 +168,13 @@ function createEditor(rows, { onChange } = {}) {
 // 2ae: "ของหมด" takes an optional note (e.g. "ใช้รายการ … แทนได้") · "อื่น ๆ" needs one
 const notePlaceholder = (reason) => (reason === "out_of_stock" ? "หมายเหตุ (ถ้ามี)" : "ระบุเหตุผล");
 
+// 2af: what the รพ.สต. reported it received (rcv_qty) — yellow "ไม่ตรง" when it differs from the recorded issue (server `mismatch`)
+function rcvHtml(l) {
+  if (!l || l.rcv_qty === undefined || l.rcv_qty === null) return "";
+  const t = [l.rcv_date ? `รับ ${l.rcv_date}` : "", l.rcv_note || ""].filter(Boolean).join(" · ");
+  return `<div class="t2b-rcv small" data-role="rcv"${t ? ` title="${escapeHtml(t)}"` : ""}>รพ.สต. แจ้งได้รับ <strong>${formatInt(l.rcv_qty)}</strong>`
+    + (l.mismatch ? ` <span class="badge badge-warn" data-role="mismatch">ไม่ตรง</span>` : "") + (l.rcv_note ? ` <span class="muted">— ${escapeHtml(l.rcv_note)}</span>` : "") + `</div>`;
+}
 function inputCell(r) {
   const d = r.base;
   return `<td class="t2b-in-cell"><input class="t2b-in" type="text" inputmode="numeric" maxlength="5" autocomplete="off"
@@ -410,9 +417,14 @@ export function renderTab2b(container, ctx) {
         "ยังไม่ได้ส่งใบเบิก" + (request && request.status === "draft" ? " (แบบร่าง — ยังบันทึกการจ่ายไม่ได้)" : "")));
       return;
     }
+    if (request.no_order) { // 2af
+      head.appendChild(el("div", { class: "notice notice-info", id: "t2b-no-order" }, `รพ.สต. แจ้ง "ไม่เบิก" เดือนนี้ (${formatBangkokDateTime(request.submitted_at)}) — ไม่มีรายการให้จ่าย`));
+      return;
+    }
     head.insertAdjacentHTML("beforeend", `<p class="t2b-meta"><span class="badge ${request.status === "issued" ? "badge-success" : "badge-muted"}">${escapeHtml(STATUS_LABEL[request.status] || request.status)}</span>
       <span class="small">ส่งเมื่อ ${escapeHtml(formatBangkokDateTime(request.submitted_at))}</span>
-      ${issue ? `<span class="small t2b-sum">· จ่ายแล้ว ${issue.units_done}/${issue.units_total} หน่วย · ครบ ${issue.complete} · ไม่ครบ ${issue.incomplete} รายการ</span>` : ""}</p>
+      ${issue ? `<span class="small t2b-sum">· จ่ายแล้ว ${issue.units_done}/${issue.units_total} หน่วย · ครบ ${issue.complete} · ไม่ครบ ${issue.incomplete} รายการ</span>` : ""}
+      ${request.mismatch_count ? `<span class="badge badge-warn" id="t2b-mismatch">รพ.สต. แจ้งได้รับไม่ตรง ${request.mismatch_count} รายการ</span>` : ""}</p>
       ${issue ? `<div class="t2b-strip">${unitStripHtml(issue)}</div>` : ""}`);
     if (ts.expired) head.appendChild(el("div", { class: "notice notice-error", id: "t2b-expired" }, ts.expired + " — ดูได้อย่างเดียว"));
 
@@ -481,7 +493,7 @@ export function renderTab2b(container, ctx) {
         const l = r.x.l;
         const by = l.issued_at ? ` title="บันทึก ${escapeHtml(formatBangkokDateTime(l.issued_at))} โดย ${escapeHtml(whoLabel(l.issued_by))}"` : "";
         body.push(`<tr data-key="${escapeHtml(r.key)}"${by}>
-          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}${usedAdjHtml(l)}</td>
+          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}${usedAdjHtml(l)}${rcvHtml(l)}</td>
           <td class="num">${formatInt(r.op)}</td><td class="num">${formatInt(r.pp)}</td><td class="num"><strong>${formatInt(r.req)}</strong></td>
           ${inputCell(r)}${gotCells()}${reasonCell(r)}</tr>`);
       });
@@ -609,7 +621,7 @@ export function renderTab2b(container, ctx) {
       const r = er.r;
       sOp += er.op; sPp += er.pp;
       return `<tr data-key="${escapeHtml(er.key)}">
-        <td class="left"><strong>${escapeHtml(r.pcu)}</strong> ${escapeHtml(r.pcu_name || pcuName(r.pcu))}</td>
+        <td class="left"><strong>${escapeHtml(r.pcu)}</strong> ${escapeHtml(r.pcu_name || pcuName(r.pcu))}${rcvHtml(r)}</td>
         <td class="left"><span class="badge ${r.status === "issued" ? "badge-success" : "badge-muted"}">${escapeHtml(STATUS_LABEL[r.status] || r.status)}</span></td>
         <td class="num">${formatInt(er.op)}</td><td class="num">${formatInt(er.pp)}</td><td class="num"><strong>${formatInt(er.req)}</strong></td>
         ${inputCell(er)}${gotCells()}${reasonCell(er)}

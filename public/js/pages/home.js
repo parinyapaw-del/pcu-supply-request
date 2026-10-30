@@ -4,7 +4,7 @@
 import { getOrderedSteps } from "../data.js";
 import {
   esc, pcuCode, requestOf, requestStatus,
-  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
+  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow,
 } from "./common.js";
 import * as sync from "../sync.js";
 import { fiscalYearOf, fiscalYearStartMonthKey, prevMonthKey } from "../format.js";
@@ -48,6 +48,11 @@ function withIssueStatus(st, issue) {
   return { ...st, extra: [...st.extra, { label: `จ่ายแล้วบางหน่วย (${issue.units_done}/${issue.units_total})`, cls: "badge-warn" }] };
 }
 
+// 2af: "รายงานของได้จริง" — any sent month of the fy (closed rounds too), not a "ไม่เบิก" month · `cls` = button style
+const isSent = (r) => !!r && (r.status === "submitted" || r.status === "issued") && !r.no_order;
+const receivedBtnHtml = (month) =>
+  `<a class="btn btn-secondary" href="#/received?month=${esc(month)}" data-received="${esc(month)}">รายงานของได้จริง</a>`;
+
 function cardHtml(app, round) {
   const request = requestOf(app, round.month);
   const session = sync.getSession(pcuCode(app), round.month);
@@ -69,25 +74,32 @@ function cardHtml(app, round) {
     ${note ? `<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(note)}</div>` : ""}
     <p class="muted deadline-line">${locked ? "รอบนี้ปิดรับแล้ว" : esc(deadlineText(round))}</p>
     ${round.trial ? `<p class="trial-note">${esc(trialNote(round))}</p>` : ""}
-    ${started ? `<p>ขอเบิกแล้ว ${n} รายการ · ขั้นตอน ${prog.n}/${prog.total}${prog.label ? ` (${esc(prog.label)})` : ""}</p>` : ""}
+    ${request && request.no_order ? `<p>แจ้ง "ไม่เบิก" เดือนนี้แล้ว${locked ? "" : " · เปลี่ยนใจได้จนปิดรอบ"}</p>`
+      : started ? `<p>ขอเบิกแล้ว ${n} รายการ · ขั้นตอน ${prog.n}/${prog.total}${prog.label ? ` (${esc(prog.label)})` : ""}</p>` : ""}
     <div class="round-card-actions">
       ${locked
         ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
         : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${started ? "ทำต่อ" : "กรอก"}</button>`}
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      ${isSent(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}" data-issue="${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
+    ${locked ? "" : `<p class="noorder-line">${request && request.no_order
+      ? `<button type="button" class="btn btn-link" data-noorder="off" data-month="${esc(round.month)}">ยกเลิก "ไม่เบิก"</button>`
+      : `<button type="button" class="btn btn-link" data-noorder="on" data-month="${esc(round.month)}">เดือนนี้ไม่เบิก</button>`}</p>`}
   </div>`;
 }
 
 function collapsedHtml(app, round) {
   const issue = monthData(app, round.month).issue;
+  const request = requestOf(app, round.month);
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(round.month)}">
-    <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)}${request && request.no_order ? ' <span class="badge badge-info">ไม่เบิก</span>' : ""} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      ${isSent(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </details>`;
@@ -140,6 +152,7 @@ function previewHtml(next) {
 }
 
 function historyStatusBadge(h) {
+  if (h.no_order) return '<span class="badge badge-info">ไม่เบิก</span>'; // 2af
   if (h.status === "issued") return '<span class="badge badge-success">จ่ายแล้ว</span>';
   if (h.status === "submitted") {
     const d = h.submitted_at ? formatThaiShortDate(h.submitted_at) : "";
@@ -162,6 +175,7 @@ function historyRowHtml(h) {
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์</button>
+      ${isSent(h) ? receivedBtnHtml(h.month) : ""}
       ${h.status === "issued" ? `<a class="btn btn-secondary" href="#/issue?month=${esc(h.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </details>`;
@@ -237,6 +251,14 @@ export async function renderHome(container, app) {
     scope.querySelectorAll("[data-print]").forEach((btn) => {
       btn.addEventListener("click", () => {
         location.hash = `#/print?month=${btn.dataset.print}`;
+      });
+    });
+    scope.querySelectorAll("[data-noorder]").forEach((btn) => { // 2af
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try {
+          if (await noOrderFlow(app, btn.dataset.month, btn.dataset.noorder === "on")) await renderHome(container, app);
+        } finally { btn.disabled = false; }
       });
     });
     scope.querySelectorAll("[data-older]").forEach((btn) => {

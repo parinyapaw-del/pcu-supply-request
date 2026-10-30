@@ -10,6 +10,7 @@ import { renderChangePin } from "./pages/pin.js";
 import { renderFill } from "./pages/fill.js";
 import { renderPrint } from "./pages/print.js";
 import { renderIssue } from "./pages/issue.js";
+import { renderReceived } from "./pages/received.js";
 import { renderDashboard } from "./pages/dashboard.js";
 import { renderFeedback } from "./pages/feedback.js";
 import { loadOlderMonth, requestOf } from "./pages/common.js";
@@ -172,6 +173,9 @@ async function route() {
       await renderPrint(container, app, params);
     } else if (path === "issue") {
       await renderIssue(container, app, params);
+    } else if (path === "received") { // 2af
+      app.monthKey = null;
+      await renderReceived(container, app, params);
     } else if (path === "dashboard") {
       app.monthKey = null;
       await renderDashboard(container, app);
@@ -231,7 +235,7 @@ function feedbackContext() {
   return c;
 }
 // 2ac: ❓ → the /help section of the current route (opens in a new tab so a half-filled page stays where it was)
-const HELP_OF_ROUTE = { login: "login", pin: "login", home: "send", fill: "fill", hidden: "hidden", print: "print", issue: "send", dashboard: "dashboard", feedback: "ceiling" };
+const HELP_OF_ROUTE = { login: "login", pin: "login", home: "send", fill: "fill", hidden: "hidden", print: "print", issue: "send", received: "send", dashboard: "dashboard", feedback: "ceiling" };
 function helpHref() {
   const { segments, params } = parseHash();
   const route = segments[0] || "login";

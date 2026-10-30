@@ -368,7 +368,7 @@ async function main() {
   eq([pb.next_round.fy, pb.next_round.trial, pb.next_round.locked], [2570, false, false], "next_round carries fy/trial/locked (RoundInfo)");
   eq(pb.history.map((h) => h.month), ["2026-10", "2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12", "2025-11", "2025-10"], "history = every round from FY2569's first (2025-10, 2w) up to before prevRound, newest first (13 entries)");
   ok(pb.history.every((h) => h.status === "not_started" && h.submitted_at === null && h.trial === false && h.locked === false), "history after devReset: all not_started, submitted_at null, not trial, not locked");
-  ok(pb.history[0].fy === 2570 && pb.history.slice(1).every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,locked,month,status,submitted_at,trial", "history: 2026-10 is fy 2570 (2w), 2026-09 … 2025-10 fy 2569 · entry keys {month,fy,trial,locked,status,submitted_at}");
+  ok(pb.history[0].fy === 2570 && pb.history.slice(1).every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,locked,month,no_order,status,submitted_at,trial", "history: 2026-10 is fy 2570 (2w), 2026-09 … 2025-10 fy 2569 · entry keys {month,fy,trial,locked,status,submitted_at,no_order}");
   const nev = pb.never_prev;
   const hadAny = new Set(Object.keys(seed.actual_prev["2569"].data["PCU01"] || {}).filter((c) => (seed.actual_prev["2569"].data["PCU01"][c].op.some((x) => x > 0) || seed.actual_prev["2569"].data["PCU01"][c].pp.some((x) => x > 0))));
   ok(nev.length > 0 && nev.every((c) => !hadAny.has(c)) && !nev.includes([...hadAny][0]), "never_prev = items with no FY2569 withdrawal in actual_prev");
@@ -755,7 +755,7 @@ async function main() {
     const e2 = await api("pcuBootstrap", {}, T9, o);
     eq([e2.data.history.length, e2.data.history[0].month, e2.data.history.at(-1).month], [11, "2026-08", "2025-10"], "calendar 2026-09: history = 2026-08 … 2025-10 (prevRound 2026-09 is a full card, not history)");
     const hc = (await mustOk("pcuBootstrap", {}, T9)).history.find((h) => h.month === "2026-09");
-    eq(hc, { month: "2026-09", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at }, "calendar CAL: the sent FY2569 round 2026-09 is in history with status submitted + submitted_at");
+    eq(hc, { month: "2026-09", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at, no_order: false }, "calendar CAL: the sent FY2569 round 2026-09 is in history with status submitted + submitted_at");
     eq(e2.data.byMonth["2026-10"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-09");
     eq(e2.data.byMonth["2026-10"].prev_lines[A.code], { op: 1, pp: 0, stock: null, received: 1, received_src: "requested" }, "…but prev_lines still reads the previous round");
     ok((await api("saveLines", { month: "2026-10", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-10) works");
@@ -1830,7 +1830,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 9, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 10, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2192,10 +2192,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 9, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 10, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 9, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 10, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3559,7 +3559,7 @@ async function main() {
 
     // ---- migration v8 re-run: no error, no second seed, data kept ----
     const fbN = (await list()).items.length;
-    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 9, "devRerunMigration v8 (+ v9)");
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 10, "devRerunMigration v8 (+ v9)");
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
@@ -3644,7 +3644,7 @@ async function main() {
     for (const f of (await mustOk("itemFlagList", {}, ADM2)).flags) await mustOk("itemFlagClear", { code: f.code }, ADM2);
 
     // ---- migration v9 ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 9, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 10, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
 
     // ---- flags: validation + scope ----
     expectErr(await api("itemFlagSet", { code: S1.code, status: "gone" }, ADM2), "BAD_REQUEST", "itemFlagSet bad status");
@@ -3736,12 +3736,172 @@ async function main() {
     ok((await mustOk("adminAuditLog", { limit: 50 }, ADM2)).entries.some((e) => e.action === "adminAnnouncementDelete"), "announcement delete audited");
 
     // ---- migration v9 re-run keeps data ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 9, "devRerunMigration v9 again");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 10, "devRerunMigration v9 again");
     eq((await mustOk("itemFlagList", {}, ADM2)).flags.length, 2, "…flags kept");
 
     for (const c of [S1.code, LB.code]) await mustOk("itemFlagClear", { code: c }, ADM2);
     await mustOk("devDeleteRequest", { pcu: P, month: CUR });
     await mustOk("adminUsersRemove", { email: DSPF }, ADM2);
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2af: PCU received reports (separate from issued_*, lock the line, mismatch) · เดือนนี้ไม่เบิก (no_order) · admin mismatch report");
+  {
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 10, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const F0 = b0.form;
+    const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
+    const [X, Y, Z] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const real = b0.pcus.filter((x) => x.group !== "ทดลอง");
+    const P = real.at(-2).code, Q = real.at(-3).code;
+    for (const pc of [P, Q]) for (const m of [CUR, PREV, FIRST70]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
+    for (const m of [CUR, PREV, FIRST70]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const TQ = (await mustOk("pcuLogin", { pcu: Q, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-28T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (tok, month, lines, extra = {}) => api("saveLines", { month, lines: L(lines), ...extra }, tok);
+    const rcv = (tok, month, lines) => api("pcuReceivedSave", { month, lines }, tok);
+    const aLine = async (pc, m, c) => (await mustOk("adminGetRequest", { pcu: pc, month: m }, ADM2)).request.lines[c];
+    const pLine = async (tok, m, c) => (await mustOk("pcuGetMonth", { month: m }, tok)).request.lines[c];
+    const today = new Date(Date.now() + 7 * 3600e3).toISOString().slice(0, 10);
+
+    // ---- received: validation ----
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1 }]), "NOT_FOUND", "no request yet → NOT_FOUND");
+    ok((await sv(TP, CUR, { [X.code]: { op: 5, pp: 1 }, [Y.code]: { op: 3 }, [Z.code]: { op: 0, stock: 2 } })).ok, "setup: P draft X 5/1, Y 3, Z 0");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1 }]), "NOT_FOUND", "draft (not sent) → NOT_FOUND");
+    ok((await sv(TP, CUR, {}, { send: true })).ok, "setup: P sends CUR");
+    expectErr(await rcv(TP, CUR, [{ code: Z.code, qty: 1 }]), "BAD_REQUEST", "line requested 0 → cannot report");
+    expectErr(await rcv(TP, CUR, [{ code: "ZZ-NOPE", qty: 1 }]), "BAD_REQUEST", "unknown code");
+    expectErr(await rcv(TP, CUR, [{ code: X.code }]), "BAD_REQUEST", "qty missing");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: -1 }]), "BAD_REQUEST", "qty negative");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1.5 }]), "BAD_REQUEST", "qty not integer");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1, received_date: "2026-02-30" }]), "BAD_REQUEST", "bad date");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1, received_date: "2099-01-01" }]), "BAD_REQUEST", "future date");
+    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1 }, { code: X.code, qty: 2 }]), "BAD_REQUEST", "duplicate code");
+    expectErr(await rcv(TP, CUR, []), "BAD_REQUEST", "empty lines");
+    expectErr(await rcv(TP, "2024-12", [{ code: X.code, qty: 1 }]), "BAD_REQUEST", "month outside fy_current / fy_current−1");
+    expectErr(await rcv(TP, NEXT, [{ code: X.code, qty: 1 }]), "BAD_REQUEST", "month not yet open");
+    expectErr(await api("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 1 }] }, ADM2), "FORBIDDEN", "staff token cannot call pcuReceivedSave");
+    expectErr(await rcv(TQ, CUR, [{ code: X.code, qty: 1 }]), "NOT_FOUND", "PCU Q cannot report on P's request (own request only)");
+
+    // ---- received: null ≠ 0, lock, remove ----
+    const r0 = await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 0, note: "  ยังไม่ได้ของ  " }] }, TP);
+    eq(r0.changed, 1, "X reported 0 → changed 1");
+    const x0 = r0.request.lines[X.code];
+    eq([x0.rcv_qty, x0.rcv_date, x0.rcv_note, x0.qty_locked, "mismatch" in x0], [0, today, "ยังไม่ได้ของ", true, false], "qty 0 stored (≠ not reported), date = today, note trimmed, qty_locked, no issue → no mismatch key");
+    eq("rcv_qty" in r0.request.lines[Y.code], false, "Y not reported → no rcv_qty key");
+    eq((await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 0 }] }, TP)).changed, 0, "same report again (note omitted = kept) → changed 0");
+    const lx = await sv(TP, CUR, { [X.code]: { op: 6, pp: 1 } });
+    expectErr(lx, "LINE_LOCKED", "reported X: op 5 → 6");
+    eq(lx.error && lx.error.items, [{ code: X.code, op: 5, pp: 1 }], "LINE_LOCKED.items with stored op/pp");
+    ok((await sv(TP, CUR, { [X.code]: { op: 5, pp: 1, stock: 4 } })).ok, "reported X: stock still editable");
+    eq((await aLine(P, CUR, X.code)).stock, 4, "…stock stored");
+    const rd = await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: null }] }, TP);
+    eq([rd.changed, "rcv_qty" in rd.request.lines[X.code], rd.request.lines[X.code].qty_locked], [1, false, undefined], "qty null removes the report → unlocked");
+    eq((await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: null }] }, TP)).changed, 0, "removing a missing report → changed 0");
+    ok((await sv(TP, CUR, { [X.code]: { op: 6, pp: 1 } }, { send: true })).ok, "X editable again after removal (6/1, re-sent)");
+    const long = "ก".repeat(250);
+    const rl = await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 6, received_date: "2026-10-01", note: long }] }, TP);
+    eq([rl.request.lines[X.code].rcv_date, rl.request.lines[X.code].rcv_note.length], ["2026-10-01", 200], "explicit date kept · note clipped to 200");
+
+    // ---- issue vs received: neither side overwrites the other, mismatch ----
+    await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 3 }] }, TP);
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [X.code]: { issued_total: 7 }, [Y.code]: { issued_total: 2, reason: "out_of_stock" } } }, ADM2);
+    expectErr(await api("issueLines", { pcu: P, month: CUR, lines: { [X.code]: { issued_total: 8 } } }, ADM2), "BAD_REQUEST", "issue above requested still refused (unchanged rule)");
+    const ax = await aLine(P, CUR, X.code), ay = await aLine(P, CUR, Y.code);
+    eq([ax.issued_total, ax.rcv_qty, ax.mismatch, ax.rcv_by], [7, 6, true, P], "admin X: issued 7 vs PCU 6 → mismatch true (rcv_by = pcu)");
+    eq([ay.issued_total, ay.rcv_qty, ay.mismatch], [2, 3, true], "admin Y: issued 2 vs PCU 3 → mismatch true");
+    eq((await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.mismatch_count, 2, "admin request.mismatch_count = 2");
+    const py0 = await pLine(TP, CUR, Y.code);
+    eq([py0.rcv_qty, "mismatch" in py0], [3, false], "PCU view: unit not done → no mismatch yet (PCU sees issues of done units only)");
+    await mustOk("issueDone", { pcu: P, month: CUR, unit: st.dispense_unit, done: 1 }, ADM2);
+    const pv = await mustOk("pcuGetMonth", { month: CUR }, TP);
+    eq([pv.request.lines[Y.code].mismatch, pv.request.lines[X.code].mismatch, pv.request.mismatch_count], [true, true, 2], "PCU view after unit done: mismatch true on X and Y");
+    await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 7 }] }, TP);
+    const ax2 = await aLine(P, CUR, X.code);
+    eq([ax2.issued_total, ax2.rcv_qty, ax2.mismatch], [7, 7, false], "PCU reports 7 = issued → mismatch false (issued_total untouched)");
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [Y.code]: { issued_total: 3 } } }, ADM2);
+    const ay2 = await aLine(P, CUR, Y.code);
+    eq([ay2.issued_total, ay2.rcv_qty, ay2.mismatch], [3, 3, false], "dispenser re-records Y 3 → rcv_qty untouched, mismatch false");
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [Y.code]: { issued_total: 2, reason: "out_of_stock" } } }, ADM2);
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [X.code]: { issued_total: null } } }, ADM2);
+    const ax3 = await aLine(P, CUR, X.code);
+    eq([ax3.issued_total, ax3.rcv_qty, "mismatch" in ax3, (await pLine(TP, CUR, X.code)).qty_locked], [null, 7, false, true], "issue cleared → report kept, no mismatch key, still locked by the report");
+    const ar = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests.find((r) => r.pcu === P);
+    eq(ar.mismatch_count, 1, "adminRequests.mismatch_count (Y only)");
+    const ii = await mustOk("adminItemIssue", { month: CUR, item_code: Y.code }, ADM2);
+    const iy = ii.rows.find((r) => r.pcu === P);
+    eq([iy.rcv_qty, iy.mismatch], [3, true], "adminItemIssue row carries rcv_qty + mismatch");
+
+    // ---- closed round + older month of the fy ----
+    await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
+    eq((await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 2 }] }, TP)).changed, 1, "closed round: reporting received still works");
+    expectErr(await sv(TP, CUR, { [Y.code]: { op: 3, stock: 1 } }), "CONFLICT", "…while the request itself is closed");
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+    await mustOk("adminSaveLines", { pcu: P, month: FIRST70, lines: { [X.code]: { op: 2, pp: 0 } }, send: true }, ADM2);
+    await mustOk("adminLockRound", { month: FIRST70, locked: 1 }, ADM2);
+    eq((await mustOk("pcuReceivedSave", { month: FIRST70, lines: [{ code: X.code, qty: 2 }] }, TP)).request.lines[X.code].rcv_qty, 2, "older closed month of the fy (first round) → reportable");
+    await mustOk("adminLockRound", { month: FIRST70, locked: 0 }, ADM2);
+
+    // ---- admin mismatch report ----
+    const rp = await mustOk("adminReceivedReport", {}, ADM2);
+    const mine = rp.rows.filter((r) => r.pcu === P);
+    eq(mine.map((r) => [r.month, r.code, r.requested, r.issued_total, r.rcv_qty, r.diff, r.mismatch]), [], "after Y = 2 = issued: no mismatch rows for P");
+    await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 1, note: "ขาด 1" }] }, TP);
+    const rp2 = await mustOk("adminReceivedReport", { fy: 2570 }, ADM2);
+    const m2 = rp2.rows.filter((r) => r.pcu === P);
+    eq(m2.map((r) => [r.month, r.code, r.requested, r.issued_total, r.rcv_qty, r.diff, r.mismatch, r.rcv_note, r.issue_reason]),
+      [[CUR, Y.code, 3, 2, 1, -1, true, "ขาด 1", "out_of_stock"]], "default report = mismatches only (month, code, ขอ, ผู้จ่าย, รพ.สต., ต่าง, note, reason)");
+    ok(m2[0].name === Y.name && m2[0].dispense_unit === st.dispense_unit && m2[0].pcu_name, "row has item name, dispense unit, pcu name");
+    const all = await mustOk("adminReceivedReport", { all: true, pcu: P }, ADM2);
+    eq(all.rows.map((r) => [r.month, r.code, r.mismatch]), [[FIRST70, X.code, false], [CUR, X.code, false], [CUR, Y.code, true]], "all:true + pcu → every reported line, sorted month/pcu/code");
+    eq([all.counts.reported, all.counts.mismatch, all.pcu], [3, 1, P], "counts + echo of the filter");
+    eq((await mustOk("adminReceivedReport", { all: true, pcu: P, month: FIRST70 }, ADM2)).rows.length, 1, "month filter");
+    expectErr(await api("adminReceivedReport", { month: "2025-12" }, ADM2), "BAD_REQUEST", "month outside the fy");
+    expectErr(await api("adminReceivedReport", { pcu: "NOPE" }, ADM2), "NOT_FOUND", "unknown pcu");
+    expectErr(await api("adminReceivedReport", {}, TP), "FORBIDDEN", "PCU token → FORBIDDEN");
+
+    // ---- เดือนนี้ไม่เบิก ----
+    ok((await sv(TQ, PREV, { [X.code]: { op: 4, stock: 7 }, [Y.code]: { op: 0, stock: 1 } })).ok, "setup: Q draft PREV X 4 (stock 7)");
+    expectErr(await api("pcuNoOrderCancel", { month: PREV }, TQ), "BAD_REQUEST", "cancel when not ไม่เบิก → BAD_REQUEST");
+    expectErr(await api("pcuNoOrder", { month: NEXT }, TQ), "BAD_REQUEST", "ไม่เบิก a month not yet open");
+    const no = await mustOk("pcuNoOrder", { month: PREV }, TQ);
+    eq([no.cleared, no.request.status, no.request.no_order, no.request.lines[X.code].op, no.request.lines[X.code].pp, no.request.lines[X.code].stock],
+      [1, "submitted", true, null, null, 7], "pcuNoOrder: requested qty cleared, status submitted + no_order, stock kept");
+    eq((await mustOk("pcuNoOrder", { month: PREV }, TQ)).cleared, 0, "pcuNoOrder again → idempotent");
+    const aq = (await mustOk("adminRequests", { month: PREV }, ADM2)).requests.find((r) => r.pcu === Q);
+    eq([aq.status, aq.no_order, aq.issue, aq.progress.items_requested], ["submitted", true, null, 0], "admin: counted as sent, no_order, no issue work");
+    ok((await sv(TQ, PREV, { [X.code]: { op: null, pp: null, stock: 5 } })).ok, "ไม่เบิก: stock still editable");
+    const nq = await sv(TQ, PREV, { [X.code]: { op: 2, stock: 5 } });
+    expectErr(nq, "NO_ORDER", "ไม่เบิก: a requested qty → NO_ORDER");
+    eq(nq.error && nq.error.items, [{ code: X.code, op: null, pp: null }], "NO_ORDER.items with stored op/pp");
+    expectErr(await rcv(TQ, PREV, [{ code: X.code, qty: 1 }]), "BAD_REQUEST", "ไม่เบิก month has no requested line to report");
+    const cn = await mustOk("pcuNoOrderCancel", { month: PREV }, TQ);
+    eq([cn.request.status, cn.request.no_order], ["draft", false], "pcuNoOrderCancel → back to draft");
+    ok((await sv(TQ, PREV, { [X.code]: { op: 2, stock: 5 } }, { send: true })).ok, "after cancel: qty + send ok");
+    await mustOk("pcuNoOrder", { month: PREV }, TQ);
+    await mustOk("adminLockRound", { month: PREV, locked: 1 }, ADM2);
+    expectErr(await api("pcuNoOrderCancel", { month: PREV }, TQ), "CONFLICT", "closed round: cancel ไม่เบิก → CONFLICT");
+    await mustOk("adminLockRound", { month: PREV, locked: 0 }, ADM2);
+    await mustOk("adminSaveLines", { pcu: Q, month: PREV, lines: { [X.code]: { op: 1, pp: 0 } } }, ADM2);
+    eq((await mustOk("adminGetRequest", { pcu: Q, month: PREV }, ADM2)).request.no_order, false, "admin keys a quantity on a ไม่เบิก request → no_order cleared");
+    const fresh = await mustOk("pcuNoOrder", { month: CUR }, TQ);
+    eq([fresh.request.status, fresh.request.no_order, fresh.cleared], ["submitted", true, 0], "ไม่เบิก with no request yet → creates a sent no_order request");
+    const hl = await api("pcuNoOrder", { month: CUR }, TP);
+    expectErr(hl, "HAS_LOCKED_LINES", "P has issued/reported lines → HAS_LOCKED_LINES");
+    eq((hl.error && hl.error.items || []).sort(), [X.code, Y.code].sort(), "…items = the locked codes");
+    eq((await aLine(P, CUR, X.code)).op, 6, "…nothing written");
+    await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
+    expectErr(await api("pcuNoOrder", { month: CUR }, TP), "CONFLICT", "closed round: ไม่เบิก → CONFLICT");
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+
+    // ---- migration re-run keeps data · cleanup ----
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 10, "devRerunMigration v10 again");
+    eq([(await aLine(P, CUR, Y.code)).rcv_qty, (await mustOk("adminGetRequest", { pcu: Q, month: CUR }, ADM2)).request.no_order], [1, true], "…reports and no_order kept");
+    for (const pc of [P, Q]) for (const m of [CUR, PREV, FIRST70]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
+    eq((await mustOk("adminReceivedReport", { all: true, pcu: P }, ADM2)).rows.length, 0, "devDeleteRequest removes the received reports too");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

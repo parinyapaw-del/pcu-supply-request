@@ -23,6 +23,7 @@ import { renderTab12 } from "./admin/tab12_dashboard.js";
 import { renderTab13 } from "./admin/tab13_feedback.js";
 import { renderTab14 } from "./admin/tab14_manual.js";
 import { renderTab15 } from "./admin/tab15_notices.js";
+import { renderTab16 } from "./admin/tab16_received.js";
 import { mountFeedbackWidget } from "./feedback_widget.js";
 
 const root = document.getElementById("admin-root");
@@ -34,6 +35,7 @@ const TABS = [
   { id: "tab2", hash: "totals", label: "ยอดรวม / ใบจัดของ", render: renderTab2, staff: true },
   { id: "tab2b", hash: "issue", label: "จ่ายจริง", render: renderTab2b, staff: true },
   { id: "tab15", hash: "notices", label: "ของหมด / ประกาศ", render: renderTab15, staff: true }, // 2ae — flags: admin + dispenser · announcements: admin
+  { id: "tab16", hash: "received", label: "รับของไม่ตรง", render: renderTab16 }, // 2af — admin only
   { id: "tab12", hash: "dashboard", label: "แดชบอร์ด", render: renderTab12 }, // admin only (brief 2s)
   { id: "tab3", hash: "budget", label: "งบ", render: renderTab3 },
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
@@ -52,7 +54,7 @@ const TABS = [
 const HELP_OF_TAB = {
   status: ["a-monthly", "d-excel"], totals: ["a-monthly", "d-excel"], issue: ["d-issue", "d-issue"], excel: ["a-monthly", "d-excel"],
   dashboard: ["a-monthly"], budget: ["a-sometimes"], prev: ["a-yearly"], limits: ["a-sometimes"], form: ["a-sometimes"],
-  import: ["a-yearly"], pcu: ["a-sometimes"], users: ["a-sometimes"], system: ["a-sometimes"], feedback: ["a-monthly"], notices: ["a-monthly", "d-issue"],
+  import: ["a-yearly"], pcu: ["a-sometimes"], users: ["a-sometimes"], system: ["a-sometimes"], feedback: ["a-monthly"], notices: ["a-monthly", "d-issue"], received: ["a-monthly"],
 };
 
 const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }; // fy = ปีงบที่เลือกดู (2i)

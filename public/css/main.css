@@ -732,3 +732,23 @@ body.has-fb-fab { padding-bottom: 72px; } /* the end of every page can scroll cl
 }
 @media print { .fb-dock, .fb-help { display: none !important; } }
 
+
+/* 2af: เดือนนี้ไม่เบิก + รายงานของได้จริง */
+.notice-warn { background: var(--warn-bg); color: var(--warn); }
+.noorder-line { margin: 6px 0 0; }
+.noorder-foot { margin: 10px 0 0; text-align: center; }
+.received-page h3.rcv-group { margin: 18px 0 6px; font-size: 1rem; color: var(--muted, inherit); }
+.rcv-summary { font-weight: 600; }
+.rcv-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; margin: 8px 0; }
+.rcv-tools input[type="date"] { font-size: 1rem; padding: 6px 8px; }
+.rcv-list { display: flex; flex-direction: column; gap: 8px; }
+.rcv-row { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.rcv-row.rcv-mismatch { background: var(--warn-bg); border-color: var(--warn); }
+.rcv-name { font-weight: 600; margin-bottom: 4px; overflow-wrap: anywhere; }
+.rcv-nums { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 16px; }
+.rcv-cell { display: inline-flex; flex-direction: column; font-variant-numeric: tabular-nums; }
+.rcv-lbl { font-size: 0.8rem; color: var(--muted, #666); }
+.rcv-qty { width: 6.5em; }
+.rcv-flag[hidden] { display: none; }
+.rcv-note { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 6px 8px; font-size: 0.95rem; }
+.rcv-actions { position: sticky; bottom: 0; background: var(--bg, #fff); padding: 8px 0; align-items: center; }

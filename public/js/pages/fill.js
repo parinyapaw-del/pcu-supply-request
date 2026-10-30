@@ -11,7 +11,7 @@ import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
-  alertDialog, toast, requesterOf, formatThaiYmd,
+  alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
 
@@ -84,6 +84,8 @@ const QTY_LOCKED_TEXT = "รายการนี้บันทึกรับ�
 function qtyLocked(app, month, code) {
   return !!sync.getLine(pcuCode(app), month, code).qty_locked;
 }
+// 2af: a "ไม่เบิก" month takes no requested quantity (OP/PP read-only, คงเหลือ / ใช้ไป still editable) until it is cancelled
+const isNoOrder = (app, month) => !!(requestOf(app, month) || {}).no_order;
 
 // 2ad: a permanently cancelled item (active:false) stays on the page, greyed, with the admin's reason (or the item replacing it, 2v links).
 function cancelText(app, item) {
@@ -131,6 +133,13 @@ export async function renderFill(container, app, stepCode, params) {
   }
   wrap.appendChild(content);
   wrap.appendChild(renderNav(app, month, stepCode, codes));
+  if (editable && !isNoOrder(app, month)) { // 2af: "เดือนนี้ไม่เบิก" at the end of every fill page
+    const foot = document.createElement("p");
+    foot.className = "noorder-foot";
+    foot.innerHTML = `<button type="button" class="btn btn-link" data-noorder="on">เดือนนี้ไม่เบิก</button> <span class="muted small">— ส่งใบเปล่าสถานะ "ไม่เบิก" (ยกเลิกได้จนปิดรอบ)</span>`;
+    wireNoOrder(foot, app, month);
+    wrap.appendChild(foot);
+  }
 
   container.innerHTML = "";
   container.appendChild(wrap);
@@ -154,6 +163,19 @@ export async function renderFill(container, app, stepCode, params) {
       } catch (e) { /* history API unavailable: harmless */ }
     }
   }
+}
+
+// 2af: [data-noorder="on"|"off"] buttons → noOrderFlow, then re-render the page we are on
+function wireNoOrder(scope, app, month) {
+  scope.querySelectorAll("[data-noorder]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    try {
+      if (await noOrderFlow(app, month, b.dataset.noorder === "on")) {
+        const step = (location.hash.match(/^#\/fill\/([^?]*)/) || [])[1] || "summary";
+        await renderFill(document.getElementById("app"), app, step, null);
+      }
+    } finally { b.disabled = false; }
+  }));
 }
 
 // ---------------- banners: locked / admin note / form version / status ----------------
@@ -196,6 +218,9 @@ function renderBanners(app, month, stepIssued) {
   } else if (!isActiveRound(app, month)) {
     parts.push('<div class="notice notice-info">เดือนเก่า — ดูอย่างเดียว</div>');
   }
+  if (request && request.no_order) { // 2af
+    parts.push(`<div class="notice notice-info" id="fill-noorder-banner"><strong>เดือนนี้แจ้ง "ไม่เบิก" แล้ว</strong> — ยอดขอว่างทั้งหมด ไม่มีการจ่ายของ · คงเหลือยังกรอกได้${isEditable(app, month) ? ` · <button type="button" class="btn btn-secondary btn-sm" data-noorder="off">ยกเลิก ไม่เบิก</button>` : ""}</div>`);
+  }
   if (request && request.admin_note) {
     parts.push(`<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(request.admin_note)}</div>`);
   }
@@ -219,6 +244,7 @@ function renderBanners(app, month, stepIssued) {
       location.hash = `#/fill/${a.dataset.jump}?month=${month}&focus=${encodeURIComponent(a.dataset.code)}&field=${isModeB(app) ? "used" : "stock"}`;
     });
   });
+  wireNoOrder(host, app, month);
   return host;
 }
 
@@ -301,7 +327,9 @@ function renderNav(app, month, stepCode, codes) {
     if (st.recalc) st.recalc.forEach((code) => repaintRow(app, month, code));
     // 2ad: the server kept the requested quantity of some lines (issue recorded meanwhile / item cancelled) — show its values again
     if (st.qtyRefused) {
-      toast(st.qtyRefusedCode === "ITEM_CANCELLED" ? "รายการนี้ยกเลิกถาวรแล้ว — ยอดขอคงไว้ตามเดิม" : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
+      toast(st.qtyRefusedCode === "ITEM_CANCELLED" ? "รายการนี้ยกเลิกถาวรแล้ว — ยอดขอคงไว้ตามเดิม"
+        : st.qtyRefusedCode === "NO_ORDER" ? 'เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กด "ยกเลิก ไม่เบิก" ก่อนจึงกรอกยอดขอได้'
+        : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
     }
     if (st.state === "conflict" && wasEditable) {
@@ -838,7 +866,7 @@ function buildItemTr(app, month, item, editable) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
@@ -885,7 +913,7 @@ function buildItemCard(app, month, item, editable) {
   const total = lineTotal(line);
   const req = stockRequired(app);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month);
 
   card.innerHTML = `
     <div class="item-card-head">
@@ -1171,13 +1199,15 @@ function renderSummary(app, month, steps) {
     </div>
 
     <div class="summary-actions">
-      ${editable
+      ${editable && request && request.no_order
+        ? `<button type="button" class="btn btn-secondary" data-noorder="off">ยกเลิก ไม่เบิก</button>`
+        : editable
         ? `<button type="button" class="btn btn-primary" id="btn-save">บันทึก</button>
            <button type="button" class="btn btn-secondary" id="btn-print">พิมพ์</button>
            <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf; = send + download, spec §4.4). Not in 2a. -->`
         : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์ใบเบิก</button>`}
     </div>
-    <p class="muted send-hint">${editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
+    <p class="muted send-hint">${editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
     ${round && editable && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}
   `;
 
@@ -1198,6 +1228,7 @@ function renderSummary(app, month, steps) {
   const printBtn = box.querySelector("#btn-print");
   const viewBtn = box.querySelector("#btn-print-view");
   if (viewBtn) viewBtn.addEventListener("click", () => { location.hash = `#/print?month=${month}`; });
+  wireNoOrder(box, app, month);
   if (saveBtn) {
     saveBtn.addEventListener("click", async () => {
       saveBtn.disabled = true; printBtn.disabled = true;

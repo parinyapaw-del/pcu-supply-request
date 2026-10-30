@@ -41,7 +41,11 @@ function statusCellInner(req) {
   if (req.status === "draft") {
     return `<span class="badge badge-warn">กำลังกรอก</span> <span class="muted small">ขั้น ${escapeHtml(req.last_step || "–")} · ${lines} รายการ</span>`;
   }
-  const strip = req.issue ? `<div class="unit-strip-line">${unitStripHtml(req.issue)}</div>` : "";
+  const strip = (req.issue ? `<div class="unit-strip-line">${unitStripHtml(req.issue)}</div>` : "")
+    + (req.mismatch_count ? ` <span class="badge badge-warn" data-role="mismatch" title="รพ.สต. แจ้งได้รับไม่ตรงกับที่บันทึกจ่าย">ได้รับไม่ตรง ${req.mismatch_count}</span>` : ""); // 2af
+  if (req.no_order) { // 2af: "เดือนนี้ไม่เบิก" — counted as sent, nothing to issue
+    return `<span class="badge badge-info" data-role="no-order">ไม่เบิก</span> <span class="small">${escapeHtml(formatBangkokDateTime(req.submitted_at))}</span>`;
+  }
   if (req.status === "submitted") {
     return `<span class="badge badge-success">ส่งแล้ว</span> <span class="small">${escapeHtml(formatBangkokDateTime(req.submitted_at))}</span>`
       + ` <span class="muted small">×${req.submit_count || 1}</span>`
@@ -233,7 +237,7 @@ export function renderTab1(container, ctx) {
       const actions = [
         canOpen ? `<a class="btn btn-secondary btn-sm" href="${printUrl}" target="_blank" rel="noopener" data-act="open" data-pcu="${pcu.code}">เปิดใบ</a>` : `<span class="muted small">–</span>`
       ];
-      if (req && (req.status === "submitted" || req.status === "issued")) {
+      if (req && (req.status === "submitted" || req.status === "issued") && !req.no_order) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="pdf" data-pcu="${pcu.code}" title="ดาวน์โหลดใบเบิกเป็น PDF">PDF</button>`);
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="issue" data-pcu="${pcu.code}" title="บันทึกจ่ายจริงของใบนี้">จ่าย</button>`);
       }
@@ -258,7 +262,8 @@ export function renderTab1(container, ctx) {
     const totalBaht = submitted.reduce((s, r) => s + ((r.progress && r.progress.baht) || 0), 0);
     const curRound = currentRound();
     const trialBadge = curRound && curRound.trial ? ' <span class="badge badge-warn badge-trial" id="t1-summary-trial">ทดลอง</span>' : "";
-    const summary = `${trialBadge}ส่งแล้ว ${submitted.length}/${realPcus(state.bootstrap.pcus).length} แห่ง · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`
+    const noOrderN = submitted.filter((r) => r.no_order).length; // 2af
+    const summary = `${trialBadge}ส่งแล้ว ${submitted.length}/${realPcus(state.bootstrap.pcus).length} แห่ง${noOrderN ? ` (ไม่เบิก ${noOrderN})` : ""} · จ่ายแล้ว ${issuedN} แห่ง · ยอดรวม ${formatMoney(totalBaht)} บาท`
       + (trialSubmitted ? ` · ทดลอง ${trialSubmitted} แห่ง (ไม่นับ)` : "");
 
     tableHost.innerHTML = `<p class="admin-note" id="t1-summary">${summary}</p>` + tableScroll(`<table class="admin-table" id="t1-tbl">

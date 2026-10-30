@@ -521,3 +521,7 @@ body.has-fb-fab .t10-footer, body.has-fb-fab .t2b-footer { padding-right: 190px;
 .t13-faq-hidden { opacity: 0.6; }
 .t13-faq-a { margin: 4px 0; }
 .t13-faq-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* 2af */
+.t2b-rcv { margin-top: 2px; }
+#t16-tbl tr.t16-mismatch td { background: var(--warn-bg, #fff4dd); }

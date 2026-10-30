@@ -378,6 +378,7 @@ export async function devSetRequestMonth(ctx, p) {
   await DB.batch([
     DB.prepare(`UPDATE requests SET id = ?, month = ? WHERE id = ?`).bind(newId, p.new_month, oldId),
     DB.prepare(`UPDATE request_lines SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
+    DB.prepare(`UPDATE received_reports SET request_id = ? WHERE request_id = ?`).bind(newId, oldId), // 2af
     DB.prepare(`UPDATE issue_status SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
     DB.prepare(`UPDATE pdf_files SET request_id = ? WHERE request_id = ?`).bind(newId, oldId),
   ]);

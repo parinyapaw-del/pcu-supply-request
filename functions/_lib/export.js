@@ -23,7 +23,7 @@ export async function buildExport(DB, { month, fy }) {
 
   const [pcuRes, reqRes, lineRes, planRes, scopeForm] = await Promise.all([
     DB.prepare(`SELECT code, name, "group" AS grp FROM pcus ORDER BY code`).all(),
-    DB.prepare(`SELECT id, pcu, month, status, form_version_id, submitted_at FROM requests WHERE month IN (${ph}) ORDER BY month, pcu`).bind(...months).all(),
+    DB.prepare(`SELECT id, pcu, month, status, form_version_id, submitted_at, no_order FROM requests WHERE month IN (${ph}) ORDER BY month, pcu`).bind(...months).all(),
     DB.prepare(`SELECT request_id, item_code, op, pp, price_snapshot, issued_total, issued_op, issued_pp, issue_reason, issue_note, used, adj, adj_reason
                   FROM request_lines WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(scopeFy).all(),
@@ -70,7 +70,7 @@ export async function buildExport(DB, { month, fy }) {
         op, pp, { t: "n", v: op + pp, f: `I${rowNo}+J${rowNo}` }, { t: "n", v: round2((op + pp) * price), f: `K${rowNo}*H${rowNo}` },
         issued ? nz(l.issued_op) : "", issued ? nz(l.issued_pp) : "", issued ? l.issued_total : "",
         issued ? (l.issue_reason === "other" ? l.issue_note || "อื่น ๆ" : (REASON_TH[l.issue_reason] || l.issue_reason || "") + (l.issue_reason && l.issue_note ? " — " + l.issue_note : "")) : "", // 2ae: note with ของหมด
-        STATUS_TH[r.status] || r.status, bangkokDateTime(r.submitted_at), r.form_version_id ?? "",
+        r.no_order ? "ไม่เบิก" : STATUS_TH[r.status] || r.status /* 2af */, bangkokDateTime(r.submitted_at), r.form_version_id ?? "",
         l.used ?? "", l.adj ?? "", l.adj_reason ? ADJ_REASON_TH[l.adj_reason] || l.adj_reason : "",
       ]);
     }

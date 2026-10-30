@@ -276,7 +276,7 @@ export async function adminRequests(ctx, p) {
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
 
-  const [reqRes, lineRes, hidRes, roundRows, doneRes] = await Promise.all([
+  const [reqRes, lineRes, hidRes, roundRows, doneRes, mmRes] = await Promise.all([
     DB.prepare(`SELECT ${REQ_COLS.split(",").map((c) => "r." + c).join(",")}, p.name AS pcu_name FROM requests r LEFT JOIN pcus p ON p.code = r.pcu
                 WHERE r.month IN (${ph}) ORDER BY r.month DESC, r.pcu`).bind(...months).all(),
     DB.prepare(`SELECT request_id, item_code, stock, op, pp, price_snapshot, issued_total FROM request_lines
@@ -285,7 +285,13 @@ export async function adminRequests(ctx, p) {
     getRoundRows(DB, months),
     DB.prepare(`SELECT request_id, dispense_unit, done_at, done_by FROM issue_status
                 WHERE request_id IN (SELECT id FROM requests WHERE month IN (${ph}))`).bind(...months).all(),
+    // 2af: lines whose PCU-reported received qty differs from the recorded issue, per request
+    DB.prepare(`SELECT rr.request_id, COUNT(*) AS n FROM received_reports rr
+                  JOIN request_lines l ON l.request_id = rr.request_id AND l.item_code = rr.item_code
+                WHERE rr.request_id IN (SELECT id FROM requests WHERE month IN (${ph})) AND l.issued_total IS NOT NULL AND l.issued_total <> rr.qty
+                GROUP BY rr.request_id`).bind(...months).all(),
   ]);
+  const mismatchN = new Map(mmRes.results.map((r) => [r.request_id, r.n]));
   const doneBy = new Map();
   for (const d of doneRes.results) { if (!doneBy.has(d.request_id)) doneBy.set(d.request_id, []); doneBy.get(d.request_id).push(d); }
   const hiddenN = new Map(hidRes.results.map((r) => [r.pcu, r.n]));
@@ -317,12 +323,65 @@ export async function adminRequests(ctx, p) {
       lines: lines.length, qty_op: qop, qty_pp: qpp, baht: round2(baht), last_step: r.last_step || "",
     };
     obj.issue = issueInfoFrom(form, r.issued_seen_at, lines, doneBy.get(r.id) || []); // 2c (null when no requested lines)
+    obj.mismatch_count = mismatchN.get(r.id) || 0; // 2af
     requests.push(obj);
   }
   return {
     requests, rounds: months.map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
     server_time: nowIso(), current_month: cal, current_round: cur,
   };
+}
+
+// ---- 2af: received reports vs issue -----------------------------------------------------------------------------------------
+// adminReceivedReport{fy?, month?, pcu?, all?} — the PCU "received" reports of a fy (default fy_current), optionally one round / one pcu.
+// Default: only mismatches (an issue is recorded and differs) · all:true = every reported line. Rows sorted month, pcu, code.
+export async function adminReceivedReport(ctx, p) {
+  const { DB } = ctx;
+  const cfgAll = await getConfigAll(DB);
+  const fy = p.fy === undefined || p.fy === null || p.fy === "" ? ctxFy(cfgAll) : Number(p.fy);
+  if (!Number.isInteger(fy) || fy < 2560 || fy > 2700) throw err("BAD_REQUEST", "ปีงบไม่ถูกต้อง");
+  const ms = fyMonths(fy);
+  let from = ms[0], to = ms[11];
+  if (p.month !== undefined && p.month !== null && p.month !== "") {
+    assertMonthParam(p.month);
+    if (!ms.includes(p.month)) throw err("BAD_REQUEST", `เดือน ${p.month} ไม่อยู่ในปีงบ ${fy}`);
+    from = to = p.month;
+  }
+  const pcu = p.pcu === undefined || p.pcu === null || p.pcu === "" ? null : (await assertPcu(DB, p.pcu)).code;
+  const { results } = await DB.prepare(
+    `SELECT r.month, r.pcu, p.name AS pcu_name, r.form_version_id AS fv, rr.item_code AS code, l.op, l.pp, l.issued_total, l.issue_reason, l.issue_note,
+            rr.qty, rr.received_date, rr.note, rr.reported_at
+       FROM requests r JOIN received_reports rr ON rr.request_id = r.id
+       JOIN request_lines l ON l.request_id = rr.request_id AND l.item_code = rr.item_code
+       LEFT JOIN pcus p ON p.code = r.pcu
+      WHERE r.month >= ? AND r.month <= ?${pcu ? " AND r.pcu = ?" : ""}
+      ORDER BY r.month, r.pcu, rr.item_code`
+  ).bind(...(pcu ? [from, to, pcu] : [from, to])).all();
+  const latest = await formForFy(DB, fy, ctxFy(cfgAll));
+  const forms = new Map();
+  const formOf = async (fv) => {
+    if (!fv) return latest;
+    if (!forms.has(fv)) forms.set(fv, (await loadForm(DB, fv)) || latest);
+    return forms.get(fv);
+  };
+  const rows = [];
+  let mismatch = 0;
+  for (const r of results) {
+    const mm = r.issued_total !== null && r.issued_total !== undefined && r.issued_total !== r.qty;
+    if (mm) mismatch++;
+    if (!mm && p.all !== true) continue;
+    const f = await formOf(r.fv);
+    const ent = (f && f.index.get(r.code)) || (latest && latest.index.get(r.code)) || null;
+    rows.push({
+      month: r.month, pcu: r.pcu, pcu_name: r.pcu_name || r.pcu, code: r.code,
+      name: ent ? ent.item.name : r.code, unit: ent ? ent.item.unit || "" : "", dispense_unit: ent ? ent.step.dispense_unit : null,
+      requested: (r.op || 0) + (r.pp || 0), issued_total: r.issued_total ?? null, rcv_qty: r.qty,
+      diff: r.issued_total === null || r.issued_total === undefined ? null : r.qty - r.issued_total, mismatch: mm,
+      rcv_date: r.received_date || null, rcv_note: r.note || null, issue_reason: r.issue_reason ?? null, issue_note: r.issue_note ?? null,
+      reported_at: r.reported_at || null,
+    });
+  }
+  return { fy, month: from === to ? from : null, pcu, counts: { reported: results.length, mismatch }, rows };
 }
 
 export async function adminGetRequest(ctx, p) {
@@ -835,6 +894,7 @@ export async function adminClearTrial(ctx, p) {
     ({ results: pdfs } = await DB.prepare(`SELECT r2_key FROM pdf_files WHERE request_id IN (${sub})`).bind(month).all());
     res = await DB.batch([
       DB.prepare(`DELETE FROM request_lines WHERE request_id IN (${sub})`).bind(month),
+      DB.prepare(`DELETE FROM received_reports WHERE request_id IN (${sub})`).bind(month), // 2af
       DB.prepare(`DELETE FROM issue_status WHERE request_id IN (${sub})`).bind(month),
       DB.prepare(`DELETE FROM pdf_files WHERE request_id IN (${sub})`).bind(month),
       DB.prepare(`DELETE FROM requests WHERE month = ?`).bind(month),
@@ -842,12 +902,12 @@ export async function adminClearTrial(ctx, p) {
   } else {
     ({ results: pdfs } = await DB.prepare(`SELECT r2_key FROM pdf_files`).all());
     res = await DB.batch([
-      DB.prepare(`DELETE FROM request_lines`), DB.prepare(`DELETE FROM issue_status`), DB.prepare(`DELETE FROM pdf_files`), DB.prepare(`DELETE FROM requests`),
+      DB.prepare(`DELETE FROM request_lines`), DB.prepare(`DELETE FROM received_reports`), DB.prepare(`DELETE FROM issue_status`), DB.prepare(`DELETE FROM pdf_files`), DB.prepare(`DELETE FROM requests`),
     ]);
   }
   const out = {
-    deleted_lines: res[0].meta.changes, deleted_issue_status: res[1].meta.changes,
-    deleted_pdf_files: res[2].meta.changes, deleted_requests: res[3].meta.changes,
+    deleted_lines: res[0].meta.changes, deleted_issue_status: res[2].meta.changes, // 2af: res[1] = received_reports
+    deleted_pdf_files: res[3].meta.changes, deleted_requests: res[4].meta.changes,
   };
   if (month) out.month = month;
   if (env.FILES && pdfs.length) {

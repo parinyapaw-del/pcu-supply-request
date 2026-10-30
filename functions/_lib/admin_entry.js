@@ -84,6 +84,8 @@ export async function adminSaveLines(ctx, p) {
     }
   }
   const wasSent = !!reqRow && reqRow.status !== "draft";
+  // 2af: the admin keyed a quantity on a "ไม่เบิก" request → it is an ordinary request again
+  if (reqRow && reqRow.no_order && parsed.some((x) => (x.v.op || 0) + (x.v.pp || 0) > 0)) stmts.push(DB.prepare(`UPDATE requests SET no_order = 0 WHERE id = ?`).bind(id));
   if (stmts.length || send) {
     stmts.push(DB.prepare(`UPDATE requests SET entry_by = 'admin', updated_at = ? WHERE id = ?`).bind(now, id));
   }
