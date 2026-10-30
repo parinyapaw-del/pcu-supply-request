@@ -35,7 +35,7 @@ const TABS = [
   { id: "tab12", hash: "dashboard", label: "แดชบอร์ด", render: renderTab12 }, // admin only (brief 2s)
   { id: "tab3", hash: "budget", label: "งบ", render: renderTab3 },
   { id: "tab4", hash: "prev", label: "ปีก่อน", render: renderTab4 },
-  { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5 },
+  { id: "tab5", hash: "limits", label: "เพดาน", render: renderTab5, retired: (b) => !!(b.config && b.config.limits_retired) }, // 2ad: gone from fy 2570
   { id: "tab10", hash: "form", label: "แบบฟอร์ม", render: renderTab10 },
   { id: "tab11", hash: "import", label: "นำเข้า / เปิดปีงบใหม่", render: renderTab11 },
   { id: "tab6", hash: "excel", label: "Excel", render: renderTab6, staff: true },
@@ -216,7 +216,7 @@ function applyBootstrap(data) {
 }
 
 function visibleTabs() {
-  return TABS.filter((t) => state.isAdmin || t.staff);
+  return TABS.filter((t) => (state.isAdmin || t.staff) && !(t.retired && t.retired(state.bootstrap)));
 }
 
 function markStale(ids) {

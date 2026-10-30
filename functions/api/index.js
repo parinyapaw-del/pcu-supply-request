@@ -141,6 +141,14 @@ async function devAction(action, ctx, p) {
   }
   if (action === "devPrintToken") return pdf.devPrintToken(ctx, p); // fresh print token for {pcu, month}
   if (action === "devSetRequestMonth") return pdf.devSetRequestMonth(ctx, p); // back-date a request {pcu, month, new_month} (2b-R)
+  if (action === "devDeleteRequest") { // 2ad tests: drop a fixture request {pcu, month} (+ its lines / issue rows; + limits of `limits_fy` for the pcu)
+    const id = `${String(p.pcu)}_${String(p.month)}`;
+    const st = ["request_lines", "issue_status"].map((t) => ctx.DB.prepare(`DELETE FROM ${t} WHERE request_id = ?`).bind(id));
+    st.push(ctx.DB.prepare(`DELETE FROM requests WHERE id = ?`).bind(id));
+    if (Number.isInteger(p.limits_fy)) st.push(ctx.DB.prepare(`DELETE FROM limits WHERE fy = ? AND pcu = ?`).bind(p.limits_fy, String(p.pcu)));
+    await ctx.DB.batch(st);
+    return { ok: true };
+  }
   if (action === "devRequester") { // 2x fixtures: {op:"clear_snapshot", pcu, month} = a request sent before 2x · {op:"old_log", pcu} = a 2020 log row
     if (p.op === "clear_snapshot") await ctx.DB.prepare(`UPDATE requests SET requester_name = NULL WHERE pcu = ? AND month = ?`).bind(String(p.pcu), String(p.month)).run();
     else if (p.op === "old_log") await ctx.DB.prepare(`INSERT OR IGNORE INTO requester_log (pcu, name, set_at, set_by) VALUES (?, 'เก่า', '2020-01-01T00:00:00.000Z', 'dev')`).bind(String(p.pcu)).run();
@@ -159,7 +167,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester|DeleteRequest)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

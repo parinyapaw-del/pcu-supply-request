@@ -8,7 +8,7 @@
 // 2aa (brief 2aa_dashboards.md): PCU payload + stock_latest / limits / prev_items / spent / elapsed · network + bottom3 / never ·
 // pcus[] + max_round / min_round / over_plan — all from the same queries (+ one tiny limits query), no raw network lines.
 import { err } from "./http.js";
-import { DEFAULT_UNIT_BY_STEP, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig } from "./db.js";
+import { DEFAULT_UNIT_BY_STEP, LIMITS_OFF_FROM_FY, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig } from "./db.js";
 import { TRIAL_GROUP, UNITS } from "./auth.js";
 import { currentRound, fyExcelMonths, fyMonths, isMonth, monthFy, monthMinus } from "./time.js";
 import { formPrice, loadPriceHistory, priceFor } from "./price.js";
@@ -160,7 +160,8 @@ async function pcuCore(DB, c, pcu, staff) {
     ).bind(fy - 1, pcu).raw(),
     DB.prepare(`SELECT DISTINCT month FROM requests WHERE pcu = ? AND status IN ${SENT}`).bind(pcu).raw(),
     DB.prepare(`SELECT DISTINCT fy FROM form_versions`).raw(),
-    DB.prepare(`SELECT item_code, limit_year FROM limits WHERE fy = ? AND pcu = ? AND limit_year > 0`).bind(fy, pcu).raw(),
+    fy >= LIMITS_OFF_FROM_FY ? [] // 2ad: no ceiling from fy 2570 → no ceiling card
+      : DB.prepare(`SELECT item_code, limit_year FROM limits WHERE fy = ? AND pcu = ? AND limit_year > 0`).bind(fy, pcu).raw(),
   ]);
   if (!form) throw err("NOT_FOUND", `ไม่พบแบบฟอร์มของปีงบ ${fy}`);
 

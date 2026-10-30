@@ -84,8 +84,17 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - Request `updated_at` is bumped only when at least one line actually changed (an all-stale or empty call is a no-op for `edited_after_submit`).
   `last_step` / `submitter_name` are stored when present.
 - Autosave is **not** written to `audit_log` (would flood it); `send:true` is (`submit`).
+- **2ad per-line rules** (replace the 2c issued-page lock — a page whose unit is issued stays fully editable; checked on every call, before any write;
+  a line counts only when its `op`/`pp` differ from the stored line, so re-sending the stored quantity with a new `stock`/`used` is fine):
+  - line with a recorded issue (`issued_total` not null — `views.lineQtyLocked`, 2af adds "PCU reported received") → `LINE_LOCKED{items:[{code,op,pp}]}`
+    "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)" (`op`/`pp` = the stored values). `stock`, `used`, `adj`, `adj_reason`, `calc_from` stay editable.
+  - item with `active:false` in the latest form of the round's fy (= cancelled for good) and `op+pp > 0` → `ITEM_CANCELLED{items:[{code,op,pp}]}`
+    "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้" (lowering it to 0 / null is allowed).
+  - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`).
+  - the round lock (`CONFLICT`) and the month window are unchanged.
 - `send:true`, in order: round locked → `CONFLICT` · `config.stock_required=1` → every non-hidden **active** item of the latest form needs `stock`
-  else `INCOMPLETE{missing}`. **2z (Q10): the ceiling never blocks.** `limit_mode="warn"` → per line `total=op+pp`: over if `used_fy + total > limit_year`
+  else `INCOMPLETE{missing}`. **2z (Q10): the ceiling never blocks.** **2ad: the effective mode is `off` for every round of fy ≥ 2570**
+  (`db.limitModeFor(cfg, fy)`, `LIMITS_OFF_FROM_FY` — the stored `config.limit_mode` and the `limits` rows stay; fy < 2570 behaves as below). `limit_mode="warn"` → per line `total=op+pp`: over if `used_fy + total > limit_year`
   (limits of the round's fy — a round whose fy has no `limits` rows, e.g. the trial round 2026-10 = FY2569, never warns; `limit_month` is neither checked nor
   returned; `limit_unlocks` are ignored) → submit succeeds and the list is returned as `over_limit:[{code,total,limit_year,used_fy}]` (information for the PCU).
   `off`: `over_limit:[]`.
@@ -100,7 +109,6 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   `null` → nothing computed (stock as typed). **No baseline → `calc_from` is stored as null** (stock/used kept as sent). Client-computed outputs are ignored.
   `recalc` = written lines whose stored `{stock, used}` differ from what the client sent (stale lines / unchanged lines are not listed; `{}` otherwise).
   `stock_required`: a computed stock counts as filled; a null one (negative) is missing → `INCOMPLETE`.
-  Issued-unit lock (2c `CONFLICT`) compares `stock, op, pp, used, adj, adj_reason, calc_from` after the server computation.
 - **2o auto-recalc** `recalcStockChain(pcu, M)`: recomputes the `calc_from` lines of the pcu's round `nextMonth(M)` and keeps going to the next round while
   that round's stock changed (never past `currentRound`). Runs after `saveLines` when a written line changed `stock/op/pp/used/adj` on a sent request
   (or when the request is sent for the first time) and after every issue write (§5.3). It never bumps `requests.updated_at` / line `updated_at`
@@ -114,10 +122,13 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   pcu: {code,name,print_name,group,pin_custom,stock_mode,   // 2k: pin_custom bool — false while the PCU still uses the default PIN · 2o: stock_mode 'A'|'B' (default 'A')
         requester_name|null, phone|null, requester_first|null},  // 2x: requester name (admin sets it; the PCU only sees it) · default phone · first logged name
                                                                  //     (requester_log) — the client prints sent requests with requester_name ?? requester_first ?? pcu.requester_name
-  config: { limit_mode:"off"|"warn" (2z; a stored "enforce" reads as "warn"), stock_required:0|1, deadline_day:int|null, fy_current:2570, trial_month:"YYYY-MM"|null },
+  config: { limit_mode:"off"|"warn" (2z; a stored "enforce" reads as "warn"; 2ad: the EFFECTIVE mode of fy_current — always "off" from fy 2570),
+            limits_retired:bool (2ad: fy_current ≥ 2570 — the PCU shows no ceiling anywhere, the admin hides tab "เพดาน"),
+            stock_required:0|1, deadline_day:int|null, fy_current:2570, trial_month:"YYYY-MM"|null },
   form_version_id: 12,
   form: { id, fy, created_at, note, steps:[ {code,order,sheet,page_no,title,subject,to,dispense_unit,active?,rows:[
-            {type:"section",title} | {type:"item",code,seq,name,unit,price,active} ]} ] },     // latest version of fy_current; steps with active:false are STRIPPED (2d)
+            {type:"section",title} | {type:"item",code,seq,name,unit,price,active,cancel_reason?} ]} ] },     // latest version of fy_current; steps with active:false are STRIPPED (2d)
+                                                                     // 2ad: items with active:false are kept (shown greyed with cancel_reason — set by the admin when closing)
   forms: { "11": <form, same shape, PCU-stripped> },   // 2d: for every shown (byMonth) request whose form_version_id is set and ≠ form_version_id — the version it was submitted on ({} when none)
   rounds: [ RoundInfo ],                     // [currentRound, prevRound] (§5.1 RoundInfo, incl. trial)
   next_round: { ...RoundInfo, opens_on:"2026-12-01" },  // 2l: preview of nextMonth(currentRound) (not writable yet); opens_on = `${currentRound}-01`
@@ -146,6 +157,7 @@ RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, las
                edited_after_submit:bool, entry_by:'admin'|null,   // 2w: 'admin' = an admin keyed/edited this request (sticky) → tag "คีย์โดย admin" (PCU + admin views)
                requester_name|null,   // 2x: name frozen at the FIRST send (re-sends keep it; adminSetRequestRequester overrides) · null = not sent yet or sent before 2x
                lines: { code: {stock,op,pp,used,adj,adj_reason,calc_from,updated_at} },   // 2o: used/adj/adj_reason/calc_from (null when unset), PCU + admin views
+                                                                   // 2ad: PCU view adds qty_locked:true on a line whose issue is recorded (op/pp read-only, saveLines LINE_LOCKED)
                issued?: { code: {total,op,pp,reason:"out_of_stock"|"other"|null,note:string|null} } }   // issued: PCU view only, see below
 IssueInfo = { units_total, units_done, done:bool, complete, incomplete, issued_seen_at|null,
               units: { "พัสดุ"|"จ่ายกลาง"|"LAB": {needed:bool, done:bool, done_at|null, done_by|null, lines:n, issued_lines:n} } }
@@ -199,7 +211,7 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // per item (2v links → the new code) the LATEST round whose counted line has stock not null (lines with only a stock count here too) ·
            // got = issued_total of that line by the view rule (PCU: unit done · staff: issued_total not null) · null = requested but not received yet ·
            // 0 = the line requested nothing · two linked codes in the same round add up
-  limits: { code: limit_year },  // limits of (fy, pcu) with limit_year > 0 · a linked old code's value lands on the new code when that has none
+  limits: { code: limit_year },  // limits of (fy, pcu) with limit_year > 0 · a linked old code's value lands on the new code when that has none · 2ad: {} for fy ≥ 2570 (no ceiling card)
   prev_items: { code: qty },     // actual_prev of fy−1 of this pcu, whole year, Σ op+pp (> 0 only) under the linked code
   spent: { code: baht },         // Q17: Σ over requested lines (received ? got : req) × price (same price as `monthly`) · > 0 only, 2 decimals
 }
@@ -353,7 +365,10 @@ lines keep their prices. `forms` then only lists versions of another fy (e.g. re
 - `base_version_id` must be the **latest** version of its fy, else `CONFLICT` ("มีการบันทึกฟอร์ม version ใหม่ไปแล้ว — โหลดใหม่ก่อนแก้"); unknown id → `NOT_FOUND`.
   The check is atomic in SQL (two simultaneous saves → the second gets `CONFLICT`).
 - Input per step: `{code, title, sheet?, subject?, to?, dispense_unit?, active?, rows:[...]}`; per row `{type:"section",title}` or
-  `{type:"item",code,name,unit,price,active?,links?}`. `order`, `page_no`, `seq` are ignored and recomputed. Unknown fields are dropped; strings are trimmed.
+  `{type:"item",code,name,unit,price,active?,links?,cancel_reason?}`. `order`, `page_no`, `seq` are ignored and recomputed. Unknown fields are dropped; strings are trimmed.
+- 2ad `cancel_reason` (string ≤ 200, else `BAD_REQUEST`): why a closed item was cancelled for good — kept only on an item with `active:false` and a non-empty
+  reason (dropped on reopen; absent otherwise, so existing items keep their hash). The admin UI requires it when closing ("ยกเลิกรายการถาวร"); the API does not.
+  The PCU form shows closed items greyed with "ยกเลิกรายการ: <reason>"; `saveLines` refuses a new quantity on them (`ITEM_CANCELLED`, §4).
 - 2v `links` = old codes this item replaces (same thing under a new code; stored sorted/unique, omitted when empty): each `^[A-Z0-9]+-\d{2,3}$`, ≤ 10,
   not the item itself, not an **open** item of the form (close the old code first), one old code linked from one item only (`BAD_REQUEST` otherwise).
   Effect (read-time, no D1 rows copied): stats fy−1 of the old code serve the new one when it has none (`adminBootstrap.stats`, `adminResetLimit`, same-fy import

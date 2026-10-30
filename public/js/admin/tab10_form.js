@@ -437,10 +437,19 @@ export function renderTab10(container, ctx) {
           price.classList.toggle("bad", !(Number.isFinite(r.price) && r.price >= 0));
           touch();
         });
-        const toggle = el("button", { type: "button", class: "btn btn-sm " + (active ? "btn-secondary" : "btn-primary"), "data-act": "toggle" }, active ? "ปิด" : "เปิด");
-        toggle.addEventListener("click", () => {
-          if (!active && stepCounts(s).activeItems >= MAX_ACTIVE_ITEMS) { toast(`หน้านี้เปิดรายการครบ ${MAX_ACTIVE_ITEMS} แล้ว`, "err"); return; }
-          r.active = !active; touch(); drawAll();
+        // 2ad: closing = cancelling the item for good — the PCU form keeps it greyed with this reason (required here, item.cancel_reason)
+        const toggle = el("button", { type: "button", class: "btn btn-sm " + (active ? "btn-secondary" : "btn-primary"), "data-act": "toggle" }, active ? "ยกเลิกรายการถาวร" : "เปิดใช้อีกครั้ง");
+        toggle.addEventListener("click", async () => {
+          if (!active) {
+            if (stepCounts(s).activeItems >= MAX_ACTIVE_ITEMS) { toast(`หน้านี้เปิดรายการครบ ${MAX_ACTIVE_ITEMS} แล้ว`, "err"); return; }
+            r.active = true; delete r.cancel_reason; touch(); drawAll();
+            return;
+          }
+          const res = await formDialog(`ยกเลิกรายการถาวร: ${r.name || r.code}`, [
+            { key: "reason", label: "เหตุผล (รพ.สต. เห็นข้อความนี้ในหน้ากรอก)", required: true, maxlength: 200, placeholder: "เช่น เลิกผลิต ใช้รายการ … แทน", value: r.cancel_reason || "" },
+          ], { okText: "ยกเลิกรายการ", intro: "รายการจะยังแสดงในหน้ากรอกของ รพ.สต. เป็นสีเทาพร้อมเหตุผล และขอเพิ่มไม่ได้ (บันทึก version ใหม่เพื่อให้มีผล)" });
+          if (!res) return;
+          r.active = false; r.cancel_reason = res.reason; touch(); drawAll();
         });
         const move = el("select", { class: "select-input t10-move", "aria-label": "ย้ายไปหน้า" });
         move.appendChild(el("option", { value: "" }, "—"));
@@ -455,7 +464,8 @@ export function renderTab10(container, ctx) {
           toast(`ย้าย ${r.code} ไปท้ายหน้า ${target.code} แล้ว`);
         });
         const statusCell = el("td", { class: "t10-status-cell" }, [
-          el("span", { class: "badge " + (active ? "badge-success" : "badge-muted") }, active ? "เปิด" : "ปิดแล้ว"), " ", toggle
+          el("span", { class: "badge " + (active ? "badge-success" : "badge-muted") }, active ? "เปิด" : "ยกเลิกแล้ว"), " ", toggle,
+          !active && r.cancel_reason ? el("div", { class: "muted small t10-cancel-reason" }, "เหตุผล: " + r.cancel_reason) : null
         ]);
         const moveCell = el("td", { class: "left" }, [move]);
         if (!baseCodes.has(r.code)) {

@@ -1,14 +1,15 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
 import { err, assertQty, isStr, phoneParam } from "./http.js";
 import {
-  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, loadForm, publicConfig,
+  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
+  publicConfig,
 } from "./db.js";
 import {
   PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
 } from "./auth.js";
 import { currentMonth, currentRound, fyMonths, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
-  getLines, getRequestRow, getRoundRows, issueSummary, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS, REQUESTER_ON_SEND_SQL, firstRequester,
+  getLines, getRequestRow, getRoundRows, issueSummary, lineQtyLocked, overLimitItems, pcuMonthView, requestObj, requestId, roundInfo, REQ_COLS, REQUESTER_ON_SEND_SQL, firstRequester,
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
@@ -304,9 +305,7 @@ export async function saveLines(ctx, p) {
   const id = requestId(pcu.code, month);
 
   // 2o: merge omitted fields with the stored line, then the server computes the outputs (never trusts client-computed values)
-  const [existingRows, iuRes] = reqRow && parsed.length
-    ? await Promise.all([getLines(DB, id), DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(id).all()])
-    : [[], { results: [] }];
+  const existingRows = reqRow && parsed.length ? await getLines(DB, id) : [];
   const existing = new Map(existingRows.map((l) => [l.item_code, l]));
   const keep = (l, e, k) => (l[k] !== undefined ? l[k] : e ? e[k] ?? null : null);
   for (const l of parsed) {
@@ -317,17 +316,22 @@ export async function saveLines(ctx, p) {
   const base = parsed.some((l) => l.calc_from) ? await baselineFor(DB, pcu.code, month) : {};
   for (const l of parsed) Object.assign(l, computeLine(base[l.code], l));
 
-  // 2c hook: a step whose dispense unit is already issued cannot change (2o: incl. used / adj / adj_reason / calc_from)
-  if (iuRes.results.length) {
-    const locked = new Set(iuRes.results.map((r) => r.dispense_unit));
-    const form = bound || latest;
-    for (const l of parsed) {
-      const ent = form.index.get(l.code);
-      if (!ent || !locked.has(ent.step.dispense_unit)) continue;
-      const e = existing.get(l.code);
-      if (!sameLine(e, l)) throw err("CONFLICT", `หน้า "${ent.step.dispense_unit}" ถูกจ่ายแล้ว แก้ไขรายการไม่ได้`);
-    }
+  // 2ad: per line, not per page (the 2c page lock is gone) — the requested quantity of a line with a recorded issue stays as it is
+  // (stock / used / adj still change), and a permanently cancelled item (active:false in the latest form) takes no new quantity.
+  // Every offending line is listed with its stored op/pp so the client can put them back in one go (sync.js).
+  const qtyLocked = [], cancelled = [];
+  for (const l of parsed) {
+    const e = existing.get(l.code);
+    const sameQty = (e ? e.op ?? null : null) === l.op && (e ? e.pp ?? null : null) === l.pp;
+    if (sameQty) continue;
+    if (lineQtyLocked(e)) { qtyLocked.push({ code: l.code, op: e.op ?? null, pp: e.pp ?? null }); continue; }
+    const ent = latest.index.get(l.code);
+    if (ent && ent.item.active === false && (l.op || 0) + (l.pp || 0) > 0) cancelled.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null });
   }
+  if (qtyLocked.length) {
+    throw err("LINE_LOCKED", "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)", { items: qtyLocked });
+  }
+  if (cancelled.length) throw err("ITEM_CANCELLED", "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้", { items: cancelled });
 
   // ---- write lines (per-line last-write-wins in SQL) ----
   const stmts = [];
@@ -386,8 +390,8 @@ export async function saveLines(ctx, p) {
       }
       if (missing.length) throw err("INCOMPLETE", "กรอกคงเหลือให้ครบทุกรายการก่อนส่ง", { missing });
     }
-    // 2z (Q10): over the yearly ceiling is information only — never blocks the send
-    if (cfg.limit_mode !== "off") overLimit = await overLimitItems(DB, pcu.code, month, lines);
+    // 2z (Q10): over the yearly ceiling is information only — never blocks the send · 2ad: off from fy 2570 (limitModeFor)
+    if (limitModeFor(cfgAll, fy) !== "off") overLimit = await overLimitItems(DB, pcu.code, month, lines);
     // 2z: the price of the fy (its latest form) — both the calculation price (price_snapshot) and the printed price (price_print); a later
     // price change rewrites both on every sent line of the fy (adminFormSave)
     const hist = await loadPriceHistory(DB, fy);
@@ -415,8 +419,6 @@ export async function saveLines(ctx, p) {
 
 // ---- 2o: stock mode + saveLines field rules ------------------------------------------------------------------------------------
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
-const LINE_FIELDS = ["stock", "op", "pp", "used", "adj", "adj_reason", "calc_from"];
-const sameLine = (e, l) => (e ? LINE_FIELDS.every((k) => (e[k] ?? null) === l[k]) : LINE_FIELDS.every((k) => l[k] === null));
 
 function assertAdj(v) {
   if (v === null || v === undefined || v === "") return null;

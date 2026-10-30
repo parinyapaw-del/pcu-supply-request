@@ -272,13 +272,22 @@ export async function getConfigAll(DB) {
 export const configStmt = (DB, key, value) =>
   DB.prepare(`INSERT INTO config (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key, JSON.stringify(value));
 
+// 2ad: the yearly ceiling is off from fy 2570 on, whatever config.limit_mode says — the stored setting and the `limits` rows stay, a fy
+// before 2570 behaves as before. The one rule for the backend; the frontends read the result as config.limit_mode (fy_current).
+export const LIMITS_OFF_FROM_FY = 2570;
+export function limitModeFor(cfg, fy) {
+  if (Number(fy) >= LIMITS_OFF_FROM_FY) return "off";
+  return cfg.limit_mode === "off" ? "off" : "warn"; // 2z: off | warn only — a stored "enforce" (before 2z) reads as warn
+}
+
 // normalised, defaulted view of the settings the frontends need
 export function publicConfig(cfg, fallbackFy) {
-  const mode = cfg.limit_mode === "off" ? "off" : "warn"; // 2z: off | warn only — a stored "enforce" (before 2z) reads as warn
   const fy = Number.isInteger(cfg.fy_current) ? cfg.fy_current : fallbackFy;
+  const mode = limitModeFor(cfg, fy); // 2ad: effective mode of fy_current
   const dd = Number.isInteger(cfg.deadline_day) && cfg.deadline_day >= 1 && cfg.deadline_day <= 31 ? cfg.deadline_day : null;
   return {
     limit_mode: mode,
+    limits_retired: fy >= LIMITS_OFF_FROM_FY, // 2ad: the ceiling (and the admin tab "เพดาน") is gone for fy_current
     stock_required: Number(cfg.stock_required) === 1 ? 1 : 0,
     deadline_day: dd,
     fy_current: fy,

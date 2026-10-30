@@ -11,6 +11,12 @@ export const LINE_COLS =
 
 export const requestId = (pcu, month) => `${pcu}_${month}`;
 
+// 2ad: the requested quantity (op/pp) of a line is frozen once a dispenser/admin recorded its issue (issued_total set) — stock / used / adj
+// stay editable until the round closes. The one place for this rule (saveLines + the PCU view's `qty_locked`); 2af adds "PCU reported received".
+export function lineQtyLocked(l) {
+  return !!l && l.issued_total !== null && l.issued_total !== undefined;
+}
+
 export function requestObj(row, lines, admin = false) {
   if (!row) return null;
   const out = {
@@ -38,7 +44,7 @@ export function requestObj(row, lines, admin = false) {
             issued_total: l.issued_total ?? null, issued_op: l.issued_op ?? null, issued_pp: l.issued_pp ?? null,
             issue_reason: l.issue_reason ?? null, issue_note: l.issue_note ?? null, issued_at: l.issued_at ?? null, issued_by: l.issued_by ?? null,
           }
-        : { stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at };
+        : { stock: l.stock, op: l.op, pp: l.pp, ...sc, updated_at: l.updated_at, ...(lineQtyLocked(l) ? { qty_locked: true } : {}) };
     }
     out.lines = m;
   }

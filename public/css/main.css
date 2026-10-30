@@ -318,6 +318,14 @@ button, input, select {
 .limit-info { color: var(--muted); }
 .limit-note { color: var(--note); } /* 2z: over the yearly ceiling = information (blue), never red */
 .limit-unlocked { color: var(--success); font-weight: 700; }
+/* 2ad: over the annual plan = light yellow (never blocks) · grey notes: cancelled item / requested quantity kept (issue recorded) */
+.limit-plan { color: var(--warn); }
+.item-row.row-plan-over td, .item-card.row-plan-over { background: var(--warn-bg); }
+.row-note { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+.item-row.row-cancelled td, .item-card.row-cancelled { background: var(--muted-bg); color: var(--muted); }
+.item-row.row-cancelled .item-name, .item-card.row-cancelled .item-name { text-decoration: line-through; font-weight: 500; }
+.summary-plan { background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 12px; }
+.summary-plan h3 { color: var(--warn); }
 .small { font-size: 0.82rem; }
 
 .num-input { width: 72px; min-height: 40px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }

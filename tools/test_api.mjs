@@ -236,7 +236,7 @@ async function main() {
   eq(boot.pcus.length, 15, "adminBootstrap: 15 pcus");
   eq(boot.me, { email: ADMIN_EMAIL, role: "admin", units: ["พัสดุ", "จ่ายกลาง", "LAB"] }, "adminBootstrap: me");
   eq(boot.config.fy_current, 2570, "config.fy_current = 2570");
-  eq(boot.config.limit_mode, "warn", "config.limit_mode: a stored \"enforce\" (pre-2z seed) reads as warn");
+  eq([boot.config.limit_mode, boot.config.limits_retired], ["off", true], "2ad: config.limit_mode of fy_current 2570 = off whatever is stored (a pre-2z \"enforce\") · limits_retired");
   eq(boot.config.stock_required, 0, "config.stock_required default 0");
   eq(boot.config.budget_total, 910000, "config.budget_total");
   ok(boot.form && boot.form.id && boot.form.steps.length === seed.form.steps.length, "adminBootstrap: form (latest of fy_current)");
@@ -352,7 +352,7 @@ async function main() {
   for (const k of ["server_time", "current_month", "current_round", "pcu", "config", "form_version_id", "form", "rounds", "next_round", "history", "hidden", "never_prev", "limits", "plans", "unlocks", "byMonth", "issue_notices"]) ok(k in pb, `bootstrap has "${k}"`);
   eq(pb.current_month, CAL, "bootstrap.current_month = calendar month (honours X-Dev-Month)");
   eq(pb.current_round, ROUND, "bootstrap.current_round = calendar month + 1 (2j)");
-  eq(pb.config, { limit_mode: "warn", stock_required: 0, deadline_day: null, fy_current: 2570, trial_month: null }, "bootstrap.config (+ trial_month null)");
+  eq(pb.config, { limit_mode: "off", limits_retired: true, stock_required: 0, deadline_day: null, fy_current: 2570, trial_month: null }, "bootstrap.config (+ trial_month null · 2ad: limit_mode off from fy 2570)");
   eq(pb.rounds.map((r) => r.month), [ROUND, PREV_ROUND], "bootstrap.rounds = [currentRound, prevRound] = [CAL+1, CAL]");
   eq(pb.rounds.map((r) => r.fy), [2570, 2570], "rounds 2026-12 / 2026-11 are both FY2570");
   eq(pb.rounds.map((r) => r.deadline_date), ["2026-11-30", "2026-10-31"], "deadline = last day of the month BEFORE the round (submission month)");
@@ -479,27 +479,38 @@ async function main() {
   eq(prevSubmit.over_limit, [], "mode off: over_limit empty and submit ok (previous month, 15 units)");
   eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].used_fy[A.code], 15, "used_fy[current] = Σ other rounds of the fiscal year (15) — round 2026-11 is FY2570 and counts (2j)");
   eq((await mustOk("pcuBootstrap", {}, T3)).byMonth[CUR].prev_lines[A.code], { op: 10, pp: 5, stock: null, received: 15, received_src: "requested" }, "prev_lines from previous month's submitted request (2o: + stock/received)");
-  await mustOk("adminSetLimitMode", { mode: "warn" }, ADM);
+  // 2ad: every round of fy ≥ 2570 is "off" whatever is stored — over the ceiling is never reported, the send never fails
+  eq((await mustOk("adminSetLimitMode", { mode: "warn" }, ADM)).config.limit_mode, "off", "2ad: adminSetLimitMode warn is stored, the fy 2570 config still reads off");
   await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 4, pp: 2, updated_at: t(1) } } }, T3);
   const ol = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3);
-  eq(ol.status, "submitted", "2z warn: 15 used + 6 > limit_year 20 still sends (never blocks)");
-  eq(ol.over_limit, [{ code: A.code, total: 6, limit_year: 20, used_fy: 15 }], "2z: over_limit detail (no limit_month)");
-  await mustOk("saveLines", { month: CUR, lines: { [A.code]: { op: 3, pp: 2, updated_at: t(2) } } }, T3);
-  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).over_limit, [], "warn: 15 + 5 = limit (boundary) is not over");
-  await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 4, limit_year: null }, ADM);
-  eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).over_limit, [], "monthly limit 4 < total 5 is NOT checked (yearly ceiling only)");
-  await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_month: 4, limit_year: 19 }, ADM);
-  // 2z: an admin unlock (action kept, retired from the UI) no longer matters — the item is reported either way, the send never fails
+  eq([ol.status, ol.over_limit], ["submitted", []], "2ad fy2570 (stored warn): 15 used + 6 > limit_year 20 → sends, over_limit []");
   const ul = await mustOk("adminUnlockLimit", { pcu: "PCU03", item_code: A.code, month: CUR, reason: "โรคระบาด" }, ADM);
   eq(ul.unlock.reason, "โรคระบาด", "adminUnlockLimit still works (kept so old clients do not break)");
-  const wu = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3);
-  ok(wu.status === "submitted" && wu.over_limit.length === 1 && wu.over_limit[0].code === A.code, "2z: with an unlock the over-ceiling item is still reported (info) and the send succeeds");
   ok((await api("adminRemoveUnlock", { pcu: "PCU03", item_code: A.code, month: CUR }, ADM)).ok, "adminRemoveUnlock");
-  const wr = await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3);
-  ok(wr.status === "submitted" && wr.over_limit.length === 1 && wr.over_limit[0].code === A.code, "warn: submit succeeds and over_limit lists the item");
   await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
   eq((await mustOk("saveLines", { month: CUR, lines: {}, send: true }, T3)).over_limit, [], "off: over_limit empty");
   await mustOk("adminSetLimitMode", { mode: "warn" }, ADM);
+  eq((await mustOk("pcuDashboard", {}, T3)).limits, {}, "2ad: pcuDashboard.limits {} for fy 2570 (no ceiling card)");
+  {
+    // fy < 2570 keeps the 2z behaviour: calendar 2026-08 → rounds 2026-09 / 2026-08 = FY2569 (limits of fy 2569)
+    const R69 = "2026-09", P69 = "2026-08", devMonth0 = devMonth;
+    devMonth = "2026-08";
+    await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570, limits: { 2569: { PCU03: { [A.code]: [null, 20] } } } } }, ADM);
+    await mustOk("saveLines", { month: P69, lines: { [A.code]: { op: 10, pp: 5, updated_at: t(1) } }, send: true }, T3);
+    await mustOk("saveLines", { month: R69, lines: { [A.code]: { op: 4, pp: 2, updated_at: t(1) } } }, T3);
+    const w = await mustOk("saveLines", { month: R69, lines: {}, send: true }, T3);
+    eq([w.status, w.over_limit], ["submitted", [{ code: A.code, total: 6, limit_year: 20, used_fy: 15 }]], "2z kept for FY2569 (warn): 15 + 6 > 20 → over_limit detail, send succeeds");
+    await mustOk("saveLines", { month: R69, lines: { [A.code]: { op: 3, pp: 2, updated_at: t(2) } } }, T3);
+    eq((await mustOk("saveLines", { month: R69, lines: {}, send: true }, T3)).over_limit, [], "FY2569 warn: 15 + 5 = limit (boundary) is not over");
+    await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
+    await mustOk("saveLines", { month: R69, lines: { [A.code]: { op: 9, pp: 2, updated_at: t(3) } } }, T3);
+    eq((await mustOk("saveLines", { month: R69, lines: {}, send: true }, T3)).over_limit, [], "FY2569 off: over_limit empty");
+    await mustOk("adminSetLimitMode", { mode: "warn" }, ADM);
+    eq((await mustOk("saveLines", { month: R69, lines: {}, send: true }, T3)).over_limit.length, 1, "FY2569 back to warn: reported again");
+    // leave no FY2569 request behind (later sections count history / used_fy)
+    for (const m of [P69, R69]) await mustOk("devDeleteRequest", { pcu: "PCU03", month: m, limits_fy: 2569 });
+    devMonth = devMonth0;
+  }
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("rounds: deadline, lock");
@@ -726,7 +737,7 @@ async function main() {
   eq((await mustOk("adminBootstrap", {}, ADM2)).config.fy_current, 2570, "fy_current restored");
   const impC = await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570, config: { limit_mode: "enforce", budget_op: 1 } } }, ADM2);
   eq(impC.imported.config_set, [], "config import never overwrites existing values");
-  eq((await mustOk("adminBootstrap", {}, ADM2)).config.limit_mode, "warn", "limit_mode untouched");
+  eq((await mustOk("adminExportSeed", {}, ADM2)).seed.config.limit_mode, "warn", "limit_mode untouched (stored value; 2ad: the fy 2570 config reads off)");
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("fiscal-year edge: previous round in FY2569 (form fallback, 2j/2w)");
@@ -1402,17 +1413,21 @@ async function main() {
     ok(["needed", "done", "done_at", "done_by", "lines", "issued_lines"].every((k) => k in U["พัสดุ"]), "issue.units[unit] shape {needed,done,done_at,done_by,lines,issued_lines}");
     eq([U["พัสดุ"].lines, U["พัสดุ"].issued_lines, U["จ่ายกลาง"].lines, U["จ่ายกลาง"].issued_lines], [2, 2, 1, 0], "units: พัสดุ 2 lines / 2 issued · จ่ายกลาง 1 line / 0 issued");
 
-    // PCU side: lines of the done unit are locked, other pages still editable (CONFLICT rule of 2a)
-    const labLine = (stock) => ({ [LABI.code]: { stock, op: 3, pp: 2, updated_at: tsn() } });
-    expectErr(await api("saveLines", { month: CUR, lines: labLine(9) }, P3), "CONFLICT", "PCU cannot change a LAB line after LAB is issued → CONFLICT");
-    ok((await api("saveLines", { month: CUR, lines: labLine(1) }, P3)).ok, "…re-saving the same LAB values is fine");
+    // PCU side (2ad: per line, replaces the 2c page lock): an issued line keeps its op/pp, its stock stays editable
+    const labLine = (stock, op = 3) => ({ [LABI.code]: { stock, op, pp: 2, updated_at: tsn() } });
+    ok((await api("saveLines", { month: CUR, lines: labLine(9) }, P3)).ok, "2ad: PCU changes the stock of an issued LAB line (op/pp unchanged) → ok");
+    const ll = await api("saveLines", { month: CUR, lines: { ...labLine(1, 4), [A.code]: { stock: 7, op: 10, pp: 5, updated_at: tsn() } } }, P3);
+    expectErr(ll, "LINE_LOCKED", "2ad: changing op of an issued LAB line");
+    eq(ll.error && ll.error.items, [{ code: LABI.code, op: 3, pp: 2 }], "LINE_LOCKED.items = [{code, stored op, stored pp}]");
+    ok((await api("saveLines", { month: CUR, lines: labLine(1) }, P3)).ok, "…re-saving the same LAB op/pp is fine");
     const aPcu = (await api("saveLines", { month: CUR, lines: { [A.code]: { stock: 7, op: 10, pp: 5, updated_at: tsn() } } }, P3));
     ok(aPcu.ok && aPcu.data.status === "submitted", "PCU can still change a P1 line (its unit is not done)");
     let pb2 = await mustOk("pcuBootstrap", {}, P3);
     let m3 = pb2.byMonth[CUR];
     eq(Object.keys(m3.request.issued), [LABI.code], "PCU request.issued has only the done unit's lines");
     eq(m3.request.issued[LABI.code], { total: 5, op: 3, pp: 2, reason: null, note: null }, "PCU request.issued[code] = {total,op,pp,reason,note}");
-    eq(Object.keys(m3.request.lines[LABI.code]).sort(), ["adj", "adj_reason", "calc_from", "op", "pp", "stock", "updated_at", "used"], "PCU request.lines unchanged (no issued fields, Q78; + 2o fields)");
+    eq(Object.keys(m3.request.lines[LABI.code]).sort(), ["adj", "adj_reason", "calc_from", "op", "pp", "qty_locked", "stock", "updated_at", "used"], "PCU request.lines: no issued fields (Q78; + 2o fields) · 2ad qty_locked:true on an issued line");
+    ok(m3.request.lines[LABI.code].qty_locked === true && !("qty_locked" in m3.request.lines[CSI.code]), "2ad: qty_locked only on lines with a recorded issue (CS line not issued)");
     ok(m3.issue && m3.issue.units.LAB.done && m3.issue.units["พัสดุ"].done === false && m3.issue.units.LAB.done_by === null, "PCU IssueInfo.units present; done_by hidden from PCU");
     eq([m3.issue.complete, m3.issue.incomplete, m3.issue.units["พัสดุ"].issued_lines], [1, 0, 0], "PCU IssueInfo counts only done units (พัสดุ figures not leaked)");
     eq(pb2.issue_notices, [], "no notice yet (status not issued)");
@@ -1795,11 +1810,12 @@ async function main() {
     await mustOk("issueAll", { pcu: "PCU06", month: M0 }, ADM2);
     eq([(await adm("PCU06", M1)).lines[A.code].stock, (await adm("PCU06", M2)).lines[A.code].stock], [7, 5], "issueAll on 2026-10 (A issued 20) → 2026-11 A = 10+20−23 = 7 → 2026-12 A = 7+2−4 = 5");
 
-    // ---- locked unit: the "same line" check includes the 2o fields ----
-    ok((await sv(P, M1, { [A.code]: { stock: 0, op: 2, pp: 0, used: 23, calc_from: "used" } })).ok, "issued unit: re-sending the same line (stale stock, same used) is accepted");
-    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, used: 24 } }), "CONFLICT", "issued unit: changing used → CONFLICT");
-    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, adj: 1 } }), "CONFLICT", "issued unit: changing adj → CONFLICT");
-    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, calc_from: null } }), "CONFLICT", "issued unit: changing calc_from → CONFLICT");
+    // ---- 2ad: an issued line keeps op/pp only — used / adj / calc_from stay editable (the 2c "same line" lock is gone) ----
+    ok((await sv(P, M1, { [A.code]: { stock: 0, op: 2, pp: 0, used: 23, calc_from: "used" } })).ok, "issued line: re-sending the same line (stale stock, same used) is accepted");
+    ok((await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, used: 24 } })).ok, "2ad issued line: changing used → ok");
+    ok((await sv(P, M1, { [A.code]: { stock: 7, op: 2, pp: 0, adj: 1, adj_reason: "recount" } })).ok, "2ad issued line: changing adj → ok");
+    expectErr(await sv(P, M1, { [A.code]: { stock: 7, op: 3, pp: 0 } }), "LINE_LOCKED", "2ad issued line: changing op");
+    ok((await sv(P, M1, { [A.code]: { stock: 0, op: 2, pp: 0, used: 23, adj: null, adj_reason: null, calc_from: "used" } })).ok, "…back to the original line (used 23, no adj)");
     ok((await sv(P, M1, { [B.code]: { stock: 10, op: 0, pp: 0 } })).ok, "issued unit: old client re-sending B unchanged is accepted");
 
     // ---- admin view + Excel ----
@@ -1933,10 +1949,12 @@ async function main() {
     eq(gr2.request.lines["S08-01"].price_snapshot, 99, "price_snapshot of the new item");
     eq(gr2.request.lines[A.code].price_snapshot, priceItem.price, "price_snapshot of the draft's item A = the NEW price");
     ok(gr2.form.id === V1, "adminGetRequest after resubmit: new version");
-    const re = await api("saveLines", { month: CUR, lines: { [B.code]: { op: 4, updated_at: t(3) } }, send: true }, TF1);
+    // 2ad: a closed (= permanently cancelled) item takes no NEW quantity — the stored one stays and resubmits
+    expectErr(await api("saveLines", { month: CUR, lines: { [B.code]: { op: 4, updated_at: t(3) } }, send: true }, TF1), "ITEM_CANCELLED", "2ad: closed item B 3 → 4");
+    const re = await api("saveLines", { month: CUR, lines: { [B.code]: { op: 3, stock: 1, updated_at: t(3) } }, send: true }, TF1);
     ok(re.ok && re.data.request.form_version_id === V1, "old submitted request with a closed item (qty>0) resubmits fine → new version");
     const gr3 = await mustOk("adminGetRequest", { pcu: "PCU13", month: CUR }, ADM2);
-    ok(gr3.request.lines[B.code].op === 4 && gr3.request.lines[B.code].price_snapshot === findItem(F.steps, B.code).price, "closed item keeps its qty and price_snapshot on resubmit");
+    ok(gr3.request.lines[B.code].op === 3 && gr3.request.lines[B.code].price_snapshot === findItem(F.steps, B.code).price, "closed item keeps its qty and price_snapshot on resubmit");
     const aNew = gr3.request.lines[A.code].price_snapshot;
     eq(aNew, findItem(F.steps, A.code).price, "resubmit: price_snapshot = new form price");
     ok(aNew !== oldA, "…and it differs from the old price");
@@ -1999,7 +2017,8 @@ async function main() {
     ok(gm3.form && gm3.form.id === v3.form.id && stepOf(gm3.form.steps, "S08"), "2t: pcuGetMonth: full latest form when a closed page carries a quantity");
     const ab3 = await mustOk("adminBootstrap", {}, ADM2);
     ok(stepOf(ab3.form.steps, "S08") && stepOf(ab3.form.steps, "S08").active === false, "adminBootstrap.form keeps the closed page (active:false)");
-    ok((await api("saveLines", { month: CUR, lines: { "S08-01": { op: 5, updated_at: t(4) } }, send: true }, TF2)).ok, "closed page's item code still saves on a request (code exists)");
+    expectErr(await api("saveLines", { month: CUR, lines: { "S08-01": { op: 5, updated_at: t(4) } }, send: true }, TF2), "ITEM_CANCELLED", "2ad: closed page's (closed) item takes no new quantity");
+    ok((await api("saveLines", { month: CUR, lines: { "S08-01": { op: 2, stock: 3, updated_at: t(4) } }, send: true }, TF2)).ok, "closed page's item code still saves on a request (code exists, stored quantity)");
     const st4 = cl(v3.form.steps);
     findItem(st4, "S08-01").active = true; stepOf(st4, "S08").active = true;
     const v4 = await mustOk("adminFormSave", { base_version_id: v3.form.id, note: "เปิดหน้า 8 กลับ", form: { steps: st4 } }, ADM2);
@@ -2603,6 +2622,12 @@ async function main() {
       plans: { 2570: { ...seed.plans["2570"], [P]: { [A.code]: [100, 20], [B.code]: [10, 2] } } },
       actual_prev: { 2569: { months: ap69.months, data: { ...ap69.data, [P]: { [A.code]: { op: aOp, pp: aPp }, [B.code]: { op: bOp, pp: z() } } } } },
     }, set_current_fy: true }, ADM2, "import PCU98 plans + actual_prev (+ fy_current back to 2570; the 2e section left 2571)");
+    { // 2ad: B was closed by the 2d section and a closed item takes no new quantity — reopen it for these fixtures
+      const ab0 = await mustOk("adminBootstrap", {}, ADM2);
+      const st0 = JSON.parse(JSON.stringify(ab0.form.steps));
+      const rb = st0.flatMap((s) => s.rows).find((r) => r.type === "item" && r.code === B.code);
+      if (rb && rb.active === false) { rb.active = true; await mustOk("adminFormSave", { base_version_id: ab0.form.id, note: "2ad reopen B", form: { steps: st0 } }, ADM2); }
+    }
 
     const abD = await mustOk("adminBootstrap", {}, ADM2);
     const FD = abD.form; // latest FY2570 form (prices edited by 2p)
@@ -2964,7 +2989,7 @@ async function main() {
     eq([D13.stock_latest[X.code], D13.spent[X.code]], [{ round: R2, stock: 4, got: 1 }, r2(2 * px)], "2aa unit done → PCU view got 1 · spent = R1 req 1 + R2 got 1");
     await mustOk("adminSetLimit", { pcu: "PCU13", code: X.code, limit_year: 2 }, ADM2);
     D13 = await pd13();
-    ok(D13.limits[X.code] === 2 && Object.values(D13.limits).every((v) => v > 0), "2aa limits = {code: limit_year} of (fy, pcu) (> 0 only)");
+    eq(D13.limits, {}, `2ad: pcuDashboard.limits {} for fy ${FY} ≥ 2570 even with an admin limit (no ceiling card)`);
     const hid13 = (await mustOk("pcuBootstrap", {}, T13)).hidden;
     await mustOk("setHidden", { codes: [...hid13, X.code] }, T13);
     D13 = await pd13();
@@ -3538,6 +3563,67 @@ async function main() {
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2ad: per-line qty lock (replaces the page lock) · permanently cancelled items · cancel_reason");
+  {
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    if (b0.config.fy_current !== 2570) await mustOk("adminImportSeed", { seed: { format: "pcu-supply-import/1", fy: 2570 }, set_current_fy: true }, ADM2);
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+    const F0 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
+    const [X, Y, Z] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const P = b0.pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-28T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (lines, extra = {}) => api("saveLines", { month: CUR, lines: L(lines), ...extra }, TP);
+    const line = async (c) => (await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.lines[c];
+
+    // ---- per-line lock: X issued (unit NOT marked done), Y on the same page stays editable ----
+    ok((await sv({ [X.code]: { op: 5, pp: 1 }, [Y.code]: { op: 3 } }, { send: true })).ok, "setup: X 5/1 + Y 3 sent");
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [X.code]: { issued_total: 6 } } }, ADM2);
+    ok((await mustOk("pcuGetMonth", { month: CUR }, TP)).request.lines[X.code].qty_locked === true, "qty_locked on X right after issued_* is recorded (unit not done yet)");
+    ok((await sv({ [Y.code]: { op: 4, stock: 2 } })).ok, "same page: Y (no issue) op 3 → 4 ok");
+    ok((await sv({ [X.code]: { op: 5, pp: 1, stock: 9 } })).ok, "X: stock changes with the same op/pp → ok");
+    const xl = await sv({ [X.code]: { op: 7, pp: 1, stock: 9 }, [Y.code]: { op: 8, stock: 2 } });
+    expectErr(xl, "LINE_LOCKED", "X: op 5 → 7");
+    eq(xl.error && xl.error.items, [{ code: X.code, op: 5, pp: 1 }], "LINE_LOCKED.items carries the stored op/pp");
+    eq([(await line(X.code)).op, (await line(Y.code)).op], [5, 4], "a refused call writes nothing (Y stays 4)");
+    expectErr(await sv({ [X.code]: { op: 5, pp: null, stock: 9 } }), "LINE_LOCKED", "X: pp 1 → null is a change too");
+    ok((await sv({ [Y.code]: { op: 2 } }, { send: true })).ok, "an issued request is re-sent after changing another line");
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [X.code]: { issued_total: null } } }, ADM2);
+    ok((await sv({ [X.code]: { op: 7, pp: 1, stock: 9 } })).ok, "issue cleared → X op editable again");
+    eq((await mustOk("pcuGetMonth", { month: CUR }, TP)).request.lines[X.code].qty_locked, undefined, "…and qty_locked is gone");
+    await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
+    expectErr(await sv({ [Y.code]: { op: 2, stock: 5 } }), "CONFLICT", "a closed round still blocks every edit (CONFLICT)");
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+
+    // ---- permanently cancelled item: shown to the PCU with its reason, no new quantity ----
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const withItems = (patch) => { const steps = cl(F0.steps); steps.forEach((s) => s.rows.forEach((r) => { if (r.type === "item" && patch[r.code]) Object.assign(r, patch[r.code]); })); return steps; };
+    expectErr(await api("adminFormSave", { base_version_id: F0.id, form: { steps: withItems({ [Z.code]: { active: false, cancel_reason: 5 } }) } }, ADM2), "BAD_REQUEST", "cancel_reason must be a string");
+    const fs1 = await mustOk("adminFormSave", { base_version_id: F0.id, note: "2ad cancel", form: { steps: withItems({ [Z.code]: { active: false, cancel_reason: " เลิกผลิต " }, [Y.code]: { active: false, cancel_reason: "ใช้รายการใหม่แทน" } }) } }, ADM2);
+    const zRow = (f) => f.steps.flatMap((s) => s.rows).find((r) => r.code === Z.code);
+    const pb = await mustOk("pcuBootstrap", {}, TP);
+    eq([zRow(pb.form).active, zRow(pb.form).cancel_reason], [false, "เลิกผลิต"], "pcuBootstrap.form keeps the cancelled item with cancel_reason (trimmed)");
+    eq("cancel_reason" in st.rows.find((r) => r.code === X.code), false, "items without a reason carry no cancel_reason key");
+    const zc = await sv({ [Z.code]: { op: 1 } });
+    expectErr(zc, "ITEM_CANCELLED", "cancelled Z: op 1");
+    eq(zc.error && zc.error.items, [{ code: Z.code, op: null, pp: null }], "ITEM_CANCELLED.items = [{code, stored op, stored pp}]");
+    ok((await sv({ [Z.code]: { stock: 4 } })).ok, "cancelled Z: stock only (no quantity) → ok");
+    ok((await sv({ [Y.code]: { op: 2, stock: 1 } })).ok, "cancelled Y with its stored quantity (2) re-sent unchanged → ok");
+    expectErr(await sv({ [Y.code]: { op: 3, stock: 1 } }), "ITEM_CANCELLED", "cancelled Y: 2 → 3");
+    ok((await sv({ [Y.code]: { op: 0, stock: 1 } })).ok, "cancelled Y: lowering to 0 is allowed");
+    ok((await sv({}, { send: true })).ok, "send still works with cancelled lines in the request");
+    const fs2 = await mustOk("adminFormSave", { base_version_id: fs1.form.id, note: "2ad reopen", form: { steps: withItems({ [Z.code]: { active: true, cancel_reason: "เลิกผลิต" }, [Y.code]: { active: true } }) } }, ADM2);
+    const z2 = zRow((await mustOk("pcuBootstrap", {}, TP)).form);
+    eq([z2.active, "cancel_reason" in z2], [true, false], "reopened item: cancel_reason dropped");
+    ok(fs2.form.id > fs1.form.id && (await sv({ [Z.code]: { op: 1 } })).ok, "reopened Z takes a quantity again");
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

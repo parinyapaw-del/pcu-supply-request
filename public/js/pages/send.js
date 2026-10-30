@@ -1,6 +1,7 @@
 // "Send" flow shared by the summary page (บันทึก / พิมพ์) and the print page (พิมพ์):
 // completeness check (stock only when config.stock_required=1) -> saveLines{send:true}. 2z (Q10): the yearly ceiling never blocks nor asks —
-// items over it are only mentioned in the toast after sending (the fill/summary pages show the info note).
+// items over it are only mentioned in the toast after sending (the fill/summary pages show the info note). 2ad: no ceiling from fy 2570
+// (config.limit_mode "off"); over the annual plan is a light-yellow note (row + summary + toast), never a block.
 // phase 2 spec §4.3 — there is no withdraw; re-sending overwrites.
 import { ApiError } from "../api.js";
 import { getOrderedSteps, getActiveItemRows, getItemRows } from "../data.js";
@@ -12,7 +13,21 @@ export function lineTotal(line) {
   return (Number(line && line.op) || 0) + (Number(line && line.pp) || 0);
 }
 
-// What would block (missing stock) / be noted (over the yearly ceiling) if the request were sent now.
+// 2ad (Q3=ก): used this fy (other sent rounds) + requested now > annual plan (plan_op + plan_pp of fy_current) → note. No plan / plan 0 /
+// nothing requested → null. Only meaningful on rounds of fy_current (the caller checks roundUsesCurrentFy).
+export function planStatus(app, month, item, total) {
+  if (!(total > 0)) return null;
+  const plan = app.boot.plans && app.boot.plans[item.code];
+  const planTotal = plan ? (Number(plan[0]) || 0) + (Number(plan[1]) || 0) : 0;
+  if (planTotal <= 0) return null;
+  const data = monthData(app, month);
+  const used = (data.used_fy && Number(data.used_fy[item.code])) || 0;
+  const over = used + total - planTotal;
+  if (over <= 0) return null;
+  return { over, planTotal, used, message: `ยอดรวมปีนี้จะเกินแผน ${over.toLocaleString("en-US")} ${item.unit || "หน่วย"} — ส่งได้ตามปกติ` };
+}
+
+// What would block (missing stock) / be noted (over the yearly ceiling · 2ad over the annual plan) if the request were sent now.
 export function collectIssues(app, month) {
   const code = pcuCode(app);
   const cfg = app.boot.config;
@@ -21,6 +36,7 @@ export function collectIssues(app, month) {
   const useLimits = roundUsesCurrentFy(app, month);
   const missing = [];
   const overs = [];
+  const planOvers = [];
   getOrderedSteps(app.boot.form).forEach((step) => {
     getActiveItemRows(step).forEach((item) => {
       if (cfg.stock_required === 1 && !hidden.has(item.code) && sync.getLine(code, month, item.code).stock == null) {
@@ -33,9 +49,11 @@ export function collectIssues(app, month) {
       if (!useLimits || total <= 0) return;
       const st = limitStatus({ mode: cfg.limit_mode, limits: app.boot.limits, usedFy: data.used_fy, code: item.code, total });
       if (st) overs.push({ code: item.code, name: item.name, stepCode: step.code, status: st });
+      const plan = planStatus(app, month, item, total);
+      if (plan) planOvers.push({ code: item.code, name: item.name, stepCode: step.code, plan });
     });
   });
-  return { missing, overs };
+  return { missing, overs, planOvers };
 }
 
 function gotoItem(month, stepCode, code, field) {
@@ -55,7 +73,7 @@ export const sendUi = { missing: new Set(), month: null };
 /** @returns {Promise<boolean>} true when the request was sent (status "submitted"). */
 export async function trySend(app, month) {
   const code = pcuCode(app);
-  const { missing, overs } = collectIssues(app, month);
+  const { missing, overs, planOvers } = collectIssues(app, month);
 
   if (missing.length) {
     sendUi.month = month;
@@ -67,7 +85,10 @@ export async function trySend(app, month) {
 
   try {
     await sync.sendRequest(code, month);
-    toast(overs.length ? `บันทึกและส่งใบเบิกแล้ว · ${overs.length} รายการเกินเพดานรายปี (แจ้งเพื่อประมาณการปีถัดไป)` : "บันทึกและส่งใบเบิกแล้ว");
+    const notes = [];
+    if (overs.length) notes.push(`${overs.length} รายการเกินเพดานรายปี (แจ้งเพื่อประมาณการปีถัดไป)`);
+    if (planOvers.length) notes.push(`${planOvers.length} รายการยอดรวมปีนี้จะเกินแผน (ส่งได้ตามปกติ)`);
+    toast(["บันทึกและส่งใบเบิกแล้ว", ...notes].join(" · "));
     return true;
   } catch (err) {
     if (err instanceof ApiError && err.code === "INCOMPLETE") {

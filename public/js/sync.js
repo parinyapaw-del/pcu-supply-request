@@ -119,7 +119,7 @@ export function initSession(pcu, month, serverRequest) {
     lastOutcome: "ok", // ok | offline | error | conflict
     lastSavedAt: null,
     offline: false,
-    conflict: false, // server said CONFLICT: round locked (or step already issued) -> read-only
+    conflict: false, // server said CONFLICT: round locked -> read-only
     listeners: new Set(),
   };
 
@@ -361,8 +361,15 @@ async function runSave(session) {
       session.lastOutcome = "offline";
       notify(session, "offline");
       scheduleRetry(session);
+    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED") && fixRefusedQty(session, err)) {
+      // 2ad: the server keeps the requested quantity of these lines (issue recorded / item cancelled) — the stored op/pp are back on
+      // screen, the rest of each line (คงเหลือ / ใช้ไป) and every other dirty line go out again right away.
+      session.lastOutcome = "ok";
+      saveMirror(session);
+      notify(session, "pending", { qtyRefused: (err.items || []).map((it) => it.code), qtyRefusedCode: err.code });
+      scheduleSave(session, 200);
     } else if (err instanceof ApiError && err.code === "CONFLICT") {
-      // Round locked (or the step was already issued): nothing more can be saved — go read-only; the UI
+      // Round locked: nothing more can be saved — go read-only; the UI
       // shows "รอบนี้ปิดรับแล้ว". Unsaved local edits are dropped (the server refused them).
       session.conflict = true;
       session.conflictMessage = err.message || "";
@@ -377,6 +384,22 @@ async function runSave(session) {
       console.error("saveLines failed", err);
     }
   }
+}
+
+// 2ad: LINE_LOCKED / ITEM_CANCELLED {items:[{code, op, pp}]} → put the server's op/pp back on those lines (still dirty, new updated_at so the
+// rest of the line is written). Returns false when nothing could be fixed (then the save stays an error, no retry loop).
+function fixRefusedQty(session, err) {
+  let n = 0;
+  (Array.isArray(err.items) ? err.items : []).forEach((it) => {
+    const cur = it && session.request.lines[it.code];
+    if (!cur) return;
+    const line = { ...cur, op: it.op == null ? null : it.op, pp: it.pp == null ? null : it.pp, updated_at: new Date().toISOString() };
+    if (err.code === "LINE_LOCKED") line.qty_locked = true;
+    session.request.lines[it.code] = line;
+    session.dirtyLines.add(it.code);
+    n++;
+  });
+  return n > 0;
 }
 
 // Flushes any pending debounce/retry immediately and waits until everything dirty is on the server (or a

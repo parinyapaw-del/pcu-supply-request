@@ -13,7 +13,7 @@ import {
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
   alertDialog, toast, requesterOf,
 } from "./common.js";
-import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
+import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
 
 let unsubStatus = null;
 const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
@@ -51,7 +51,7 @@ function stepTotals(app, step, month) {
   return { op, pp, qty, money };
 }
 
-// ---------------- 2c: pages of issued units are locked (spec §4.3) ----------------
+// ---------------- 2c: pages of issued units (info only since 2ad — the lock is per line, see lineQtyLocked) ----------------
 function unitOfStep(step) {
   if (step.dispense_unit) return step.dispense_unit;
   if (step.code === "CS") return "จ่ายกลาง";
@@ -71,21 +71,29 @@ function isStepIssued(app, month, step) {
   return !!step && issuedUnits(app, month).has(unitOfStep(step));
 }
 
-// After a CONFLICT: store the fresh IssueInfo; when the round is open and some unit is issued, the refusal was
-// about an issued page — lift the month-wide read-only state so only those pages stay locked.
+// After a CONFLICT (= the round closed meanwhile): keep the fresh IssueInfo.
 function applyIssueRefresh(app, month, d) {
-  if (!d) return false;
+  if (!d) return;
   if (app.boot.byMonth && app.boot.byMonth[month]) app.boot.byMonth[month].issue = d.issue || null;
   else if (app.older && app.older[month]) app.older[month].issue = d.issue || null;
-  const anyDone = !!(d.issue && d.issue.units && Object.values(d.issue.units).some((x) => x && x.done));
-  if (anyDone && !(d.round && d.round.locked)) {
-    const sess = sync.getSession(pcuCode(app), month);
-    if (sess) { sess.conflict = false; sess.conflictMessage = ""; sess.lastOutcome = "ok"; }
-    return true;
-  }
-  return false;
 }
 
+// 2ad: the requested quantity of a line whose issue is recorded stays as it is (server: views.lineQtyLocked → line.qty_locked);
+// คงเหลือ / ใช้ไป / ปรับยอด and every other line stay editable until the round closes.
+const QTY_LOCKED_TEXT = "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม";
+function qtyLocked(app, month, code) {
+  return !!sync.getLine(pcuCode(app), month, code).qty_locked;
+}
+
+// 2ad: a permanently cancelled item (active:false) stays on the page, greyed, with the admin's reason (or the item replacing it, 2v links).
+function cancelText(app, item) {
+  if (item.cancel_reason) return `ยกเลิกรายการ: ${item.cancel_reason}`;
+  for (const s of app.boot.form.steps) {
+    const r = s.rows.find((x) => x.type === "item" && x.active !== false && Array.isArray(x.links) && x.links.includes(item.code));
+    if (r) return `ยกเลิกรายการ: ใช้ “${r.name}” แทน`;
+  }
+  return "ยกเลิกรายการ";
+}
 function goToStep(app, month, stepCode) {
   sync.setLastStep(pcuCode(app), month, stepCode);
   sync.flush(pcuCode(app), month);
@@ -106,13 +114,13 @@ export async function renderFill(container, app, stepCode, params) {
   if (editable && stepCode !== "summary") sync.setLastStep(pcuCode(app), month, stepCode);
 
   const curStep = stepCode === "summary" ? null : steps.find((s) => s.code === stepCode);
-  const stepLocked = isStepIssued(app, month, curStep);
-  const stepEditable = editable && !stepLocked;
+  const stepIssued = isStepIssued(app, month, curStep);
+  const stepEditable = editable; // 2ad: no page lock any more — only the requested quantity of issued lines (qtyLocked)
 
   const wrap = document.createElement("div");
   wrap.className = "fill-page";
   wrap.appendChild(renderProgressBar(app, month, stepCode, steps, codes));
-  wrap.appendChild(renderBanners(app, month, stepLocked));
+  wrap.appendChild(renderBanners(app, month, stepIssued));
 
   const content = document.createElement("div");
   content.className = "fill-content";
@@ -175,13 +183,13 @@ function formVersionBanner(app, request) {
   return `<div class="notice notice-info" id="fill-form-banner">ฟอร์มมีการปรับ: เพิ่ม ${n} รายการ · ราคาเปลี่ยน ${m} รายการ${k > 0 ? ` · ปิด ${k} รายการ` : ""} — ค่าที่กรอกไว้คงอยู่ตามรหัสรายการ</div>`;
 }
 
-function renderBanners(app, month, stepLocked) {
+function renderBanners(app, month, stepIssued) {
   const host = document.createElement("div");
   host.className = "fill-banners";
   const request = requestOf(app, month);
   const parts = [];
-  if (stepLocked) {
-    parts.push('<div class="notice notice-issued" id="fill-issued-banner"><strong>หน้านี้จ่ายของแล้ว — แก้ไขไม่ได้</strong> <a href="#/issue?month=' + esc(month) + '">ดูการจ่าย</a></div>');
+  if (stepIssued) {
+    parts.push('<div class="notice notice-issued" id="fill-issued-banner"><strong>หน้านี้บันทึกจ่ายของแล้ว</strong> — รายการที่ได้ของแล้วยอดขอคงไว้ตามเดิม · คงเหลือและรายการอื่นยังแก้/เพิ่มได้จนปิดรอบ <a href="#/issue?month=' + esc(month) + '">ดูการจ่าย</a></div>');
   }
   if (isLocked(app, month)) {
     parts.push('<div class="notice notice-error"><strong>รอบนี้ปิดรับแล้ว</strong> — ดูใบเบิกได้อย่างเดียว แก้ไขไม่ได้</div>');
@@ -240,7 +248,7 @@ function renderProgressBar(app, month, stepCode, steps, codes) {
     const dot = document.createElement("a");
     dot.className = "progress-pill" + (isSummary ? " pill-summary" : "") + (code === stepCode ? " active" : i < idx ? " done" : "") + (locked ? " pill-issued" : "");
     dot.textContent = isSummary ? "สรุป" : String(i + 1);
-    dot.title = isSummary ? "สรุป" : stepLabel(steps[i]) + (locked ? " (จ่ายของแล้ว — แก้ไขไม่ได้)" : "");
+    dot.title = isSummary ? "สรุป" : stepLabel(steps[i]) + (locked ? " (บันทึกจ่ายของแล้ว)" : "");
     dot.href = `#/fill/${code}?month=${month}`;
     dot.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -291,6 +299,11 @@ function renderNav(app, month, stepCode, codes) {
     refreshStatusChip(app, month);
     // 2o: the server recalculated these rows (stock <-> used) differently from what is on screen -> repaint them
     if (st.recalc) st.recalc.forEach((code) => repaintRow(app, month, code));
+    // 2ad: the server kept the requested quantity of some lines (issue recorded meanwhile / item cancelled) — show its values again
+    if (st.qtyRefused) {
+      toast(st.qtyRefusedCode === "ITEM_CANCELLED" ? "รายการนี้ยกเลิกถาวรแล้ว — ยอดขอคงไว้ตามเดิม" : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
+      setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
+    }
     if (st.state === "conflict" && wasEditable) {
       // The server refused an edit (round locked meanwhile): re-render read-only with the "รอบนี้ปิดรับแล้ว" banner.
       wasEditable = false;
@@ -299,8 +312,7 @@ function renderNav(app, month, stepCode, codes) {
           const d = await sync.reloadSession(pcuCode(app), month); // drop the refused local edits, show the server's copy
           const r = app.boot.rounds.find((x) => x.month === month);
           if (r && d && d.round) Object.assign(r, d.round);
-          // 2c: the refusal may be an issued page (not a locked round) — lock only the pages of issued units
-          if (applyIssueRefresh(app, month, d)) toast("บางหน้าจ่ายของแล้ว — แก้ไขไม่ได้ (ค่าที่แก้ในหน้านั้นไม่ถูกบันทึก)", "error");
+          applyIssueRefresh(app, month, d);
         } catch (err) { /* keep the local view; the banner still says closed */ }
         renderFill(document.getElementById("app"), app, stepCode, null);
       }, 0);
@@ -354,11 +366,12 @@ function renderStepForm(app, month, step, editable) {
   const hiddenCodes = Array.from(hidden).filter((c) => getActiveItemRows(step).some((it) => it.code === c));
   const hiddenDrawer = document.createElement("details");
   hiddenDrawer.className = "hidden-drawer";
-  hiddenDrawer.innerHTML = `<summary>รายการที่ไม่เบิก ในขั้นตอนนี้ (${hiddenCodes.length})</summary>`;
+  // 2ad (H4): say where the hidden items went and how to bring them back
+  hiddenDrawer.innerHTML = `<summary>รายการที่ซ่อนไว้ (ไม่เบิก) ในหน้านี้ (${hiddenCodes.length})${hiddenCodes.length ? " — กดเพื่อแสดงรายการที่ซ่อน" : ""}</summary>`;
   const hiddenList = document.createElement("div");
   hiddenList.className = "hidden-list";
   if (hiddenCodes.length === 0) {
-    hiddenList.innerHTML = `<p class="muted">ไม่มีรายการที่ไม่เบิกในขั้นตอนนี้</p>`;
+    hiddenList.innerHTML = `<p class="muted">ไม่มีรายการที่ซ่อนในหน้านี้</p>`;
   } else {
     hiddenCodes.forEach((code) => {
       const item = getActiveItemRows(step).find((it) => it.code === code);
@@ -368,7 +381,7 @@ function renderStepForm(app, month, step, editable) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn btn-link";
-      btn.textContent = "กู้คืน";
+      btn.textContent = "แสดงในหน้ากรอก";
       btn.disabled = !editable;
       btn.addEventListener("click", async () => {
         btn.disabled = true;
@@ -477,7 +490,7 @@ function buildItemSearch(app, month, step) {
           html += h.hidden
             // hidden (ไม่เบิก) items have no row on the page: greyed, not pickable; the tag links to the settings page
             ? `<div class="item-search-hit is-hidden" role="option" aria-disabled="true">${label}
-                <a class="hit-tag" href="#/hidden">ซ่อนอยู่ — ตั้งค่ารายการที่ไม่เบิก</a></div>`
+                <a class="hit-tag" href="#/hidden">ซ่อนอยู่ — กดเพื่อแสดงรายการที่ซ่อน</a></div>`
             : `<button type="button" class="item-search-hit" role="option" data-step="${esc(g.step.code)}" data-code="${esc(it.code)}">${label}</button>`;
         });
       });
@@ -610,7 +623,7 @@ function calcHintText(base, line) {
 function calcBlockHtml(app, month, item, line, editable) {
   if (!isModeB(app)) return "";
   const base = baselineOf(app, month, item.code);
-  if (!base) return `<div class="ghost-line calc-nobase">ไม่มียอดยกมา — กรอกคงเหลือเอง</div>`;
+  if (!base) return `<div class="ghost-line calc-nobase">${esc(NO_BASE_TITLE)}</div>`;
   const open = (Number(line.adj) || 0) !== 0 || !!line.adj_reason;
   return `<div class="ghost-line calc-hint" data-calc-hint>${esc(calcHintText(base, line))}</div>
     <div class="adj-wrap">
@@ -778,8 +791,8 @@ function buildItemTable(app, month, step, editable) {
       tbody.appendChild(tr);
       continue;
     }
-    if (row.active === false || hidden.has(row.code)) continue;
-    tbody.appendChild(buildItemTr(app, month, row, editable));
+    if (hidden.has(row.code)) continue;
+    tbody.appendChild(buildItemTr(app, month, row, editable && row.active !== false));
   }
   table.appendChild(tbody);
   return table;
@@ -790,7 +803,8 @@ function inputHtml(field, value, editable, title) {
 }
 
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
-const NO_BASE_TITLE = "ไม่มียอดยกมา — กรอกคงเหลือเอง";
+// 2ad (H5): the reason ใช้ไป is disabled + what to do instead
+const NO_BASE_TITLE = "ใช้ไปกรอกไม่ได้ เพราะรอบก่อนไม่มียอดคงเหลือ (ยกมา) — กรอกคงเหลือเองได้";
 
 // ใช้ไป input (mode B): disabled when the row has no baseline (Q13).
 function usedInputHtml(app, month, item, line, editable) {
@@ -798,26 +812,37 @@ function usedInputHtml(app, month, item, line, editable) {
   return inputHtml("used", line.used, editable && !!base, base ? "" : NO_BASE_TITLE);
 }
 
+// 2ad: grey notes under the item name — cancelled item (whole row read-only) · qty-locked line (OP/PP read-only)
+function rowNoteHtml(app, month, item, editable) {
+  if (item.active === false) return `<div class="row-note">${esc(cancelText(app, item))}</div>`;
+  if (editable && qtyLocked(app, month, item.code)) return `<div class="row-note">${esc(QTY_LOCKED_TEXT)}</div>`;
+  return "";
+}
+const rowStateClass = (app, month, item, editable) =>
+  item.active === false ? " row-cancelled" : editable && qtyLocked(app, month, item.code) ? " row-qty-locked" : "";
+
 function buildItemTr(app, month, item, editable) {
   const tr = document.createElement("tr");
-  tr.className = "item-row";
+  tr.className = "item-row" + rowStateClass(app, month, item, editable);
   tr.dataset.code = item.code;
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const modeB = isModeB(app);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
     <td class="col-name"><div class="item-name">${esc(item.name)}</div>
-      ${hintHtml(app, month, item)}
+      ${rowNoteHtml(app, month, item, editable)}
+      ${item.active === false ? "" : hintHtml(app, month, item)}
       ${calcBlockHtml(app, month, item, line, editable)}
       <div class="limit-msg" data-limit-for="${esc(item.code)}"></div></td>
     <td class="col-unit">${esc(item.unit || "")}</td>
     <td class="col-price">${formatMoney(priceOf(app, month, item))}</td>
     ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
     <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
-    <td class="col-num">${inputHtml("op", line.op, editable)}</td>
-    <td class="col-num">${inputHtml("pp", line.pp, editable)}</td>
+    <td class="col-num">${inputHtml("op", line.op, qtyEditable)}</td>
+    <td class="col-num">${inputHtml("pp", line.pp, qtyEditable)}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
     <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
     <td class="col-action">${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}</td>`;
@@ -836,20 +861,21 @@ function buildMobileCards(app, month, step, editable) {
       wrap.appendChild(h);
       continue;
     }
-    if (row.active === false || hidden.has(row.code)) continue;
-    wrap.appendChild(buildItemCard(app, month, row, editable));
+    if (hidden.has(row.code)) continue;
+    wrap.appendChild(buildItemCard(app, month, row, editable && row.active !== false));
   }
   return wrap;
 }
 
 function buildItemCard(app, month, item, editable) {
   const card = document.createElement("div");
-  card.className = "item-card";
+  card.className = "item-card" + rowStateClass(app, month, item, editable);
   card.dataset.code = item.code;
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const req = stockRequired(app);
   const modeB = isModeB(app);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code);
 
   card.innerHTML = `
     <div class="item-card-head">
@@ -858,13 +884,14 @@ function buildItemCard(app, month, item, editable) {
       ${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}
     </div>
     <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
-    ${hintHtml(app, month, item)}
+    ${rowNoteHtml(app, month, item, editable)}
+    ${item.active === false ? "" : hintHtml(app, month, item)}
     ${calcBlockHtml(app, month, item, line, editable)}
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
       ${modeB ? `<label>ใช้ไป${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</label>` : ""}
       <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
-      <label>OP${inputHtml("op", line.op, editable)}</label>
-      <label>PP${inputHtml("pp", line.pp, editable)}</label>
+      <label>OP${inputHtml("op", line.op, qtyEditable)}</label>
+      <label>PP${inputHtml("pp", line.pp, qtyEditable)}</label>
     </div>
     <div class="item-card-total">รวม <span class="row-total">${formatInt(total)}</span> · เป็นเงิน <span class="row-money">${formatMoney(total * priceOf(app, month, item))}</span></div>
     <div class="limit-msg" data-limit-for="${esc(item.code)}"></div>`;
@@ -879,17 +906,24 @@ function refreshStepTotals(app, month, step) {
 }
 
 // Ceiling feedback for one item — only when the yearly ceiling is exceeded (Q90) · 2z (Q10): an info note (blue), never red, never blocks.
+// 2ad: the ceiling is off from fy 2570 (config.limit_mode "off" → nothing) · over the annual plan = light-yellow row + note, never blocks.
 function refreshRowLimit(app, month, item) {
   const line = sync.getLine(pcuCode(app), month, item.code);
-  const st = roundUsesCurrentFy(app, month)
+  const cur = roundUsesCurrentFy(app, month);
+  const st = cur
     ? limitStatus({ mode: app.boot.config.limit_mode, limits: app.boot.limits, usedFy: monthData(app, month).used_fy, code: item.code, total: lineTotal(line) })
     : null;
+  const plan = cur ? planStatus(app, month, item, lineTotal(line)) : null;
   document.querySelectorAll(`[data-code="${item.code}"] input.num-input`).forEach((inp) => {
     if (inp.dataset.field !== "op" && inp.dataset.field !== "pp") return; // stock/used/adj have their own states (refreshRowCalc)
     inp.classList.toggle("input-note", !!st);
   });
+  document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
+    if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-plan-over", !!plan);
+  });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
-    box.innerHTML = st ? st.messages.map((m) => `<div class="limit-line limit-note">${esc(m)}</div>`).join("") : "";
+    box.innerHTML = (st ? st.messages.map((m) => `<div class="limit-line limit-note">${esc(m)}</div>`).join("") : "")
+      + (plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "");
   });
 }
 
@@ -1070,9 +1104,8 @@ function renderSummary(app, month, steps) {
   const box = document.createElement("div");
   box.className = "summary-page";
   const request = requestOf(app, month);
-  const issueInfo = monthData(app, month).issue;
-  // every needed unit issued -> nothing left to send (re-sending an issued request is pointless)
-  const editable = isEditable(app, month) && !(issueInfo && issueInfo.done);
+  // 2ad: an issued request can still be changed (other lines, คงเหลือ) and re-sent until the round closes
+  const editable = isEditable(app, month);
   const round = roundOf(app, month);
 
   let grandOp = 0, grandPp = 0, grandQty = 0, grandMoney = 0;
@@ -1082,7 +1115,7 @@ function renderSummary(app, month, steps) {
     return { code: step.code, title: stepLabel(step), t, issued: isStepIssued(app, month, step) };
   });
   const lockedSteps = stepRows.filter((s) => s.issued);
-  const { missing, overs } = collectIssues(app, month);
+  const { missing, overs, planOvers } = collectIssues(app, month);
 
   box.innerHTML = `
     <h2>สรุปยอด${editable ? "ก่อนส่ง" : ""}</h2>
@@ -1095,7 +1128,7 @@ function renderSummary(app, month, steps) {
     </table>
 
     ${lockedSteps.length ? `
-    <div class="notice notice-issued" id="summary-issued">หน้าที่จ่ายของแล้ว (แก้ไขไม่ได้): ${lockedSteps.map((s) => esc(s.title)).join(", ")}
+    <div class="notice notice-issued" id="summary-issued">หน้าที่บันทึกจ่ายของแล้ว: ${lockedSteps.map((s) => esc(s.title)).join(", ")} (รายการที่ได้ของแล้วยอดขอคงไว้ตามเดิม)
       — <a href="#/issue?month=${esc(month)}">ดูการจ่าย</a></div>` : ""}
 
     ${stockRequired(app) ? `
@@ -1110,6 +1143,14 @@ function renderSummary(app, month, steps) {
       <p class="limit-note small">แจ้งเพื่อใช้ประมาณการปีถัดไปให้แม่นยำขึ้น — ส่งใบเบิกได้ตามปกติ</p>
       <ul class="jump-list">${overs.map((o) => `<li><a href="#" data-jump="${esc(o.stepCode)}" data-code="${esc(o.code)}" data-field="op">${esc(o.name)} (${esc(o.code)})</a>
         <div class="limit-note small">ยอดขอสะสมปีงบนี้ ${o.status.info.yearUsed} · เพดานรายปี ${o.status.info.limit_year}</div></li>`).join("")}</ul>
+    </div>` : ""}
+
+    ${planOvers.length ? `
+    <div class="summary-section summary-plan" id="plan-box">
+      <h3>รายการที่ยอดรวมปีนี้จะเกินแผน (${planOvers.length})</h3>
+      <p class="small">แจ้งให้ทราบเท่านั้น — ส่งใบเบิกได้ตามปกติ</p>
+      <ul class="jump-list">${planOvers.map((o) => `<li><a href="#" data-jump="${esc(o.stepCode)}" data-code="${esc(o.code)}" data-field="op">${esc(o.name)} (${esc(o.code)})</a>
+        <div class="small">${esc(o.plan.message)}</div></li>`).join("")}</ul>
     </div>` : ""}
 
     <div class="summary-section">

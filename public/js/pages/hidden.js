@@ -36,7 +36,8 @@ export async function renderHidden(container, app) {
   box.innerHTML = `
     <h2>ตั้งค่ารายการที่ไม่เบิก</h2>
     <p class="muted">
-      รายการที่ติ๊กจะไม่ขึ้นตอนกรอก และไม่ต้องกรอกคงเหลือ แต่ยังพิมพ์ในใบเบิก (ช่องว่าง)
+      รายการที่ติ๊กจะไม่ขึ้นตอนกรอก และไม่ต้องกรอกคงเหลือ แต่ยังพิมพ์ในใบเบิก (ช่องว่าง)<br>
+      หาบางรายการในหน้ากรอกไม่เจอ? เอาติ๊กออกแล้วกด “บันทึก” เพื่อแสดงรายการที่ซ่อนกลับมา
     </p>
     <div class="hidden-bulk-actions">
       <button type="button" class="btn btn-secondary" id="btn-never-prev">
