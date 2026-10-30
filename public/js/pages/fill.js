@@ -6,7 +6,7 @@ import { getOrderedSteps, getActiveItemRows } from "../data.js";
 import { call, getPcuToken } from "../api.js";
 import * as sync from "../sync.js";
 import * as store from "../store.js";
-import { formatInt, formatMoney, nowTimeHHMM } from "../format.js";
+import { formatInt, formatMoney, formatMonthKeyThai, nowTimeHHMM } from "../format.js";
 import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
@@ -84,6 +84,12 @@ const QTY_LOCKED_TEXT = "รายการนี้บันทึกรับ�
 function qtyLocked(app, month, code) {
   return !!sync.getLine(pcuCode(app), month, code).qty_locked;
 }
+// 2ai: an item the admin locked from round from_month on (pcuBootstrap.item_locks, this PCU's exemptions already left out) — OP/PP read-only
+function itemLock(app, month, code) {
+  const l = app.boot.item_locks && app.boot.item_locks[code];
+  return l && month >= l.from_month ? l : null;
+}
+const lockText = (l) => `ล็อกรายการตั้งแต่รอบขอเบิก ${formatMonthKeyThai(l.from_month)}${l.note ? ` (${l.note})` : ""} — ถ้าต้องการเบิก ติดต่อ admin`;
 // 2af: a "ไม่เบิก" month takes no requested quantity (OP/PP read-only, คงเหลือ / ใช้ไป still editable) until it is cancelled
 const isNoOrder = (app, month) => !!(requestOf(app, month) || {}).no_order;
 
@@ -328,6 +334,7 @@ function renderNav(app, month, stepCode, codes) {
     // 2ad: the server kept the requested quantity of some lines (issue recorded meanwhile / item cancelled) — show its values again
     if (st.qtyRefused) {
       toast(st.qtyRefusedCode === "ITEM_CANCELLED" ? "รายการนี้ยกเลิกถาวรแล้ว — ยอดขอคงไว้ตามเดิม"
+        : st.qtyRefusedCode === "ITEM_LOCKED" ? "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin"
         : st.qtyRefusedCode === "NO_ORDER" ? 'เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กด "ยกเลิก ไม่เบิก" ก่อนจึงกรอกยอดขอได้'
         : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
@@ -844,6 +851,8 @@ function usedInputHtml(app, month, item, line, editable) {
 function rowNoteHtml(app, month, item, editable) {
   if (item.active === false) return `<div class="row-note">${esc(cancelText(app, item))}</div>`;
   if (editable && qtyLocked(app, month, item.code)) return `<div class="row-note">${esc(QTY_LOCKED_TEXT)}</div>`;
+  const lk = itemLock(app, month, item.code);
+  if (lk) return `<div class="row-note row-note-lock" data-item-lock>🔒 ${esc(lockText(lk))}</div>`;
   return "";
 }
 // 2ae: "ของหมด" / "รอจัดซื้อ" flag set by the hospital (pcuBootstrap.item_flags) — yellow (out) / grey (pending), still orderable
@@ -866,7 +875,7 @@ function buildItemTr(app, month, item, editable) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month) && !itemLock(app, month, item.code);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
@@ -913,7 +922,7 @@ function buildItemCard(app, month, item, editable) {
   const total = lineTotal(line);
   const req = stockRequired(app);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month);
+  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month) && !itemLock(app, month, item.code);
 
   card.innerHTML = `
     <div class="item-card-head">

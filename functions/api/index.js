@@ -109,6 +109,10 @@ const ADMIN = {
   adminAnnouncementList: notices.adminAnnouncementList,
   adminAnnouncementSave: notices.adminAnnouncementSave,
   adminAnnouncementDelete: notices.adminAnnouncementDelete,
+  adminItemLockList: notices.adminItemLockList, // 2ai
+  adminItemLockSet: notices.adminItemLockSet,
+  adminItemLockClear: notices.adminItemLockClear,
+  adminItemLockExempt: notices.adminItemLockExempt,
   adminReceivedReport: admin.adminReceivedReport, // 2af
 };
 const REMOVED = {

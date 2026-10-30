@@ -368,7 +368,7 @@ async function main() {
   eq([pb.next_round.fy, pb.next_round.trial, pb.next_round.locked], [2570, false, false], "next_round carries fy/trial/locked (RoundInfo)");
   eq(pb.history.map((h) => h.month), ["2026-10", "2026-09", "2026-08", "2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02", "2026-01", "2025-12", "2025-11", "2025-10"], "history = every round from FY2569's first (2025-10, 2w) up to before prevRound, newest first (13 entries)");
   ok(pb.history.every((h) => h.status === "not_started" && h.submitted_at === null && h.trial === false && h.locked === false), "history after devReset: all not_started, submitted_at null, not trial, not locked");
-  ok(pb.history[0].fy === 2570 && pb.history.slice(1).every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,locked,month,no_order,status,submitted_at,trial", "history: 2026-10 is fy 2570 (2w), 2026-09 … 2025-10 fy 2569 · entry keys {month,fy,trial,locked,status,submitted_at,no_order}");
+  ok(pb.history[0].fy === 2570 && pb.history.slice(1).every((h) => h.fy === 2569) && Object.keys(pb.history[0]).sort().join() === "fy,has_req,locked,month,no_order,status,submitted_at,trial", "history: 2026-10 is fy 2570 (2w), 2026-09 … 2025-10 fy 2569 · entry keys {month,fy,trial,locked,status,submitted_at,no_order,has_req}");
   const nev = pb.never_prev;
   const hadAny = new Set(Object.keys(seed.actual_prev["2569"].data["PCU01"] || {}).filter((c) => (seed.actual_prev["2569"].data["PCU01"][c].op.some((x) => x > 0) || seed.actual_prev["2569"].data["PCU01"][c].pp.some((x) => x > 0))));
   ok(nev.length > 0 && nev.every((c) => !hadAny.has(c)) && !nev.includes([...hadAny][0]), "never_prev = items with no FY2569 withdrawal in actual_prev");
@@ -755,7 +755,7 @@ async function main() {
     const e2 = await api("pcuBootstrap", {}, T9, o);
     eq([e2.data.history.length, e2.data.history[0].month, e2.data.history.at(-1).month], [11, "2026-08", "2025-10"], "calendar 2026-09: history = 2026-08 … 2025-10 (prevRound 2026-09 is a full card, not history)");
     const hc = (await mustOk("pcuBootstrap", {}, T9)).history.find((h) => h.month === "2026-09");
-    eq(hc, { month: "2026-09", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at, no_order: false }, "calendar CAL: the sent FY2569 round 2026-09 is in history with status submitted + submitted_at");
+    eq(hc, { month: "2026-09", fy: 2569, trial: false, locked: false, status: "submitted", submitted_at: e1.data.request.submitted_at, no_order: false, has_req: true }, "calendar CAL: the sent FY2569 round 2026-09 is in history with status submitted + submitted_at");
     eq(e2.data.byMonth["2026-10"].used_fy, {}, "FY2570 used_fy ignores the FY2569 round 2026-09");
     eq(e2.data.byMonth["2026-10"].prev_lines[A.code], { op: 1, pp: 0, stock: null, received: 1, received_src: "requested" }, "…but prev_lines still reads the previous round");
     ok((await api("saveLines", { month: "2026-10", lines: {} }, T9, o)).ok, "saving in the first round of the FY (2026-10) works");
@@ -1830,7 +1830,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 10, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 11, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2192,10 +2192,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 10, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 11, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 10, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 11, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3564,7 +3564,7 @@ async function main() {
 
     // ---- migration v8 re-run: no error, no second seed, data kept ----
     const fbN = (await list()).items.length;
-    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 10, "devRerunMigration v8 (+ v9)");
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 11, "devRerunMigration v8 (+ v9)");
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
@@ -3649,7 +3649,7 @@ async function main() {
     for (const f of (await mustOk("itemFlagList", {}, ADM2)).flags) await mustOk("itemFlagClear", { code: f.code }, ADM2);
 
     // ---- migration v9 ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 10, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 11, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
 
     // ---- flags: validation + scope ----
     expectErr(await api("itemFlagSet", { code: S1.code, status: "gone" }, ADM2), "BAD_REQUEST", "itemFlagSet bad status");
@@ -3741,7 +3741,7 @@ async function main() {
     ok((await mustOk("adminAuditLog", { limit: 50 }, ADM2)).entries.some((e) => e.action === "adminAnnouncementDelete"), "announcement delete audited");
 
     // ---- migration v9 re-run keeps data ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 10, "devRerunMigration v9 again");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 11, "devRerunMigration v9 again");
     eq((await mustOk("itemFlagList", {}, ADM2)).flags.length, 2, "…flags kept");
 
     for (const c of [S1.code, LB.code]) await mustOk("itemFlagClear", { code: c }, ADM2);
@@ -3752,7 +3752,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("2af: PCU received reports (separate from issued_*, lock the line, mismatch) · เดือนนี้ไม่เบิก (no_order) · admin mismatch report");
   {
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 10, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 11, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
     const F0 = b0.form;
     const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
@@ -3775,7 +3775,7 @@ async function main() {
     // ---- received: validation ----
     expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1 }]), "NOT_FOUND", "no request yet → NOT_FOUND");
     ok((await sv(TP, CUR, { [X.code]: { op: 5, pp: 1 }, [Y.code]: { op: 3 }, [Z.code]: { op: 0, stock: 2 } })).ok, "setup: P draft X 5/1, Y 3, Z 0");
-    expectErr(await rcv(TP, CUR, [{ code: X.code, qty: 1 }]), "NOT_FOUND", "draft (not sent) → NOT_FOUND");
+    eq((await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: null }] }, TP)).changed, 0, "2ai: draft (not sent) with a requested line → reportable (removing a missing report = no write)");
     ok((await sv(TP, CUR, {}, { send: true })).ok, "setup: P sends CUR");
     expectErr(await rcv(TP, CUR, [{ code: Z.code, qty: 1 }]), "BAD_REQUEST", "line requested 0 → cannot report");
     expectErr(await rcv(TP, CUR, [{ code: "ZZ-NOPE", qty: 1 }]), "BAD_REQUEST", "unknown code");
@@ -3903,12 +3903,86 @@ async function main() {
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
 
     // ---- migration re-run keeps data · cleanup ----
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 10, "devRerunMigration v10 again");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 11, "devRerunMigration v10 again");
     eq([(await aLine(P, CUR, Y.code)).rcv_qty, (await mustOk("adminGetRequest", { pcu: Q, month: CUR }, ADM2)).request.no_order], [1, true], "…reports and no_order kept");
     for (const pc of [P, Q]) for (const m of [CUR, PREV, FIRST70]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
     eq((await mustOk("adminReceivedReport", { all: true, pcu: P }, ADM2)).rows.length, 0, "devDeleteRequest removes the received reports too");
   }
 
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2ai: admin item locks (per-PCU release) · received on any request with a requested line");
+  {
+    eq((await mustOk("devRerunMigration", { v: 11 })).schema_version, 11, "devRerunMigration v11 (item_locks + item_lock_exempt re-run cleanly)");
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
+    const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const real = b0.pcus.filter((x) => x.group !== "ทดลอง");
+    const P = real.at(-2).code, Q = real.at(-3).code;
+    for (const pc of [P, Q]) for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
+    for (const m of [CUR, PREV]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const TQ = (await mustOk("pcuLogin", { pcu: Q, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-12-28T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (tok, month, lines, extra = {}) => api("saveLines", { month, lines: L(lines), ...extra }, tok);
+
+    // PREV has X 4 before the lock exists
+    ok((await sv(TP, PREV, { [X.code]: { op: 4 } })).ok, "setup: P PREV X op 4 (before the lock)");
+    // validation + permissions
+    expectErr(await api("adminItemLockSet", { code: X.code, from_month: CUR }, TP), "FORBIDDEN", "PCU token → FORBIDDEN");
+    expectErr(await api("adminItemLockSet", { code: "ZZ-NOPE", from_month: CUR }, ADM2), "NOT_FOUND", "code not on the form → NOT_FOUND");
+    expectErr(await api("adminItemLockSet", { code: X.code, from_month: "2026-13" }, ADM2), "BAD_REQUEST", "bad from_month");
+    expectErr(await api("adminItemLockExempt", { code: X.code, pcu: P, exempt: true }, ADM2), "NOT_FOUND", "exempt on an unlocked code → NOT_FOUND");
+    const s1 = await mustOk("adminItemLockSet", { code: X.code, from_month: CUR, note: " ใช้ตัวอื่นแทน " }, ADM2);
+    eq([s1.changed, s1.lock.from_month, s1.lock.note], [true, CUR, "ใช้ตัวอื่นแทน"], "lock X from CUR (note trimmed)");
+    eq((await mustOk("adminItemLockSet", { code: X.code, from_month: CUR, note: "ใช้ตัวอื่นแทน" }, ADM2)).changed, false, "same lock again → changed false");
+    // PCU side
+    const pb = await mustOk("pcuBootstrap", {}, TP);
+    eq([pb.item_locks[X.code].from_month, pb.item_locks[X.code].note, pb.item_locks[X.code].banner], [CUR, "ใช้ตัวอื่นแทน", true], "pcuBootstrap.item_locks carries X (banner on)");
+    const e1 = await sv(TP, CUR, { [X.code]: { op: 2 } });
+    expectErr(e1, "ITEM_LOCKED", "CUR: requesting a locked item → ITEM_LOCKED");
+    eq(e1.error && e1.error.items, [{ code: X.code, op: null, pp: null }], "…items carry the stored op/pp");
+    ok((await sv(TP, CUR, { [X.code]: { stock: 7 }, [Y.code]: { op: 1 } })).ok, "CUR: stock of the locked item + another item → ok");
+    ok((await sv(TP, PREV, { [X.code]: { op: 3 } })).ok, "PREV (before from_month): lowering kept qty → ok");
+    ok((await sv(TP, PREV, { [X.code]: { op: 9 } })).ok, "PREV (before from_month): not locked → ok");
+    // exempt P only
+    eq((await mustOk("adminItemLockExempt", { code: X.code, pcu: P, exempt: true }, ADM2)).changed, true, "release X for P");
+    eq((await mustOk("adminItemLockExempt", { code: X.code, pcu: P, exempt: true }, ADM2)).changed, false, "…again → changed false");
+    ok(!(await mustOk("pcuBootstrap", {}, TP)).item_locks[X.code], "P no longer sees the X lock");
+    ok((await sv(TP, CUR, { [X.code]: { op: 2 } })).ok, "P (released) requests X → ok");
+    expectErr(await sv(TQ, CUR, { [X.code]: { op: 2 } }), "ITEM_LOCKED", "Q still locked");
+    const ll = (await mustOk("adminItemLockList", {}, ADM2)).locks.find((l) => l.code === X.code);
+    eq(ll.exempt.map((e) => e.pcu), [P], "adminItemLockList shows P's release");
+    // admin keying is never locked
+    ok((await mustOk("adminSaveLines", { pcu: Q, month: CUR, lines: { [X.code]: { op: 3, pp: 0 } } }, ADM2)), "adminSaveLines on a locked item → ok");
+    ok((await sv(TQ, CUR, { [X.code]: { op: 1 } })).ok, "Q lowers the admin-keyed qty 3 → 1 → ok");
+    expectErr(await sv(TQ, CUR, { [X.code]: { op: 2 } }), "ITEM_LOCKED", "Q raises it again → ITEM_LOCKED");
+    // take the release back, P locked again (its stored 2 stays)
+    eq((await mustOk("adminItemLockExempt", { code: X.code, pcu: P, exempt: false }, ADM2)).changed, true, "take back P's release");
+    expectErr(await sv(TP, CUR, { [X.code]: { op: 5 } }), "ITEM_LOCKED", "P locked again");
+    // 2ai received: Q's request is an admin-keyed draft → reportable
+    const rq = await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 1 }] }, TQ);
+    eq(rq.request.lines[X.code].rcv_qty, 1, "received on an admin-keyed draft (not sent) → ok");
+    ok((await mustOk("pcuGetMonth", { month: CUR }, TQ)).request.status === "draft", "…request still draft");
+    // clear
+    eq((await mustOk("adminItemLockClear", { code: X.code }, ADM2)).changed, true, "clear lock");
+    eq((await mustOk("adminItemLockClear", { code: X.code }, ADM2)).changed, false, "clear again → changed false");
+    ok(!(await mustOk("pcuBootstrap", {}, TQ)).item_locks[X.code], "lock gone for Q");
+    eq((await mustOk("adminItemLockList", {}, ADM2)).locks.length, 0, "no locks, exemptions cleared");
+    // banner window: from_month 3 rounds back → no banner, still locked
+    const old = (() => { const [y, m] = CUR.split("-").map(Number); const k = y * 12 + m - 1 - 3; return `${Math.floor(k / 12)}-${String(k % 12 + 1).padStart(2, "0")}`; })();
+    await mustOk("adminItemLockSet", { code: Y.code, from_month: old }, ADM2);
+    eq((await mustOk("pcuBootstrap", {}, TQ)).item_locks[Y.code].banner, false, "lock from 3 rounds ago → banner off (still locked)");
+    await mustOk("adminItemLockClear", { code: Y.code }, ADM2);
+    // no_order month → no received report
+    for (const pc of [P, Q]) for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
+    ok((await sv(TQ, CUR, { [Y.code]: { op: 1 } })).ok, "setup Q CUR Y 1");
+    await mustOk("pcuNoOrder", { month: CUR }, TQ);
+    expectErr(await api("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 1 }] }, TQ), "BAD_REQUEST", "ไม่เบิก month → no received report");
+    await mustOk("devDeleteRequest", { pcu: Q, month: CUR });
+  }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }

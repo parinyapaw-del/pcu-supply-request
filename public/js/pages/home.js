@@ -7,7 +7,7 @@ import {
   loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow,
 } from "./common.js";
 import * as sync from "../sync.js";
-import { fiscalYearOf, fiscalYearStartMonthKey, prevMonthKey } from "../format.js";
+import { fiscalYearOf, fiscalYearStartMonthKey, formatMonthKeyThai, prevMonthKey } from "../format.js";
 import { formatThaiYmd, formatThaiShortDate } from "./common.js";
 import { getJSON, safeSet } from "../store.js";
 
@@ -49,7 +49,9 @@ function withIssueStatus(st, issue) {
 }
 
 // 2af: "รายงานของได้จริง" — any sent month of the fy (closed rounds too), not a "ไม่เบิก" month · `cls` = button style
-const isSent = (r) => !!r && (r.status === "submitted" || r.status === "issued") && !r.no_order;
+// 2ai: "รายงานของได้จริง" shows on every month whose request has a requested line — the PCU's own or keyed by admin, sent or not
+// (history rows carry has_req; current rounds carry their lines) · never on a "ไม่เบิก" month
+const canReport = (r) => !!r && !r.no_order && (r.lines ? itemsRequested(r) > 0 : !!r.has_req);
 const receivedBtnHtml = (month) =>
   `<a class="btn btn-secondary" href="#/received?month=${esc(month)}" data-received="${esc(month)}">รายงานของได้จริง</a>`;
 
@@ -81,7 +83,7 @@ function cardHtml(app, round) {
         ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
         : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${started ? "ทำต่อ" : "กรอก"}</button>`}
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์/ดาวน์โหลด</button>
-      ${isSent(request) ? receivedBtnHtml(round.month) : ""}
+      ${canReport(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}" data-issue="${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
     ${locked ? "" : `<p class="noorder-line">${request && request.no_order
@@ -99,10 +101,27 @@ function collapsedHtml(app, round) {
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์/ดาวน์โหลด</button>
-      ${isSent(request) ? receivedBtnHtml(round.month) : ""}
+      ${canReport(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </details>`;
+}
+
+// 2ai: one combined notice of the items the admin locked (pcuBootstrap.item_locks, banner = within 3 rounds from the lock's first round)
+function lockNoticeHtml(app) {
+  const locks = app.boot.item_locks || {};
+  const codes = Object.keys(locks).filter((c) => locks[c].banner);
+  if (!codes.length) return "";
+  const nameOf = (code) => {
+    for (const s of (app.boot.form && app.boot.form.steps) || []) {
+      const r = (s.rows || []).find((x) => x.type === "item" && x.code === code);
+      if (r) return r.name;
+    }
+    return code;
+  };
+  const items = codes.map((c) => `<li>${esc(nameOf(c))} — ล็อกตั้งแต่รอบขอเบิก ${esc(formatMonthKeyThai(locks[c].from_month))}${locks[c].note ? ` (${esc(locks[c].note)})` : ""}</li>`).join("");
+  return `<div class="announce-bar lock-notice" role="status" data-lock-notice><span class="announce-icon" aria-hidden="true">🔒</span>
+    <div class="announce-text"><strong>รายการที่ล็อก งดขอเบิก</strong><ul>${items}</ul>ถ้าต้องการเบิกรายการเหล่านี้ ติดต่อ admin เพื่อขอปลดล็อก</div></div>`;
 }
 
 function noticesHtml(app) {
@@ -175,7 +194,7 @@ function historyRowHtml(h) {
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์/ดาวน์โหลด</button>
-      ${isSent(h) ? receivedBtnHtml(h.month) : ""}
+      ${canReport(h) ? receivedBtnHtml(h.month) : ""}
       ${h.status === "issued" ? `<a class="btn btn-secondary" href="#/issue?month=${esc(h.month)}">ดูการจ่าย</a>` : ""}
     </div>
   </details>`;
@@ -229,6 +248,7 @@ export async function renderHome(container, app) {
 
   box.innerHTML = `
     ${announcementsHtml(app)}
+    ${lockNoticeHtml(app)}
     ${pinWarnHtml}
     ${noticesHtml(app)}
     <h2>สวัสดี ${esc(app.boot.pcu.name)}</h2>

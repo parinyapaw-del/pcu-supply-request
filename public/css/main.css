@@ -334,6 +334,9 @@ button, input, select {
 .stock-flag-ok { font-weight: 400; opacity: 0.85; }
 .announce-bar { background: var(--note-bg); color: var(--text); border: 1px solid var(--note); border-radius: 8px; padding: 10px 14px; margin: 14px 0 0; display: flex; align-items: flex-start; gap: 10px; }
 .announce-text { flex: 1; white-space: pre-line; overflow-wrap: anywhere; }
+.lock-notice .announce-text { white-space: normal; }
+.lock-notice ul { margin: 4px 0 4px 1.2em; padding: 0; }
+.row-note-lock { color: #8a5a00; }
 .announce-hide { flex: none; font-size: 0.85rem; }
 
 .num-input { width: 72px; min-height: 40px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }

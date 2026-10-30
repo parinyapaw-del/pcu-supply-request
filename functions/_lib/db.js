@@ -176,6 +176,14 @@ const V10 = [
   `ALTER TABLE requests ADD COLUMN no_order INTEGER NOT NULL DEFAULT 0`,
 ];
 
+// Migration v11 (2ai, admin item locks): item_locks = one row per locked item code — its requested qty (op/pp) can't be raised by a PCU in
+// rounds >= from_month (stock / used stay editable; adminSaveLines is never locked) · item_lock_exempt = per-PCU release of one lock, kept
+// until the admin takes it back (cleared with the lock). Plain CREATE IF NOT EXISTS → re-runnable.
+const V11 = [
+  `CREATE TABLE IF NOT EXISTS item_locks (item_code TEXT PRIMARY KEY, from_month TEXT NOT NULL, note TEXT, set_by TEXT, set_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS item_lock_exempt (item_code TEXT NOT NULL, pcu TEXT NOT NULL, set_by TEXT, set_at TEXT, PRIMARY KEY (item_code, pcu))`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -188,10 +196,11 @@ export const MIGRATIONS = [
   { v: 8, statements: V8, oneByOne: true, tolerate: /duplicate column/i },
   { v: 9, statements: V9, oneByOne: true, tolerate: /duplicate column/i },
   { v: 10, statements: V10, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 11, statements: V11, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "item_locks", "item_lock_exempt", "audit_log",
 ];
 
 let migrated = false;

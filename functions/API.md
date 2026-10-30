@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - **Rounds (brief 2j).** A round is keyed by the month the supplies are *for* ("ขอเบิกเดือน X"); it is filled and submitted during the month
@@ -96,6 +96,9 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
     "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)" (`op`/`pp` = the stored values). `stock`, `used`, `adj`, `adj_reason`, `calc_from` stay editable.
   - item with `active:false` in the latest form of the round's fy (= cancelled for good) and `op+pp > 0` → `ITEM_CANCELLED{items:[{code,op,pp}]}`
     "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้" (lowering it to 0 / null is allowed).
+  - **2ai**: item locked by the admin for this PCU and month (`item_locks.from_month <= month`, no `item_lock_exempt` row for the pcu) and `op` or `pp` raised
+    above the stored value → `ITEM_LOCKED{items:[{code,op,pp}]}` "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin" (lowering / same value / stock allowed;
+    `adminSaveLines` is never locked).
   - **2af**: request with `no_order = 1` and a line's `op+pp` changed to > 0 → `NO_ORDER{items:[{code,op,pp}]}` "เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กดยกเลิก … ก่อน"
     (stock / used stay editable; `send:true` on such a request keeps `no_order`).
   - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`, also for `NO_ORDER`).
@@ -120,7 +123,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 
 `pcuReceivedSave` rules (2af — `functions/_lib/pcu.js`; table `received_reports`, never touches `request_lines.issued_*`)
 - `month`: `YYYY-MM`, ≤ `currentRound`, round fy = `fy_current` or `fy_current − 1` (else `BAD_REQUEST`) — **closed rounds too** (the round lock only closes the request).
-- The PCU's own request of that month must be sent (`submitted`/`issued`) else `NOT_FOUND` "ยังไม่ได้ส่งใบเบิกเดือนนี้…" (a "ไม่เบิก" month has no requested line).
+- 2ai: the PCU's own request of that month must exist (any status — keyed by the PCU or by admin, sent or not) else `NOT_FOUND` "เดือนนี้ยังไม่มีใบเบิก…" · a "ไม่เบิก" month → `BAD_REQUEST`.
 - Each `code` must be a line with `op+pp > 0` else `BAD_REQUEST{item_code}` "รายการ … ไม่ได้ขอในเดือนนี้" · duplicate code / missing `qty` → `BAD_REQUEST`.
 - `qty`: integer 0–99999 = the total received (one figure, not OP/PP) · `null` = remove the report (back to "not reported"; **not reported ≠ 0**).
 - `received_date`: valid date ≤ Bangkok today; omitted = the stored date, else today · `note`: trimmed, clipped to 200, `""` → null; omitted = keep.
@@ -161,7 +164,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   rounds: [ RoundInfo ],                     // [currentRound, prevRound] (§5.1 RoundInfo, incl. trial)
   next_round: { ...RoundInfo, opens_on:"2026-12-01" },  // 2l: preview of nextMonth(currentRound) (not writable yet); opens_on = `${currentRound}-01`
   history: [ {month, fy, trial, locked,      // 2l: EVERY round month m with fyMonths(F-1)[0] <= m < prevRound (F = monthFy(currentRound)), newest first,
-     status:"not_started"|"draft"|"submitted"|"issued", submitted_at|null, no_order:bool} ],  //  ≤ 23 entries; "not_started" = no request row (replaces older_months; no lines) · 2af no_order
+     status:"not_started"|"draft"|"submitted"|"issued", submitted_at|null, no_order:bool, has_req:bool} ],  //  ≤ 23 entries; "not_started" = no request row (replaces older_months; no lines) · 2af no_order · 2ai has_req = a line with op+pp > 0
   hidden: [item_code],
   never_prev: [item_code],                   // items of the form this PCU never withdrew in FY(fy_current-1) per actual_prev ([] if no history for this PCU)
   limits: { code: [null, limit_year|null] },                 // fy_current · 2z (R10): slot 0 (limit_month) is always null for the PCU
@@ -181,6 +184,9 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
                                            // Price of item X in round R on the client = prices[R][X] ?? form price.
   item_flags: { code: {status:"out"|"pending", note|null, eta:"YYYY-MM-DD"|null} },   // 2ae: every flagged item (same map for every PCU) — fill page badge
                                            // "ของหมด" (yellow) / "รอจัดซื้อ" (grey) + "ยังสั่งได้"; never blocks saveLines. Set by admin / own-unit dispenser (§5.7)
+  item_locks: { code: {from_month:"YYYY-MM", note|null, banner:bool} },  // 2ai: admin locks that apply to THIS pcu (its exemptions left out) — fill page:
+                                           // OP/PP read-only for rounds >= from_month + 🔒 note · home: one combined notice of the codes with banner:true
+                                           // (currentRound <= from_month + 2, i.e. from setting the lock through its 3rd round)
   announcements: [ {id, text, expires_at|null, updated_at} ]   // 2ae: active AND (expires_at NULL OR expires_at >= Bangkok today), newest first, ≤ 10 —
                                            // home page banner; "ซ่อน" is per device (localStorage `pcu.announce.hidden` = ["id@updated_at"], an edit shows it again)
 }
@@ -655,6 +661,16 @@ Admin RequestObj lines (`adminGetRequest`, issue views §5.3) carry `rcv_qty / r
 |---|---|---|---|
 | `adminReceivedReport` | admin | `fy?` (default fy_current), `month?` (must be a round of that fy), `pcu?`, `all?:true` | `{fy, month|null, pcu|null, counts:{reported, mismatch}, rows:[{month, pcu, pcu_name, code, name, unit, dispense_unit, requested, issued_total|null, rcv_qty, diff|null (= rcv_qty − issued_total), mismatch:bool, rcv_date, rcv_note, issue_reason, issue_note, reported_at}]}` · default rows = mismatches only (issued_total set and ≠ rcv_qty), `all:true` = every reported line · sorted month, pcu, code · unknown pcu → `NOT_FOUND` · bad fy / month outside the fy → `BAD_REQUEST`. CSV is built client side. |
 
+### 5.9 Item locks (2ai — `functions/_lib/notices.js`, admin only, card "ล็อกรายการ" in tab `#notices`, `public/js/admin/tab15_locks.js`)
+A lock = one row per item code: from round `from_month` on, a PCU cannot raise the requested qty (saveLines `ITEM_LOCKED`, §4). Per-PCU release (`item_lock_exempt`)
+stays until the admin takes it back. Writes only on change (1–2 rows + 1 audit).
+| action | params | data |
+|---|---|---|
+| `adminItemLockList` | – | `{locks:[{code,from_month,note,set_by,set_at,exempt:[{pcu,set_by,set_at}]}], current_round, banner_rounds:3}` newest first |
+| `adminItemLockSet` | `code, from_month:"YYYY-MM", note?` (trimmed ≤ 200) | `{lock, changed}` · code not on the latest form of fy_current → `NOT_FOUND` · bad month/note → `BAD_REQUEST` · same → `changed:false` · audit `adminItemLockSet` |
+| `adminItemLockClear` | `code` | `{ok, changed}` · deletes the lock and all its exemptions · audit `adminItemLockClear` |
+| `adminItemLockExempt` | `code, pcu, exempt:bool` | `{ok, changed}` · true = release for that pcu, false = take back · no lock / unknown pcu → `NOT_FOUND` · audit `adminItemLockExempt` |
+
 FAQ answers are plain text rendered by `public/js/faq_render.js`: HTML escaped → `**bold**` → `[label](url)` (only `https://`, `http://`, `#…`, `/…`) → line breaks.
 
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
@@ -774,7 +790,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -817,6 +833,8 @@ faq(id PK AUTOINCREMENT, question, answer, aud_pcu, aud_dispenser, aud_admin (0|
 item_flags(item_code PK, status 'out'|'pending', note NULL, eta 'YYYY-MM-DD' NULL, set_by, set_at)        -- v9 (2ae): one row per flagged code, no fy
 announcements(id PK AUTOINCREMENT, text, expires_at 'YYYY-MM-DD' NULL, active 0|1 DEFAULT 1, created_by, created_at, updated_by, updated_at)  -- v9 (2ae)
 received_reports(request_id, item_code, qty INTEGER NOT NULL, received_date 'YYYY-MM-DD', note NULL, reported_by, reported_at)  PK(request_id,item_code)  -- v10 (2af): no row = not reported
+item_locks(item_code PK, from_month 'YYYY-MM', note NULL, set_by, set_at)                                -- v11 (2ai): one row per locked code, no fy
+item_lock_exempt(item_code, pcu, set_by, set_at)  PK(item_code,pcu)                                      -- v11 (2ai): per-PCU release
 audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
 ```
 - Migrations run automatically at the start of each request when `schema_version` is behind (cached per isolate). They must be idempotent.
@@ -845,6 +863,7 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   **v10** (2af) = `CREATE TABLE IF NOT EXISTS received_reports …` + `ALTER TABLE requests ADD COLUMN no_order INTEGER NOT NULL DEFAULT 0` (one by one, duplicate column
   tolerated; re-run tested with `devRerunMigration{v:10}`). No extra index — the PK serves every lookup (by request_id; the admin report joins from `requests`
   by month range). `received_reports` is in `TABLES`; `adminClearTrial`, `devDeleteRequest` and `devSetRequestMonth` delete / move its rows with the request.
+  **v11** (2ai) = `CREATE TABLE IF NOT EXISTS item_locks …` + `CREATE TABLE IF NOT EXISTS item_lock_exempt …` (re-run tested with `devRerunMigration{v:11}`); both in `TABLES`.
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

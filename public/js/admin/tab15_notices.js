@@ -2,8 +2,10 @@
 // Card 1 (admin + dispenser): per-item flags "ของหมด" / "รอจัดซื้อ" shown to every PCU on the fill page — never block ordering, cleared by hand.
 //   A dispenser edits only items of its own dispense units (the server answers FORBIDDEN otherwise); every flag is listed for everyone.
 // Card 2 (admin only): free-text announcements on the PCU home page (optional last day, can be switched off).
+// Card 3 (admin only, 2ai): item locks — tab15_locks.js.
 import { el, escapeHtml, toast, errMessage, confirmDialog, formDialog, formatBangkokDateTime, formatDateThai, tableScroll } from "./util.js";
 import { DISPENSE_UNITS } from "./compute.js";
+import { mountLockCard } from "./tab15_locks.js";
 
 export const FLAG_LABEL = { out: "ของหมด", pending: "รอจัดซื้อ" };
 const MAX_RESULTS = 50;
@@ -44,6 +46,7 @@ export function renderTab15(container, ctx) {
     annList = el("div", { id: "t15-ann-list" });
     annCard.appendChild(annList);
   }
+  const lockCard = state.isAdmin ? mountLockCard(container, ctx) : null;
 
   const canEdit = (unit) => state.isAdmin || (!!unit && myUnits.includes(unit));
   const itemOf = (code) => cat.byCode[code] || null;
@@ -195,6 +198,6 @@ export function renderTab15(container, ctx) {
 
   renderResults();
   return {
-    onShow() { loadFlags(); if (state.isAdmin) loadAnns(); },
+    onShow() { loadFlags(); if (state.isAdmin) { loadAnns(); lockCard.load(); } },
   };
 }

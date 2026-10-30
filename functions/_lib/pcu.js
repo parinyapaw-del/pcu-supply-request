@@ -14,7 +14,7 @@ import {
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
-import { pcuNotices } from "./notices.js";
+import { lockedCodes, pcuNotices } from "./notices.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
 const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
@@ -135,7 +135,8 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     DB.prepare(`SELECT item_code, plan_op, plan_pp FROM plans WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
     getRoundRows(DB, [nxt, cur, prev]),
     Promise.all([
-      DB.prepare(`SELECT month, status, submitted_at, no_order FROM requests WHERE pcu = ? AND month >= ? AND month < ?`).bind(code, histFrom, prev).all(),
+      DB.prepare(`SELECT month, status, submitted_at, no_order, EXISTS (SELECT 1 FROM request_lines l WHERE l.request_id = requests.id
+        AND COALESCE(l.op,0) + COALESCE(l.pp,0) > 0) AS has_req FROM requests WHERE pcu = ? AND month >= ? AND month < ?`).bind(code, histFrom, prev).all(),
       DB.prepare(`SELECT month, locked FROM rounds WHERE month >= ? AND month < ?`).bind(histFrom, prev).all(),
     ]),
     DB.prepare(`SELECT DISTINCT item_code FROM actual_prev WHERE fy = ? AND pcu = ? AND (COALESCE(op,0) > 0 OR COALESCE(pp,0) > 0)`).bind(fy - 1, code).all(),
@@ -144,7 +145,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     pcuMonthView(DB, code, prev, fy),
     DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND status = 'issued' AND issued_seen_at IS NULL`).bind(code).all(),
     firstRequester(DB, code),
-    pcuNotices(DB), // 2ae
+    pcuNotices(DB, code), // 2ae · 2ai locks
   ]);
 
   // never_prev: active items this PCU never withdrew last fy (only meaningful when we have history for the PCU)
@@ -168,6 +169,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     history.push({
       month: m, fy: monthFy(m), trial: !!cfg.trial_month && m === cfg.trial_month, locked: histLocked.get(m) || false,
       status: r ? r.status : "not_started", submitted_at: (r && r.submitted_at) || null, no_order: !!(r && r.no_order), // 2af
+      has_req: !!(r && r.has_req), // 2ai: any requested line (→ "รายงานของได้จริง")
     });
   }
 
@@ -221,6 +223,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     issue_notices: notices,
     prices, // 2p: { round: {code: price} } — only codes whose round price differs from the form ({} per round when none)
     item_flags: live.item_flags, // 2ae: {code: {status, note, eta}} — every PCU, never blocks ordering
+    item_locks: live.item_locks, // 2ai: {code: {from_month, note, banner}} — requested qty locked from round from_month (this PCU's exemptions left out)
     announcements: live.announcements, // 2ae: live admin banners for the home page, newest first
   };
 }
@@ -325,7 +328,9 @@ export async function saveLines(ctx, p) {
   // (stock / used / adj still change), and a permanently cancelled item (active:false in the latest form) takes no new quantity.
   // Every offending line is listed with its stored op/pp so the client can put them back in one go (sync.js).
   // 2af: a "ไม่เบิก" month takes no requested quantity (stock / used still change) until the PCU cancels it (pcuNoOrderCancel).
-  const qtyLocked = [], cancelled = [], noOrder = [];
+  // 2ai: an item the admin locked from this round on takes no new / higher requested quantity (lowering it, e.g. to 0, is fine).
+  const qtyLocked = [], cancelled = [], noOrder = [], itemLocked = [];
+  const locks = parsed.length ? await lockedCodes(DB, pcu.code, month) : new Set();
   for (const l of parsed) {
     const e = existing.get(l.code);
     const sameQty = (e ? e.op ?? null : null) === l.op && (e ? e.pp ?? null : null) === l.pp;
@@ -333,12 +338,16 @@ export async function saveLines(ctx, p) {
     if (lineQtyLocked(e)) { qtyLocked.push({ code: l.code, op: e.op ?? null, pp: e.pp ?? null }); continue; }
     if (reqRow && reqRow.no_order && (l.op || 0) + (l.pp || 0) > 0) { noOrder.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null }); continue; }
     const ent = latest.index.get(l.code);
-    if (ent && ent.item.active === false && (l.op || 0) + (l.pp || 0) > 0) cancelled.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null });
+    if (ent && ent.item.active === false && (l.op || 0) + (l.pp || 0) > 0) { cancelled.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null }); continue; }
+    if (locks.has(l.code) && ((l.op || 0) > (e ? e.op || 0 : 0) || (l.pp || 0) > (e ? e.pp || 0 : 0))) {
+      itemLocked.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null });
+    }
   }
   if (qtyLocked.length) {
     throw err("LINE_LOCKED", "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)", { items: qtyLocked });
   }
   if (cancelled.length) throw err("ITEM_CANCELLED", "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้", { items: cancelled });
+  if (itemLocked.length) throw err("ITEM_LOCKED", "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin", { items: itemLocked });
   if (noOrder.length) throw err("NO_ORDER", "เดือนนี้แจ้ง \"ไม่เบิก\" ไว้ — กดยกเลิก \"ไม่เบิก\" ก่อนจึงกรอกยอดขอได้ (คงเหลือกรอกได้ตามปกติ)", { items: noOrder });
 
   // ---- write lines (per-line last-write-wins in SQL) ----
@@ -497,7 +506,7 @@ export async function pcuNoOrderCancel(ctx, p) {
 
 // ---- 2af: รายงานของได้จริง ---------------------------------------------------------------------------------------------------------
 // pcuReceivedSave{month, lines:[{code, qty|null, received_date?, note?}]} — what the PCU actually got, per requested line (op+pp > 0) of a
-// sent request of fy_current or the fy before (any month, closed rounds too). qty null = remove the report (back to "not reported").
+// request (any status — 2ai, not "ไม่เบิก") of fy_current or the fy before (any month, closed rounds too). qty null = remove the report (back to "not reported").
 // received_date defaults to today (Bangkok), never in the future. Stored in received_reports only (issued_* untouched); only rows whose
 // values change are written. A reported line's requested quantity is then locked (lineQtyLocked).
 const RCV_NOTE_MAX = 200;
@@ -513,7 +522,9 @@ export async function pcuReceivedSave(ctx, p) {
   if (!linesIn || !linesIn.length) throw err("BAD_REQUEST", "ไม่มีรายการที่จะบันทึก");
   if (linesIn.length > MAX_LINES) throw err("BAD_REQUEST", "จำนวนบรรทัดมากเกินไป");
   const reqRow = await getRequestRow(DB, pcu.code, month);
-  if (!reqRow || !(reqRow.status === "submitted" || reqRow.status === "issued")) throw err("NOT_FOUND", "ยังไม่ได้ส่งใบเบิกเดือนนี้ จึงแจ้งได้รับไม่ได้");
+  // 2ai: any request with a requested line (the PCU's own or keyed by admin, sent or not) — not a "ไม่เบิก" month
+  if (!reqRow) throw err("NOT_FOUND", "เดือนนี้ยังไม่มีใบเบิก จึงแจ้งได้รับไม่ได้");
+  if (reqRow.no_order) throw err("BAD_REQUEST", "เดือนนี้แจ้ง \"ไม่เบิก\" ไว้ จึงแจ้งได้รับไม่ได้");
   const lines = await getLines(DB, reqRow.id);
   const byCode = new Map(lines.map((l) => [l.item_code, l]));
   const today = bangkokDate();

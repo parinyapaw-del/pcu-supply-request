@@ -363,7 +363,7 @@ async function runSave(session) {
       session.lastOutcome = "offline";
       notify(session, "offline");
       scheduleRetry(session);
-    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED" || err.code === "NO_ORDER") && fixRefusedQty(session, err)) {
+    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED" || err.code === "ITEM_LOCKED" || err.code === "NO_ORDER") && fixRefusedQty(session, err)) {
       // 2ad: the server keeps the requested quantity of these lines (issue recorded / item cancelled) — the stored op/pp are back on
       // screen, the rest of each line (คงเหลือ / ใช้ไป) and every other dirty line go out again right away.
       session.lastOutcome = "ok";

@@ -31,9 +31,11 @@ export async function renderReceived(container, app, params) {
   container.innerHTML = "";
   container.appendChild(box);
 
-  if (!request || !(request.status === "submitted" || request.status === "issued") || request.no_order) {
+  // 2ai: any request with a requested line (own or keyed by admin, sent or not) — not a "ไม่เบิก" month
+  const anyReq = !!request && Object.values(request.lines || {}).some((l) => (Number(l && l.op) || 0) + (Number(l && l.pp) || 0) > 0);
+  if (!anyReq || request.no_order) {
     box.innerHTML = `<h2>รายงานของได้จริง ${esc(title)}</h2>
-      <p class="muted">${request && request.no_order ? 'เดือนนี้แจ้ง "ไม่เบิก" — ไม่มีรายการให้รายงาน' : "ยังไม่ได้ส่งใบเบิกเดือนนี้ — รายงานได้หลังส่งใบเบิกแล้ว"}</p>
+      <p class="muted">${request && request.no_order ? 'เดือนนี้แจ้ง "ไม่เบิก" — ไม่มีรายการให้รายงาน' : "เดือนนี้ยังไม่มียอดขอเบิก — ไม่มีรายการให้รายงาน"}</p>
       <p><a class="btn btn-secondary" href="#/home">กลับหน้าหลัก</a></p>`;
     return;
   }
