@@ -234,6 +234,9 @@ const SHOTS = (c) => [
     marks: { list: "summary::รายการที่ซ่อนไว้", hide: `button[data-hide="P1-01"]` } },
   { img: "hidden_2.png", role: "pcu", url: "index.html#/hidden", clip: { from: "h2::ตั้งค่ารายการที่ไม่เบิก", to: `input[data-code="P1-08"]` },
     marks: { never: "#btn-never-prev", tick: `input[data-code="P1-01"]`, clear: "#btn-clear-all" } },
+  { img: "hidden_3.png", role: "pcu", url: `index.html#/fill/P5?month=${c.OPEN}`, actions: [{ click: "details.hidden-drawer > summary" }],
+    clip: { from: "details.hidden-drawer", to: "details.hidden-drawer", pad: 12 },
+    marks: { list: "details.hidden-drawer > summary", back: ".hidden-item-row button::แสดงในหน้ากรอก" } },
   { img: "stock_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, actions: [{ click: "#stock-mode-toggle" }],
     clip: { from: "#stock-mode-toggle", to: `input[data-field="pp"]`, pad: 90 },
     marks: { toggle: "#stock-mode-toggle", used: `input[data-field="used"]`, stock: `input[data-field="stock"]` } },
@@ -249,8 +252,11 @@ const SHOTS = (c) => [
     marks: { search: ".dash-search", excel: ".dash-export-xlsx", csv: ".dash-export" } },
   { img: "announce_1.png", role: "pcu", url: "index.html#/home", clip: { from: ".announce-bar", to: ".announce-bar", pad: 4 },
     marks: { bar: ".announce-bar", hide: ".announce-hide" } },
-  { img: "noorder_1.png", role: "pcu", url: "index.html#/home", clip: { from: "h3::มกราคม 2570", to: `button[data-noorder="on"]`, pad: 16 },
+  { img: "noorder_1.png", role: "pcu", url: "index.html#/home", clip: { from: `.round-card:has(button[data-noorder="on"])`, to: `.round-card:has(button[data-noorder="on"])`, pad: 8 },
     marks: { btn: `button[data-noorder="on"]` } },
+  { img: "noorder_2.png", role: "pcu", url: "index.html#/home", actions: [{ click: `button[data-noorder="on"][data-month="${c.OPEN}"]` }, { waitFor: ".dialog-box" }],
+    clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 },
+    marks: { warn: ".dialog-box .notice-warn", cancel: ".dialog-box .btn-secondary", ok: ".dialog-box .btn-primary" } },
   { img: "received_1.png", role: "pcu", url: "index.html#/received?month=2026-12", clip: { from: "h2::รายงานของได้จริง", to: ".rcv-mismatch", pad: 16 },
     marks: { date: "#rcv-date", full: "#rcv-fill", qty: ".rcv-qty", flag: ".rcv-flag:not([hidden])" } },
   { img: "flags_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: `tr[data-code="P1-02"]`, to: `tr[data-code="P1-05"]`, pad: 0 },
@@ -317,6 +323,12 @@ const SHOTS = (c) => [
     actions: [{ upload: ["#t11-json-file", c.nextFile] }, { click: "#t11-next1" }, { waitFor: "#t11-apply:not([disabled])" }, { click: "#t11-apply" },
       { click: `.admin-modal [data-role="ok"]` }, { waitFor: ".admin-modal input" }],
     clip: { from: ".admin-modal", to: ".admin-modal", pad: 16 }, marks: { phrase: ".admin-modal input", ok: ".admin-modal .btn-primary" } },
+  // last on purpose: it turns the demo unit's open round into "ไม่เบิก" (clears its draft), which no other image may show
+  { img: "noorder_3.png", role: "pcu", url: "index.html#/home",
+    actions: [{ click: `button[data-noorder="on"][data-month="${c.OPEN}"]` }, { waitFor: ".dialog-box" }, { click: ".dialog-box .btn-primary" },
+      { waitFor: `button[data-noorder="off"]`, settle: 3500 }],
+    clip: { from: `.round-card:has(button[data-noorder="off"])`, to: `.round-card:has(button[data-noorder="off"])`, pad: 8 },
+    marks: { msg: ".round-card p::แจ้ง \"ไม่เบิก\" เดือนนี้แล้ว", off: `button[data-noorder="off"]` } },
 ];
 
 const CAPTURE_CSS = `*, *::before, *::after { transition: none !important; animation: none !important; caret-color: transparent !important; }

@@ -1,5 +1,5 @@
 // help_render.js — user-manual topics → HTML (2ac). Shared by /help (help.js, รพ.สต. manual) and the admin tab "คู่มือ" (tab14_manual.js).
-// A topic = {id, title, intro, shots:[{img, alt, marks:[{n, sel_key}], steps:["① …"]}], warn?}. The numbered marks are HTML laid over
+// A topic = {id, title, intro, shots:[{img, alt, marks:[{n, sel_key}], steps:["① …"]}], warn?, note?, after?}. The numbered marks are HTML laid over
 // the screenshot: their boxes come from help/shots.json ({<img>: {w, h, marks: {<sel_key>: {x, y, w, h}}}}, written by
 // tools/capture_help.mjs from the selectors) and are placed in % of the image so they follow the image at any width.
 const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -37,6 +37,7 @@ export function topicHtml(t, shots, imgBase, prefix = "") {
     <h2>${esc(t.title)}</h2>
     ${t.intro ? `<p class="help-intro">${esc(t.intro)}</p>` : ""}
     ${t.warn ? `<div class="help-warn" role="note">${(Array.isArray(t.warn) ? t.warn : [t.warn]).map((w) => `<p>⚠️ ${esc(w)}</p>`).join("")}</div>` : ""}
+    ${t.note ? `<div class="help-note" role="note">${(Array.isArray(t.note) ? t.note : [t.note]).map((w) => `<p>${esc(w)}</p>`).join("")}</div>` : ""}
     ${(t.shots || []).map((s) => shotHtml(s, shots, imgBase)).join("")}
     ${t.after ? `<ol class="help-steps help-after">${t.after.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
   </section>`;

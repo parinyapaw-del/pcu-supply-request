@@ -235,7 +235,7 @@ function feedbackContext() {
   return c;
 }
 // 2ac: ❓ → the /help section of the current route (opens in a new tab so a half-filled page stays where it was)
-const HELP_OF_ROUTE = { login: "login", pin: "login", home: "send", fill: "fill", hidden: "hidden", print: "print", issue: "send", received: "received", dashboard: "dashboard", feedback: "feedback" };
+const HELP_OF_ROUTE = { login: "login", pin: "login", home: "basics", fill: "fill", hidden: "hidden", print: "print", issue: "send", received: "received", dashboard: "dashboard", feedback: "feedback" };
 function helpHref() {
   const { segments, params } = parseHash();
   const route = segments[0] || "login";

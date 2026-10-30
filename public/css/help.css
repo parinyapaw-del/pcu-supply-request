@@ -19,6 +19,9 @@
 .help-after { margin-top: 4px; }
 .help-warn { border: 2px solid var(--danger); background: var(--danger-bg); color: var(--danger); border-radius: 10px; padding: 10px 14px; margin: 12px 0; font-size: 1.15rem; font-weight: 700; }
 .help-warn p { margin: 4px 0; }
+/* 2aj: "ต่างกันอย่างไร" box — plain info, not a warning */
+.help-note { border: 2px solid var(--accent); background: var(--muted-bg); border-radius: 10px; padding: 10px 14px; margin: 12px 0; }
+.help-note p { margin: 4px 0; }
 .help-part { margin-top: 30px; padding: 8px 12px; background: var(--muted-bg); border-radius: 8px; }
 @media (max-width: 720px) {
   .help-toc { columns: 1; }
