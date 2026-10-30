@@ -265,12 +265,12 @@ so a request line is already the (round, item) aggregate. Local bench (125 items
 
 | action | params | data |
 |---|---|---|
-| `feedbackSend` | `category:'wording'\|'entry'\|'dashboard'\|'other', body, context?:object, anonymous?:true, pcu?, device?` | `{id, remaining_today}` |
+| `feedbackSend` | `category:'entry'\|'dashboard'\|'other', body, context?:object, anonymous?:true, pcu?, device?` | `{id, remaining_today}` |
 | `feedbackMine` | – | `{items:[{id,created_at,category,body,status,reply,reply_at}]}` own rows, newest first, ≤ 200 — pcu: `role='pcu' AND pcu=? AND anonymous=0` · staff: `email=?` |
 | `faqList` | `all?:true` | `{faqs:[{id,question,answer,category,sort,aud:['pcu'\|'dispenser'\|'admin']}]}` ordered `category, sort, id` — guest / pcu: `aud_pcu=1 AND hidden=0` · dispenser: `aud_dispenser=1 AND hidden=0` · admin: `aud_admin=1 AND hidden=0` · **admin + `all:true`** → every row incl. hidden, each item + `hidden, from_feedback_id, created_at, created_by, updated_at, updated_by` (`all` is ignored for other roles) |
 
 `feedbackSend` rules
-- `category` not in the enum → `BAD_REQUEST` · `body` trimmed, 1–2,000 chars (guest 1–1,000) else `BAD_REQUEST` · `context` = plain object kept field by field
+- `category` not in `entry|dashboard|other` → `BAD_REQUEST` (2ah: `wording` is no longer accepted; rows saved earlier keep it — `adminFeedbackList` still lists / filters `category:'wording'`, the UI shows "อื่น ๆ (เดิม: ข้อความ)") · `body` trimmed, 1–2,000 chars (guest 1–1,000) else `BAD_REQUEST` · `context` = plain object kept field by field
   while its JSON stays ≤ 2 KB (UTF-8); a field that does not fit is dropped (never an error; a non-object is ignored). The client adds route/tab, round, request id,
   screen size, short UA, client time.
 - Identity stored: pcu → `pcu` = token unit, unless `anonymous:true` → `pcu` NULL, `anonymous` 1 (role stays `pcu`) · staff → `email`, `anonymous` ignored ·
@@ -810,7 +810,7 @@ pdf_files(request_id, content_key, r2_key, created_at, bytes)   PK(request_id,co
 requester_log(pcu, name, set_at, set_by)                    PK(pcu,set_at)   -- v7 (2x): one row per requester change (name NULL = cleared); rows > 2 years deleted on write
 usage_counters(period, metric, n)                           PK(period,metric)   -- v2; period "YYYY-MM" | "YYYY-MM-DD" (UTC); metric r2_class_a|r2_class_b|pdf_render
 feedback(id PK AUTOINCREMENT, created_at, day 'YYYY-MM-DD' (Bangkok), role 'pcu'|'dispenser'|'admin'|'guest', pcu NULL, email NULL, anonymous 0|1,
-         category 'wording'|'entry'|'dashboard'|'other', body, context JSON NULL, rate_key NULL,
+         category 'wording'|'entry'|'dashboard'|'other' (CHECK kept; new rows never 'wording'), body, context JSON NULL, rate_key NULL,
          status 'new'|'ack'|'fixed' DEFAULT 'new', status_at, status_by, reply, reply_at, reply_by)   -- v8 (2ab) · INDEX feedback_day(day)
 faq(id PK AUTOINCREMENT, question, answer, aud_pcu, aud_dispenser, aud_admin (0|1), category NULL, sort DEFAULT 0, hidden DEFAULT 0,
     from_feedback_id NULL, created_at, created_by, updated_at, updated_by)                               -- v8 (2ab)

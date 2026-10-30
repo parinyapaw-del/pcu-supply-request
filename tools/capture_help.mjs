@@ -70,7 +70,7 @@ function buildFakeSeed() {
         limits[p.code][it.code] = [Math.max(2, sums[10]), plan[0] + plan[1], "plan70"];
       }
     });
-    // the demo unit: a low yearly ceiling on P1-03 → the blue "เกินเพดาน" note in the fill-page screenshot
+    // the demo unit: a low yearly plan on P1-03 → the light-yellow "เกินแผน" row in the fill-page screenshot (the ceiling is off, 2ad)
     if (p.code === DEMO) { plans70[DEMO]["P1-03"] = [2, 0]; limits[DEMO]["P1-03"] = [1, 2, "plan70"]; }
   }
   const prices = Object.fromEntries(items.map((it) => [it.code, Math.round(it.price * 0.95 * 100) / 100]));
@@ -159,6 +159,7 @@ async function setupData() {
   for (const round of SENT) {
     const T = (await api("pcuLogin", { pcu: DEMO, pin: PIN }, undefined, calOf(round))).token;
     const lines = fakeLines(round, 0.18);
+    if (round === "2026-12") for (const [c, op] of [["P1-06", 3], ["P1-07", 4], ["P1-08", 2]]) lines[c] = { stock: 1, op, pp: 0, updated_at: tsOf(round) };
     await api("saveLines", { month: round, lines, last_step: "LAB", send: true, submitter_name: "สมใจ ใจดี" }, T, calOf(round));
   }
   const TD = (await api("pcuLogin", { pcu: DEMO, pin: PIN })).token;
@@ -182,6 +183,19 @@ async function setupData() {
   const count = {};
   for (const pc of Object.keys(sent)) for (const c of Object.keys(sent[pc]["2026-12"] || {})) count[c] = (count[c] || 0) + 1;
   const popular = Object.keys(count).filter((c) => /^P/.test(c)).sort((a, b) => count[b] - count[a] || a.localeCompare(b))[0];
+
+  // 2ad–2af fixtures: stock flags (P1-02 out, P1-04 pending) · P1-05 cancelled for good · announcement · issue + "รายงานของได้จริง" (one mismatch)
+  const F0 = (await api("adminBootstrap", {}, ADM)).form;
+  const steps = JSON.parse(JSON.stringify(F0.steps));
+  steps.forEach((st) => st.rows.forEach((r) => { if (r.type === "item" && r.code === "P1-05") { r.active = false; r.cancel_reason = "เลิกผลิต — ใช้รายการอื่นแทน"; } }));
+  await api("adminFormSave", { base_version_id: F0.id, note: "capture: cancel P1-05", form: { steps } }, ADM);
+  await api("itemFlagSet", { code: "P1-02", status: "out", eta: "2027-01-20", note: "ใช้รายการ P1-01 แทนได้" }, DT);
+  await api("itemFlagSet", { code: "P1-04", status: "pending" }, DT);
+  await api("adminAnnouncementSave", { text: "รอบขอเบิก ม.ค. 70 ปิดรับวันที่ 25 ธ.ค. — กรุณาส่งใบเบิกก่อนกำหนด (ข้อความตัวอย่าง)" }, ADM);
+  await api("issueLines", { pcu: DEMO, month: "2026-12", lines: { "P1-06": { issued_total: 3 }, "P1-07": { issued_total: 3, reason: "out_of_stock", note: "ของหมดชั่วคราว" } } }, DT);
+  await api("issueDone", { pcu: DEMO, month: "2026-12", unit: "พัสดุ", done: 1 }, DT); // the PCU sees mismatches against done units only
+  await api("pcuReceivedSave", { month: "2026-12", lines: [{ code: "P1-06", qty: 3 }, { code: "P1-07", qty: 4, note: "ได้ครบตามที่ขอ" }] }, TD);
+  await api("pcuReceivedSave", { month: "2026-12", lines: [{ code: short, qty: p2[short].op + p2[short].pp }] }, (await api("pcuLogin", { pcu: real[1].code, pin: PIN })).token);
 
   // two feedback rows + the FAQ seeded by migration v8 (admin feedback tab / FAQ section)
   await api("feedbackSend", { category: "entry", body: "หน้ากรอกหน้า 3 อยากให้มีปุ่มกลับไปหน้าแรก", context: { app: "pcu", route: "fill" } }, TD);
@@ -216,8 +230,8 @@ const SHOTS = (c) => [
   { img: "fill_3.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: "button::=ย้อนกลับ", to: "button.btn-primary::=ถัดไป" },
     actions: [{ type: [`tr:has(button[data-hide="P1-09"]) input[data-field="op"]`, "2"] }, { waitFor: "#autosave-status:not(:empty)", settle: 2500 }],
     marks: { saved: "#autosave-status", back: "button::=ย้อนกลับ", next: "button.btn-primary::=ถัดไป" } },
-  { img: "hidden_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: "summary::รายการที่ไม่เบิก", to: `button[data-hide="P1-02"]` },
-    marks: { list: "summary::รายการที่ไม่เบิก", hide: `button[data-hide="P1-01"]` } },
+  { img: "hidden_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: "summary::รายการที่ซ่อนไว้", to: `button[data-hide="P1-02"]` },
+    marks: { list: "summary::รายการที่ซ่อนไว้", hide: `button[data-hide="P1-01"]` } },
   { img: "hidden_2.png", role: "pcu", url: "index.html#/hidden", clip: { from: "h2::ตั้งค่ารายการที่ไม่เบิก", to: `input[data-code="P1-08"]` },
     marks: { never: "#btn-never-prev", tick: `input[data-code="P1-01"]`, clear: "#btn-clear-all" } },
   { img: "stock_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, actions: [{ click: "#stock-mode-toggle" }],
@@ -228,16 +242,22 @@ const SHOTS = (c) => [
   { img: "send_2.png", role: "pcu", url: "index.html#/home", clip: { from: "h3::มกราคม 2570", to: "summary::ตุลาคม 2569" },
     marks: { sent: ".badge::ส่งแล้ว", again: `button[data-fill="2026-12"]`, paid: ".badge::จ่ายแล้ว" } },
   { img: "print_1.png", role: "pcu", url: "index.html#/print?month=2026-12", clip: { from: "h2::ใบเบิก", to: "#btn-print-back", pad: 24 },
-    marks: { pages: ".print-step-chk", date: "#print-doc-date", phone: "#print-phone", print: "#btn-do-print", pdf: "#btn-do-pdf" } },
+    marks: { pages: ".print-step-chk", date: "#print-doc-date", phone: "#print-phone", print: "#btn-do-print", pdf: "#btn-do-pdf", xlsx: "#btn-do-xlsx" } },
   { img: "dashboard_1.png", role: "pcu", url: "index.html#/dashboard", clip: { from: "h2::แดชบอร์ด", to: "h3::ยอดสะสม", pad: 8 },
     marks: { mode: `button[data-mode="baht"]`, unit: `button[data-unit="พัสดุ"]`, chart: "h3::ยอดรายรอบ" } },
   { img: "dashboard_2.png", role: "pcu", url: "index.html#/dashboard", clip: { from: "h3::รายการทั้งหมด", to: ".dash-more" },
-    marks: { search: ".dash-search", excel: ".dash-export" } },
-  { img: "ceiling_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: `tr:has(button[data-hide="P1-02"])`, to: `tr:has(button[data-hide="P1-04"])`, pad: 0 },
-    marks: { note: `.limit-msg[data-limit-for="P1-03"]`, op: `tr:has(button[data-hide="P1-03"]) input[data-field="op"]` } },
-  { img: "ceiling_2.png", role: "pcu", url: `index.html#/fill/summary?month=${c.OPEN}`, clip: { from: "h3::เกินเพดาน", to: "#app li:last-of-type" },
-    marks: { list: "h3::เกินเพดาน" } },
-  { img: "ceiling_3.png", role: "pcu", url: "index.html#/home", widget: true, actions: [{ click: "#fb-fab" }], clip: { x: 640, y: 0, w: 640, h: 800 },
+    marks: { search: ".dash-search", excel: ".dash-export-xlsx", csv: ".dash-export" } },
+  { img: "announce_1.png", role: "pcu", url: "index.html#/home", clip: { from: ".announce-bar", to: ".announce-bar", pad: 4 },
+    marks: { bar: ".announce-bar", hide: ".announce-hide" } },
+  { img: "noorder_1.png", role: "pcu", url: "index.html#/home", clip: { from: "h3::มกราคม 2570", to: `button[data-noorder="on"]`, pad: 16 },
+    marks: { btn: `button[data-noorder="on"]` } },
+  { img: "received_1.png", role: "pcu", url: "index.html#/received?month=2026-12", clip: { from: "h2::รายงานของได้จริง", to: ".rcv-mismatch", pad: 16 },
+    marks: { date: "#rcv-date", full: "#rcv-fill", qty: ".rcv-qty", flag: ".rcv-flag:not([hidden])" } },
+  { img: "flags_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: `tr[data-code="P1-02"]`, to: `tr[data-code="P1-05"]`, pad: 0 },
+    marks: { out: `tr[data-code="P1-02"] .stock-flag`, over: `tr[data-code="P1-03"] .limit-plan`, pending: `tr[data-code="P1-04"] .stock-flag`, cancelled: `tr[data-code="P1-05"] .row-note` } },
+  { img: "flags_2.png", role: "pcu", url: "index.html#/fill/P1?month=2026-12", clip: { from: `tr[data-code="P1-06"]`, to: `tr[data-code="P1-07"]`, pad: 0 },
+    marks: { locked: `tr[data-code="P1-06"] .row-note` } },
+  { img: "feedback_1.png", role: "pcu", url: "index.html#/home", widget: true, actions: [{ click: "#fb-fab" }], clip: { x: 640, y: 0, w: 640, h: 800 },
     marks: { fab: "#fb-fab", help: "#fb-help", cat: ".fb-cat", send: "#fb-send" } },
 
   // ---- ผู้จ่าย (admin.html → คู่มือ) ----
@@ -255,6 +275,8 @@ const SHOTS = (c) => [
     marks: { btn: "#t2b-shortage-btn", scope: `button[data-scope="fy"]` } },
   { img: "d-undo_1.png", role: "disp", url: "admin.html#issue?pcu=PCU01&month=2026-12", clip: { from: "h3::หน่วยจ่าย: LAB", to: `button[data-act="issue-done"][data-unit="LAB"]`, pad: 16, h: 300 },
     marks: { undo: `button[data-act="issue-done"][data-unit="LAB"]` } },
+  { img: "d-notices_1.png", role: "disp", url: "admin.html#notices", clip: { from: "#t15-flags", to: "#t15-flag-list", pad: 8 },
+    marks: { list: "#t15-flag-tbl", search: "#t15-search" } },
   { img: "d-excel_1.png", role: "disp", url: "admin.html#excel", clip: { x: 0, y: 0, w: 1280, h: 420 },
     marks: { now: "#t6-month-now", pick: "#t6-month-pick", fy: "#t6-fy" } },
   { img: "d-excel_2.png", role: "disp", url: "admin.html#status", actions: [{ select: ["#t1-month", "2026-12"] }],
@@ -262,20 +284,24 @@ const SHOTS = (c) => [
 
   // ---- admin ----
   { img: "a-monthly_1.png", role: "admin", url: "admin.html#status", actions: [{ select: ["#t1-month", "2026-12"] }],
-    marks: { month: "#t1-month", lock: "#t1-lock", entry: `button[data-act="entry"]`, note: `button[data-act="note"]` } },
+    marks: { month: "#t1-month", lock: "#t1-lock", entry: `button[data-act="entry"]`, note: `button[data-act="note"]`, mismatch: `[data-role="mismatch"]` } },
   { img: "a-monthly_2.png", role: "admin", url: "admin.html#totals", actions: [{ select: ["#t2-month", "2026-12"] }],
     marks: { month: "#t2-month", unit: "#t2-view-unit", print: "#t2-print" } },
   { img: "a-monthly_3.png", role: "admin", url: "admin.html#dashboard",
     marks: { unit: `.dash-seg-btn[data-unit="พัสดุ"]` } },
   { img: "a-monthly_4.png", role: "admin", url: "admin.html#feedback", clip: { x: 0, y: 120, w: 1280, h: 760 },
     marks: { filter: "#t13-status", csv: "#t13-csv", status: `button[data-status="ack"]`, faq: "button[data-faq-from]", reply: ".t13-reply" } },
+  { img: "a-notices_1.png", role: "admin", url: "admin.html#notices", clip: { from: "#t15-ann", to: "#t15-ann", pad: 8 },
+    marks: { add: "#t15-ann-add", list: "#t15-ann-tbl" } },
+  { img: "a-received_1.png", role: "admin", url: "admin.html#received", actions: [{ select: ["#t16-month", "2026-12"] }], clip: { from: "#t16-card", to: "#t16-card", pad: 8 },
+    marks: { month: "#t16-month", csv: "#t16-csv", mm: "#t16-tbl .t16-mismatch", table: "#t16-tbl" } },
+  { img: "a-excel_1.png", role: "admin", url: "admin.html#excel", clip: { from: "h3::ใบเบิกรายบรรทัด", to: "#t6-lines-fy", pad: 16 },
+    marks: { month: "#t6-lines-month", fy: "#t6-lines-fy" } },
   { img: "a-sometimes_1.png", role: "admin", url: "admin.html#form", clip: { from: "h2::หน้าในใบเบิก", to: "select.t10-move", pad: 16 },
     marks: { chip: ".t10-chip.active", price: ".t10-in-price", toggle: `button[data-act="toggle"]` } },
-  { img: "a-sometimes_2.png", role: "admin", url: "admin.html#limits", clip: { from: "h2::ดาวน์โหลด / อัปโหลดเพดาน", to: "#t5-q", pad: 16 },
-    marks: { down: "#t5-download", file: "#t5-file", mode: "#t5-up-mode", pcu: "#t5-pcu" } },
-  { img: "a-sometimes_3.png", role: "admin", url: "admin.html#pcu", clip: { x: 0, y: 120, w: 1280, h: 420 },
+  { img: "a-sometimes_2.png", role: "admin", url: "admin.html#pcu", clip: { x: 0, y: 120, w: 1280, h: 420 },
     marks: { add: "#t7-add", edit: `button[data-act="edit"]`, pin: `button[data-act="pin"]`, hidden: `button[data-act="hidden"]` } },
-  { img: "a-sometimes_4.png", role: "admin", url: "admin.html#system", clip: { from: "h2::รอบทดลอง", to: "#t9-clear", pad: 16 },
+  { img: "a-sometimes_3.png", role: "admin", url: "admin.html#system", clip: { from: "h2::รอบทดลอง", to: "#t9-clear", pad: 16 },
     marks: { trial: "#t9-trial-clear", backup: "#t9-backup-now", clear: "#t9-clear" } },
   { img: "a-yearly_1.png", role: "admin", url: "admin.html#import", actions: [{ upload: ["#t11-json-file", c.nextFile] }],
     clip: { from: "h2::นำเข้า / เปิดปีงบใหม่", to: "#t11-next1", pad: 16, maxH: 1000 },
@@ -295,7 +321,8 @@ const SHOTS = (c) => [
 
 const CAPTURE_CSS = `*, *::before, *::after { transition: none !important; animation: none !important; caret-color: transparent !important; }
   .admin-dev-login { display: none !important; }
-  .step-totals.sticky-totals { position: static !important; }`; /* a bar stuck to the viewport bottom would land mid-image */
+  .step-totals.sticky-totals { position: static !important; }
+  .rcv-actions { display: none !important; }`; /* sticky save bar would cover the rows */ /* a bar stuck to the viewport bottom would land mid-image */
 const HIDE_WIDGET_CSS = ".fb-dock, .fb-fab, .fb-panel { display: none !important; }";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

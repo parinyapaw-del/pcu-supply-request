@@ -54,7 +54,7 @@ const TABS = [
 const HELP_OF_TAB = {
   status: ["a-monthly", "d-excel"], totals: ["a-monthly", "d-excel"], issue: ["d-issue", "d-issue"], excel: ["a-monthly", "d-excel"],
   dashboard: ["a-monthly"], budget: ["a-sometimes"], prev: ["a-yearly"], limits: ["a-sometimes"], form: ["a-sometimes"],
-  import: ["a-yearly"], pcu: ["a-sometimes"], users: ["a-sometimes"], system: ["a-sometimes"], feedback: ["a-monthly"], notices: ["a-monthly", "d-issue"], received: ["a-monthly"],
+  import: ["a-yearly"], pcu: ["a-sometimes"], users: ["a-sometimes"], system: ["a-sometimes"], feedback: ["a-monthly"], notices: ["a-sometimes", "d-notices"], received: ["a-sometimes"],
 };
 
 const state = { bootstrap: null, cat: null, me: null, isAdmin: false, fy: null }; // fy = ปีงบที่เลือกดู (2i)

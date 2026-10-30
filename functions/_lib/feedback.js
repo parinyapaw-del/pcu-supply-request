@@ -7,7 +7,8 @@ import { auditStmt } from "./db.js";
 import { hmacHex, requirePcu, requireStaff, verifyToken } from "./auth.js";
 import { bangkokDate, nowIso } from "./time.js";
 
-export const FEEDBACK_CATEGORIES = ["wording", "entry", "dashboard", "other"];
+export const FEEDBACK_CATEGORIES = ["entry", "dashboard", "other"]; // 2ah: "wording" dropped for new feedback
+export const FEEDBACK_FILTER_CATEGORIES = ["wording", ...FEEDBACK_CATEGORIES]; // old rows keep category 'wording' (admin list / filter / CSV)
 export const FEEDBACK_STATUSES = ["new", "ack", "fixed"];
 export const FEEDBACK_ROLES = ["pcu", "dispenser", "admin", "guest"];
 export const FAQ_AUDIENCES = ["pcu", "dispenser", "admin"];
@@ -160,7 +161,7 @@ export async function adminFeedbackList(ctx, p) {
   const { DB } = ctx;
   const where = [], bind = [];
   const role = enumParam(p.role, FEEDBACK_ROLES, "role");
-  const category = enumParam(p.category, FEEDBACK_CATEGORIES, "category");
+  const category = enumParam(p.category, FEEDBACK_FILTER_CATEGORIES, "category");
   const status = enumParam(p.status, FEEDBACK_STATUSES, "status");
   if (role) { where.push(`role = ?`); bind.push(role); }
   if (category) { where.push(`category = ?`); bind.push(category); }

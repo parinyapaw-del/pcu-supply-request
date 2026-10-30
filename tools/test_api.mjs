@@ -3416,7 +3416,7 @@ async function main() {
     expectErr(await send({ body: "ก".repeat(2001) }, TP), "BAD_REQUEST", "pcu body 2,001 chars");
 
     // ---- guest: pcu from the dropdown (must exist) · 5 per device per day ----
-    const g1 = await mustOk("feedbackSend", { category: "wording", body: "  จากหน้า login  ", pcu: "PCU01", device: dev(1), context: { route: "login" } });
+    const g1 = await mustOk("feedbackSend", { category: "entry", body: "  จากหน้า login  ", pcu: "PCU01", device: dev(1), context: { route: "login" } });
     ok(Number.isInteger(g1.id) && g1.remaining_today === 4, "guest send → {id, remaining_today: 4}");
     await mustOk("feedbackSend", { category: "entry", body: "ก".repeat(1000), pcu: "PCU99", device: dev(1) });
     for (let i = 0; i < 3; i++) await mustOk("feedbackSend", { category: "other", body: "g" + i, device: dev(1) });
@@ -3426,7 +3426,7 @@ async function main() {
     eq((await mustOk("feedbackSend", { category: "other", body: "อีกเครื่อง", device: dev(2) })).remaining_today, 4, "another device can still send");
     const gl = (await list({ role: "guest" })).items;
     const gRow = gl.find((x) => x.id === g1.id);
-    ok(gRow && gRow.pcu === "PCU01" && gRow.email === null && gRow.body === "จากหน้า login" && gRow.category === "wording" && gRow.status === "new", "guest row: pcu kept, body trimmed, status new");
+    ok(gRow && gRow.pcu === "PCU01" && gRow.email === null && gRow.body === "จากหน้า login" && gRow.category === "entry" && gRow.status === "new", "guest row: pcu kept, body trimmed, status new");
     ok(gRow && gRow.context && gRow.context.route === "login" && !("rate_key" in gRow), "context stored as an object · rate_key never returned");
     ok(gl.some((x) => x.body.length === 1000 && x.pcu === null), "guest unknown pcu → NULL · 1,000 chars accepted");
 
@@ -3451,7 +3451,7 @@ async function main() {
 
     // ---- anonymous: no pcu stored, counted per device ----
     expectErr(await send({ anonymous: true }, TP), "BAD_REQUEST", "anonymous without device");
-    const a1 = await mustOk("feedbackSend", { category: "wording", body: "นิรนาม", anonymous: true, device: dev(4) }, TP);
+    const a1 = await mustOk("feedbackSend", { category: "other", body: "นิรนาม", anonymous: true, device: dev(4) }, TP);
     eq(a1.remaining_today, 19, "anonymous is counted on its own (named limit already reached)");
     const aRow = (await list({ role: "pcu" })).items.find((x) => x.id === a1.id);
     ok(aRow && aRow.pcu === null && aRow.anonymous === true && aRow.email === null, "anonymous row: pcu IS NULL, anonymous true");
@@ -3483,7 +3483,12 @@ async function main() {
     // ---- adminFeedbackList: filters, paging, counts ----
     const all = await list();
     eq(all.counts, { new: all.items.length, ack: 0, fixed: 0 }, "counts = all new");
-    ok((await list({ category: "wording" })).items.every((x) => x.category === "wording"), "filter category");
+    ok((await list({ category: "entry" })).items.every((x) => x.category === "entry"), "filter category");
+    // 2ah: "wording" is no longer accepted for new feedback, but the admin list still takes it as a filter (old rows)
+    expectErr(await send({ category: "wording", body: "x", device: dev(1) }), "BAD_REQUEST", "2ah: feedbackSend category wording → BAD_REQUEST");
+    expectErr(await send({ category: "wording", body: "x" }, TP), "BAD_REQUEST", "2ah: feedbackSend category wording (pcu) → BAD_REQUEST");
+    ok((await list({ category: "wording" })).items.length === 0, "2ah: filter category wording still valid (old rows)");
+    expectErr(await api("adminFeedbackList", { category: "bogus" }, ADM2), "BAD_REQUEST", "2ah: filter category bogus");
     ok((await list({ status: "new" })).items.length === all.items.length, "filter status");
     const pg = await mustOk("adminFeedbackList", { limit: 5 }, ADM2);
     ok(pg.items.length === 5 && pg.next_before === pg.items[4].id, "limit 5 → next_before");

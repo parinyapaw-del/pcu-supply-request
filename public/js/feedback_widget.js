@@ -6,14 +6,15 @@ import { call } from "./api.js";
 import { renderFaqAnswer } from "./faq_render.js";
 
 export const FB_CATEGORIES = [
-  { value: "wording", label: "ข้อความ/คำในระบบที่อ่านแล้วไม่สบายใจ" },
   { value: "entry", label: "ปัญหาการกรอก/ส่ง" },
   { value: "dashboard", label: "อยากให้แดชบอร์ดเพิ่ม/ปรับ" },
   { value: "other", label: "อื่น ๆ / คำถาม" },
 ];
 export const FB_STATUS = { new: "ใหม่", ack: "รับทราบ", fixed: "แก้แล้ว" };
 const STATUS_CLS = { new: "badge-warn", ack: "badge-info", fixed: "badge-success" };
-export const fbCategoryLabel = (v) => (FB_CATEGORIES.find((c) => c.value === v) || { label: v }).label;
+// 2ah: old rows keep category "wording" (no longer offered) — shown as "other (formerly: wording)"
+export const FB_LEGACY_CATEGORIES = [{ value: "wording", label: "อื่น ๆ (เดิม: ข้อความ)" }];
+export const fbCategoryLabel = (v) => ([...FB_CATEGORIES, ...FB_LEGACY_CATEGORIES].find((c) => c.value === v) || { label: v }).label;
 const MAX_BODY = 2000, MAX_BODY_GUEST = 1000;
 const DEVICE_KEY = "pcuSupply2:fbDevice";
 

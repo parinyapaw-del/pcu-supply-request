@@ -1,7 +1,7 @@
 // Tab 13 — Feedback (2ab, admin only; functions/API.md §5.6): feedback review (filters · status · reply · CSV · "สร้าง FAQ จาก feedback นี้")
 // + FAQ editor (adminFaqSave / adminFaqDelete, preview through faq_render.js). The tab badge = count of status "new" (ctx.setFeedbackBadge).
 import { el, escapeHtml, toast, errMessage, confirmDialog, formatBangkokDateTime, downloadBlob } from "./util.js";
-import { FB_CATEGORIES, FB_STATUS, fbCategoryLabel } from "../feedback_widget.js";
+import { FB_CATEGORIES, FB_LEGACY_CATEGORIES, FB_STATUS, fbCategoryLabel } from "../feedback_widget.js";
 import { renderFaqAnswer } from "../faq_render.js";
 import { csvField } from "../pages/dashboard_calc.js";
 
@@ -35,7 +35,7 @@ export function renderTab13(container, ctx) {
     return [el("label", { class: "t13-filter" }, [label + " ", s]), s];
   };
   const [roleL, roleS] = sel("t13-role", "ผู้ส่ง", Object.entries(ROLE_LABEL));
-  const [catL, catS] = sel("t13-cat", "หมวด", FB_CATEGORIES.map((c) => [c.value, c.label]));
+  const [catL, catS] = sel("t13-cat", "หมวด", [...FB_CATEGORIES, ...FB_LEGACY_CATEGORIES].map((c) => [c.value, c.label]));
   const [stL, stS] = sel("t13-status", "สถานะ", Object.entries(FB_STATUS));
   const [pcuL, pcuS] = sel("t13-pcu", "รพ.สต.", pcus.map((p) => [p.code, `${p.code} ${p.name}`]));
   const csvBtn = el("button", { type: "button", class: "btn btn-secondary", id: "t13-csv" }, "ส่งออก CSV");
