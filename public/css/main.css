@@ -327,6 +327,14 @@ button, input, select {
 .summary-plan { background: var(--warn-bg); border: 1px solid var(--warn); border-radius: 8px; padding: 8px 12px; }
 .summary-plan h3 { color: var(--warn); }
 .small { font-size: 0.82rem; }
+/* 2ae: stock flag on a fill row (never blocks) · admin announcement on the home page */
+.stock-flag { display: inline-block; font-size: 0.82rem; margin-top: 3px; padding: 1px 8px; border-radius: 6px; border: 1px solid; }
+.stock-flag-out { background: var(--warn-bg); color: var(--warn); border-color: var(--warn); }
+.stock-flag-pending { background: var(--muted-bg); color: var(--muted); border-color: var(--line); }
+.stock-flag-ok { font-weight: 400; opacity: 0.85; }
+.announce-bar { background: var(--note-bg); color: var(--text); border: 1px solid var(--note); border-radius: 8px; padding: 10px 14px; margin: 14px 0 0; display: flex; align-items: flex-start; gap: 10px; }
+.announce-text { flex: 1; white-space: pre-line; overflow-wrap: anywhere; }
+.announce-hide { flex: none; font-size: 0.85rem; }
 
 .num-input { width: 72px; min-height: 40px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }
 .num-input.calc-field { background: var(--calc-bg); border-color: var(--accent); }

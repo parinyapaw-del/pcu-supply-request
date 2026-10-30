@@ -13,6 +13,7 @@ import { adminDashboard, issueShortage, pcuDashboard } from "../_lib/dashboard.j
 import { adminSaveLines } from "../_lib/admin_entry.js";
 import { nowIso, setDevMonth } from "../_lib/time.js";
 import * as feedback from "../_lib/feedback.js";
+import * as notices from "../_lib/notices.js";
 
 const PUBLIC = {
   pcuList: pcu.pcuList,
@@ -52,6 +53,10 @@ const STAFF = {
   issueExcept: issue.issueExcept, // 2y — "ครบยกเว้น…"
   adminItemIssue: issue.adminItemIssue,
   issueShortage, // 2s — "จ่ายไม่พอ" (dispenser: default unit = its own)
+  // 2ae — stock flags (a dispenser only items of its own units, inside notices.js)
+  itemFlagList: notices.itemFlagList,
+  itemFlagSet: notices.itemFlagSet,
+  itemFlagClear: notices.itemFlagClear,
 };
 // admin only
 const ADMIN = {
@@ -97,6 +102,10 @@ const ADMIN = {
   adminFeedbackUpdate: feedback.adminFeedbackUpdate,
   adminFaqSave: feedback.adminFaqSave,
   adminFaqDelete: feedback.adminFaqDelete,
+  // 2ae — announcements on the PCU home page
+  adminAnnouncementList: notices.adminAnnouncementList,
+  adminAnnouncementSave: notices.adminAnnouncementSave,
+  adminAnnouncementDelete: notices.adminAnnouncementDelete,
 };
 const REMOVED = {
   submit: "ไม่มี action submit แล้ว — ใช้ saveLines พร้อม send:true",

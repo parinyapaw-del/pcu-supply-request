@@ -22,7 +22,7 @@ export function sortShortItems(items, key) {
 }
 
 export function reasonText(row) {
-  if (row.reason === "out_of_stock") return REASON.out_of_stock;
+  if (row.reason === "out_of_stock") return row.note ? `${REASON.out_of_stock} — ${row.note}` : REASON.out_of_stock; // 2ae
   if (row.reason === "other") return row.note ? `${REASON.other} — ${row.note}` : REASON.other;
   return row.reason ? String(row.reason) : "ไม่ระบุ";
 }

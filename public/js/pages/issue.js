@@ -20,7 +20,7 @@ function unitOfStep(step) {
 function reasonText(g) {
   if (!g || !g.reason) return "";
   if (g.reason === "other") return `อื่น ๆ${g.note ? ": " + g.note : ""}`;
-  return REASON[g.reason] || g.reason;
+  return (REASON[g.reason] || g.reason) + (g.note ? ` — ${g.note}` : ""); // 2ae: "ของหมด" may carry a note
 }
 
 // Fresh copy of the month (the bootstrap may be older than the admin's last write); falls back to cached data.

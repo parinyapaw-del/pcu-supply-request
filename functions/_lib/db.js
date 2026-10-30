@@ -3,7 +3,7 @@ import { err, jparse } from "./http.js";
 import { currentRound, isMonth, monthFy, nowIso } from "./time.js";
 
 // ---- schema ---------------------------------------------------------------------------------------
-// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p, v6 = 2w, v7 = 2x, v8 = 2ab (below).
+// Migration v1 = phase 2 spec §3.3 + documented additions (see functions/API.md §8). v2 = 2b-R, v3 = 2m, v4 = 2o, v5 = 2p, v6 = 2w, v7 = 2x, v8 = 2ab, v9 = 2ae (below).
 // Every migration MUST be idempotent (two isolates may race on first boot).
 const V1 = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`,
@@ -154,6 +154,17 @@ const V8 = [
      ) WHERE NOT EXISTS (SELECT 1 FROM faq)`,
 ];
 
+// Migration v9 (2ae, stock flags + announcements): item_flags = one row per flagged item code (not per fy — a flag is about the item on the
+// shelf now, kept until someone clears it; a code that leaves the form simply stops showing) · announcements = admin banners on the PCU
+// home page (`expires_at` = last Bangkok day shown, NULL = no end; `active` 0 = switched off). Plain CREATE IF NOT EXISTS → re-runnable.
+const V9 = [
+  `CREATE TABLE IF NOT EXISTS item_flags (
+     item_code TEXT PRIMARY KEY, status TEXT NOT NULL CHECK (status IN ('out','pending')), note TEXT, eta TEXT, set_by TEXT, set_at TEXT)`,
+  `CREATE TABLE IF NOT EXISTS announcements (
+     id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, expires_at TEXT, active INTEGER NOT NULL DEFAULT 1,
+     created_by TEXT, created_at TEXT, updated_by TEXT, updated_at TEXT)`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -164,10 +175,11 @@ export const MIGRATIONS = [
   { v: 6, statements: V6, oneByOne: true, tolerate: /duplicate column/i },
   { v: 7, statements: V7, oneByOne: true, tolerate: /duplicate column/i },
   { v: 8, statements: V8, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 9, statements: V9, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "audit_log",
 ];
 
 let migrated = false;

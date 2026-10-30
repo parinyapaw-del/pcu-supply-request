@@ -151,6 +151,10 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   prices: { "2026-12": { code: price } }   // 2p: key = each shown round ([currentRound, prevRound]); value = only the codes whose round price (priceFor,
                                            // price_history of the round's fy) differs from the price in `form` or in the round's bound `forms[...]` ({} when none).
                                            // Price of item X in round R on the client = prices[R][X] ?? form price.
+  item_flags: { code: {status:"out"|"pending", note|null, eta:"YYYY-MM-DD"|null} },   // 2ae: every flagged item (same map for every PCU) — fill page badge
+                                           // "ของหมด" (yellow) / "รอจัดซื้อ" (grey) + "ยังสั่งได้"; never blocks saveLines. Set by admin / own-unit dispenser (§5.7)
+  announcements: [ {id, text, expires_at|null, updated_at} ]   // 2ae: active AND (expires_at NULL OR expires_at >= Bangkok today), newest first, ≤ 10 —
+                                           // home page banner; "ซ่อน" is per device (localStorage `pcu.announce.hidden` = ["id@updated_at"], an edit shows it again)
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
@@ -245,7 +249,7 @@ so a request line is already the (round, item) aggregate. Local bench (125 items
 
 ## 5. Admin / dispenser actions
 Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminRequests`, `adminGetRequest`, `adminRequestPdf`, the issue actions of §5.3 (`issueLines`, `issueAll`, `issueDone`, `issueItem`, `issueDoneAll`, `issueExcept`, `adminItemIssue`; own units + time window only),
-`issueShortage` (2s, §5.5; read-only, any unit), `GET /api/export.xlsx`, `GET /api/pdf/:id` (+ 2ab `feedbackSend` / `feedbackMine` / `faqList`, §4.3); everything else `FORBIDDEN` (incl. `adminDashboard`, `adminFeedback*`, `adminFaq*`).
+`issueShortage` (2s, §5.5; read-only, any unit), 2ae `itemFlagList` / `itemFlagSet` / `itemFlagClear` (§5.7; set/clear = own units only), `GET /api/export.xlsx`, `GET /api/pdf/:id` (+ 2ab `feedbackSend` / `feedbackMine` / `faqList`, §4.3); everything else `FORBIDDEN` (incl. `adminDashboard`, `adminFeedback*`, `adminFaq*`, `adminAnnouncement*`).
 `adminLoginGoogle` / `adminLoginBackup` are public.
 
 | action | params | data |
@@ -421,7 +425,7 @@ Who: admin, or a dispenser (role `dispenser`, `units` subset of {พัสดุ
   **2w (R4):** no time limit on a request with `entry_by = 'admin'`. `issueItem` past the window writes only the admin-keyed requests among `entries`
   (the others → `skipped` with the window message); `FORBIDDEN` only when none of them is admin-keyed.
 - **Values**: `issued_total` = integer `0 … requested`, or `null` = clear the line (all `issued_*`, reason, note, `issued_at`, `issued_by` -> `null`). `> requested` -> `BAD_REQUEST` "จ่ายเกินขอไม่ได้ (ขอ n)";
-  not an integer / `< 0` / key missing -> `BAD_REQUEST`. `issued_total < requested` -> `reason` in `out_of_stock` | `other` required; `other` needs a non-blank `note` (trimmed, <= 200 chars; `out_of_stock` may carry a note too);
+  not an integer / `< 0` / key missing -> `BAD_REQUEST`. `issued_total < requested` -> `reason` in `out_of_stock` | `other` required; `other` needs a non-blank `note` (trimmed, <= 200 chars; `out_of_stock` may carry a note too — 2ae: the admin UI offers an optional "หมายเหตุ (ถ้ามี)" box for it, and the PCU issue page / จ่ายไม่พอ / Excel show "ของหมด/รอจัดซื้อ — <note>");
   `issued_total == requested` -> `reason`/`note` stored as `null` (whatever was sent). Writes set `issued_at = now`, `issued_by` = actor e-mail (`"backup"` for the backup login).
 - **OP-first split**: `short = op+pp - issued_total`; `issued_op = max(0, op - short)`; `issued_pp = pp - max(0, short - op)` (OP 10 / PP 5: 12 -> 7/5 · 15 -> 10/5 · 3 -> 0/3 · 0 -> 0/0).
 - **All-or-nothing**: every line/entry is validated (permissions first) before anything is written; one bad line rejects the whole call. Each call = one D1 batch with its `audit_log` row(s).
@@ -597,6 +601,17 @@ reads the fy's lines ~5 times (D1 rows read ≈ 5 × lines + 2 × actual_prev ro
 | `adminFaqSave` | `id?, question, answer, aud:[…], category?, sort?:int, hidden?:bool, from_feedback_id?` | `{faq}` (full shape as `faqList{all}`) · question 1–300, answer 1–5,000 (trimmed), `aud` ≥ 1 of `pcu/dispenser/admin`, category ≤ 60 (`""` → null), sort integer (default 0), `from_feedback_id` must exist (`BAD_REQUEST`) · no `id` → INSERT · `id` unknown → `NOT_FOUND` · unchanged → no write · audit `adminFaqSave` |
 | `adminFaqDelete` | `id, confirm:"ลบ"` | `{ok:true}` · permanent (the UI recommends hiding) · wrong/missing confirm → `BAD_REQUEST` · unknown → `NOT_FOUND` · audit `adminFaqDelete` |
 
+### 5.7 Stock flags + announcements (2ae — `functions/_lib/notices.js`, admin tab "ของหมด / ประกาศ" `#notices`)
+Flags = one row per item code (not per fy; kept until cleared by hand). Writes only when something changed (1 upsert / delete + 1 audit row). PCU sees both in `pcuBootstrap` (§4.1) — no extra round-trip.
+| action | who | params | data |
+|---|---|---|---|
+| `itemFlagList` | admin + dispenser | – | `{flags:[{code,status,note,eta,set_by,set_at}]}` every flag, newest first (a dispenser sees all units' flags) |
+| `itemFlagSet` | admin + dispenser | `code, status:"out"\|"pending", note?` (trimmed ≤ 200, `""` → null), `eta?:"YYYY-MM-DD"\|null` | `{flag, changed}` · the item's unit = its page's `dispense_unit` in the latest form of `fy_current` · dispenser: unit not in its `units` (or code not on the form) → `FORBIDDEN` · admin: code not on the form → `NOT_FOUND` · bad status/eta/note → `BAD_REQUEST` · same values → `changed:false`, no write · audit `itemFlagSet` |
+| `itemFlagClear` | admin + dispenser | `code` | `{ok:true, changed}` · same scope rule (admin may clear a code that left the form) · no flag → `changed:false`, no write · audit `itemFlagClear` |
+| `adminAnnouncementList` | admin | – | `{announcements:[{id,text,expires_at,active:bool,live:bool,created_by,created_at,updated_by,updated_at}], today}` newest first (≤ 200) · `live` = what the PCU gets |
+| `adminAnnouncementSave` | admin | `id?, text` (trimmed 1–1,000), `expires_at?:"YYYY-MM-DD"\|null` (last Bangkok day shown), `active?:bool` (new: default true · edit: omitted = keep) | `{announcement}` · no `id` → INSERT · unknown id → `NOT_FOUND` · unchanged → no write · audit `adminAnnouncementSave` |
+| `adminAnnouncementDelete` | admin | `id` | `{ok:true}` · permanent (the UI offers "ปิด" instead) · unknown → `NOT_FOUND` · audit `adminAnnouncementDelete` |
+
 FAQ answers are plain text rendered by `public/js/faq_render.js`: HTML escaped → `**bold**` → `[label](url)` (only `https://`, `http://`, `#…`, `/…`) → line breaks.
 
 ## 6. `GET /api/export.xlsx?month=YYYY-MM | fy=2570 &token=…` (admin or dispenser)
@@ -716,7 +731,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -755,6 +770,8 @@ feedback(id PK AUTOINCREMENT, created_at, day 'YYYY-MM-DD' (Bangkok), role 'pcu'
          status 'new'|'ack'|'fixed' DEFAULT 'new', status_at, status_by, reply, reply_at, reply_by)   -- v8 (2ab) · INDEX feedback_day(day)
 faq(id PK AUTOINCREMENT, question, answer, aud_pcu, aud_dispenser, aud_admin (0|1), category NULL, sort DEFAULT 0, hidden DEFAULT 0,
     from_feedback_id NULL, created_at, created_by, updated_at, updated_by)                               -- v8 (2ab)
+item_flags(item_code PK, status 'out'|'pending', note NULL, eta 'YYYY-MM-DD' NULL, set_by, set_at)        -- v9 (2ae): one row per flagged code, no fy
+announcements(id PK AUTOINCREMENT, text, expires_at 'YYYY-MM-DD' NULL, active 0|1 DEFAULT 1, created_by, created_at, updated_by, updated_at)  -- v9 (2ae)
 audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
 ```
 - Migrations run automatically at the start of each request when `schema_version` is behind (cached per isolate). They must be idempotent.
@@ -778,6 +795,8 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   **v8** (2ab) = `CREATE TABLE IF NOT EXISTS feedback …` + `CREATE INDEX IF NOT EXISTS feedback_day` + `CREATE TABLE IF NOT EXISTS faq …` + seed 2 FAQ
   (`INSERT … SELECT … WHERE NOT EXISTS (SELECT 1 FROM faq)` — "ข้อความสีฟ้า เกินเพดาน" for all 3 audiences · "ลืม PIN" for pcu + admin; a re-run never seeds twice,
   tested with `devRerunMigration{v:8}`). `feedback` + `faq` are in `TABLES` (backups, `devReset`).
+  **v9** (2ae) = `CREATE TABLE IF NOT EXISTS item_flags …` + `CREATE TABLE IF NOT EXISTS announcements …` (no ALTER, no backfill; re-run tested with `devRerunMigration{v:9}`).
+  `item_flags` + `announcements` are in `TABLES`.
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
 - `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 

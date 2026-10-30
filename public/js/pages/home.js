@@ -9,6 +9,7 @@ import {
 import * as sync from "../sync.js";
 import { fiscalYearOf, fiscalYearStartMonthKey, prevMonthKey } from "../format.js";
 import { formatThaiYmd, formatThaiShortDate } from "./common.js";
+import { getJSON, safeSet } from "../store.js";
 
 // Brief 2l: fiscal year shown on the home page (null = the current one). Module-level; reset when boot changes.
 let selectedFy = null;
@@ -100,6 +101,30 @@ function noticesHtml(app) {
     .join("");
 }
 
+// 2ae: admin announcements (pcuBootstrap.announcements, live only) · "ซ่อน" hides one on this device until the admin edits it
+// (key = id + updated_at, pruned to the announcements still live).
+const ANN_HIDDEN_KEY = "pcu.announce.hidden";
+const annKey = (a) => `${a.id}@${a.updated_at || ""}`;
+const hiddenAnns = () => { const v = getJSON(ANN_HIDDEN_KEY, []); return Array.isArray(v) ? v : []; };
+function announcementsHtml(app) {
+  const hidden = new Set(hiddenAnns());
+  return (app.boot.announcements || []).filter((a) => !hidden.has(annKey(a)))
+    .map((a) => `<div class="announce-bar" role="status" data-announce="${esc(a.id)}"><span class="announce-icon" aria-hidden="true">📢</span>
+      <div class="announce-text">${esc(a.text)}</div>
+      <button type="button" class="btn btn-link announce-hide" data-ann-hide="${esc(annKey(a))}" aria-label="ซ่อนประกาศนี้">ซ่อน</button></div>`)
+    .join("");
+}
+function bindAnnouncements(box, app) {
+  box.querySelectorAll("[data-ann-hide]").forEach((btn) => btn.addEventListener("click", () => {
+    const live = new Set((app.boot.announcements || []).map(annKey));
+    const hidden = hiddenAnns().filter((k) => live.has(k));
+    hidden.push(btn.dataset.annHide);
+    safeSet(ANN_HIDDEN_KEY, JSON.stringify(hidden));
+    const bar = btn.closest(".announce-bar");
+    if (bar) bar.remove();
+  }));
+}
+
 function previewHtml(next) {
   return `
   <div class="round-card round-card-preview" data-month="${esc(next.month)}">
@@ -189,6 +214,7 @@ export async function renderHome(container, app) {
     : "";
 
   box.innerHTML = `
+    ${announcementsHtml(app)}
     ${pinWarnHtml}
     ${noticesHtml(app)}
     <h2>สวัสดี ${esc(app.boot.pcu.name)}</h2>
@@ -200,6 +226,7 @@ export async function renderHome(container, app) {
 
   container.innerHTML = "";
   container.appendChild(box);
+  bindAnnouncements(box, app);
 
   function bindCards(scope) {
     scope.querySelectorAll("[data-fill]").forEach((btn) => {

@@ -11,7 +11,7 @@ import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
-  alertDialog, toast, requesterOf,
+  alertDialog, toast, requesterOf, formatThaiYmd,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
 
@@ -818,6 +818,16 @@ function rowNoteHtml(app, month, item, editable) {
   if (editable && qtyLocked(app, month, item.code)) return `<div class="row-note">${esc(QTY_LOCKED_TEXT)}</div>`;
   return "";
 }
+// 2ae: "ของหมด" / "รอจัดซื้อ" flag set by the hospital (pcuBootstrap.item_flags) — yellow (out) / grey (pending), still orderable
+const FLAG_TEXT = { out: "ของหมด", pending: "รอจัดซื้อ" };
+function stockFlagHtml(app, item) {
+  const f = item.active !== false && app.boot.item_flags && app.boot.item_flags[item.code];
+  if (!f) return "";
+  const parts = [FLAG_TEXT[f.status] || f.status];
+  if (f.eta) parts.push(`คาดว่ามี ${formatThaiYmd(f.eta)}`);
+  if (f.note) parts.push(f.note);
+  return `<div class="stock-flag stock-flag-${esc(f.status)}" data-flag="${esc(f.status)}">${esc(parts.join(" · "))} <span class="stock-flag-ok">— ยังสั่งได้</span></div>`;
+}
 const rowStateClass = (app, month, item, editable) =>
   item.active === false ? " row-cancelled" : editable && qtyLocked(app, month, item.code) ? " row-qty-locked" : "";
 
@@ -833,7 +843,7 @@ function buildItemTr(app, month, item, editable) {
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
     <td class="col-name"><div class="item-name">${esc(item.name)}</div>
-      ${rowNoteHtml(app, month, item, editable)}
+      ${rowNoteHtml(app, month, item, editable)}${stockFlagHtml(app, item)}
       ${item.active === false ? "" : hintHtml(app, month, item)}
       ${calcBlockHtml(app, month, item, line, editable)}
       <div class="limit-msg" data-limit-for="${esc(item.code)}"></div></td>
@@ -884,7 +894,7 @@ function buildItemCard(app, month, item, editable) {
       ${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}
     </div>
     <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
-    ${rowNoteHtml(app, month, item, editable)}
+    ${rowNoteHtml(app, month, item, editable)}${stockFlagHtml(app, item)}
     ${item.active === false ? "" : hintHtml(app, month, item)}
     ${calcBlockHtml(app, month, item, line, editable)}
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">

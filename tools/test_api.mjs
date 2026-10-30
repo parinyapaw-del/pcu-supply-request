@@ -1830,7 +1830,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 8, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v8 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 9, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2192,10 +2192,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 8, "re-running migration v5 (+ v6–v8) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 9, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 8, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 9, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3559,7 +3559,7 @@ async function main() {
 
     // ---- migration v8 re-run: no error, no second seed, data kept ----
     const fbN = (await list()).items.length;
-    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 8, "devRerunMigration v8");
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 9, "devRerunMigration v8 (+ v9)");
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
@@ -3624,6 +3624,124 @@ async function main() {
     eq([z2.active, "cancel_reason" in z2], [true, false], "reopened item: cancel_reason dropped");
     ok(fs2.form.id > fs1.form.id && (await sv({ [Z.code]: { op: 1 } })).ok, "reopened Z takes a quantity again");
     await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2ae: stock flags (admin + own-unit dispenser, never blocks) · announcements (live only) · note with out_of_stock");
+  {
+    const F0 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const itemsOf = (unit) => F0.steps.filter((s) => s.active !== false && s.dispense_unit === unit).flatMap((s) => s.rows.filter((r) => r.type === "item" && r.active !== false));
+    const [S1, S2] = itemsOf("พัสดุ");
+    const [LB] = itemsOf("LAB");
+    ok(S1 && S2 && LB, "setup: two พัสดุ items + one LAB item on the fy_current form");
+    const DSPF = "flag.disp@example.com";
+    await mustOk("adminUsersAdd", { email: DSPF, role: "dispenser", units: ["พัสดุ"] }, ADM2);
+    const DF = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSPF })).token;
+    const P = (await mustOk("adminBootstrap", {}, ADM2)).pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const auditN = async () => (await mustOk("adminAuditLog", { limit: 1 }, ADM2)).entries[0].id; // newest audit id (the list is capped at 500)
+    for (const f of (await mustOk("itemFlagList", {}, ADM2)).flags) await mustOk("itemFlagClear", { code: f.code }, ADM2);
+
+    // ---- migration v9 ----
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 9, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
+
+    // ---- flags: validation + scope ----
+    expectErr(await api("itemFlagSet", { code: S1.code, status: "gone" }, ADM2), "BAD_REQUEST", "itemFlagSet bad status");
+    expectErr(await api("itemFlagSet", { code: S1.code, status: "out", eta: "2026-13-01" }, ADM2), "BAD_REQUEST", "itemFlagSet bad eta");
+    expectErr(await api("itemFlagSet", { code: S1.code, status: "out", note: "n".repeat(201) }, ADM2), "BAD_REQUEST", "itemFlagSet note > 200");
+    expectErr(await api("itemFlagSet", { code: "ZZ-NOPE", status: "out" }, ADM2), "NOT_FOUND", "itemFlagSet unknown code (admin) → NOT_FOUND");
+    expectErr(await api("itemFlagSet", { status: "out" }, ADM2), "BAD_REQUEST", "itemFlagSet without code");
+    expectErr(await api("itemFlagSet", { code: S1.code, status: "out" }, TP), "FORBIDDEN", "itemFlagSet with a pcu token");
+    expectErr(await api("itemFlagList", {}, TP), "FORBIDDEN", "itemFlagList with a pcu token");
+    const a0 = await auditN();
+    const f1 = await mustOk("itemFlagSet", { code: S1.code, status: "out", eta: "2026-12-15", note: " ใช้ตัวอื่นแทนได้ " }, ADM2);
+    ok(f1.changed && f1.flag.status === "out" && f1.flag.note === "ใช้ตัวอื่นแทนได้" && f1.flag.eta === "2026-12-15" && f1.flag.set_by === ADMIN_EMAIL, "admin sets S1 = out (note trimmed, eta, set_by)");
+    eq(await auditN(), a0 + 1, "itemFlagSet → 1 audit row");
+    eq((await mustOk("itemFlagSet", { code: S1.code, status: "out", eta: "2026-12-15", note: "ใช้ตัวอื่นแทนได้" }, ADM2)).changed, false, "same flag again → changed:false");
+    eq(await auditN(), a0 + 1, "…no write, no audit");
+    const f2 = await mustOk("itemFlagSet", { code: S2.code, status: "pending" }, DF);
+    ok(f2.changed && f2.flag.status === "pending" && f2.flag.eta === null && f2.flag.set_by === DSPF, "dispenser (พัสดุ) sets its own item S2 = pending");
+    const fx = await api("itemFlagSet", { code: LB.code, status: "out" }, DF);
+    expectErr(fx, "FORBIDDEN", "dispenser (พัสดุ) flags a LAB item → FORBIDDEN");
+    ok((await mustOk("adminBootstrap", {}, DF)).me.role === "dispenser", "…and the dispenser session is still valid");
+    expectErr(await api("itemFlagSet", { code: "ZZ-NOPE", status: "out" }, DF), "FORBIDDEN", "dispenser: code not on the form → FORBIDDEN");
+    ok((await mustOk("itemFlagSet", { code: LB.code, status: "out" }, ADM2)).changed, "admin flags the LAB item");
+    expectErr(await api("itemFlagClear", { code: LB.code }, DF), "FORBIDDEN", "dispenser (พัสดุ) clears a LAB flag → FORBIDDEN");
+    eq((await mustOk("itemFlagList", {}, DF)).flags.map((f) => f.code).sort(), [S1.code, S2.code, LB.code].sort(), "itemFlagList (dispenser too) lists every flag");
+    const f3 = await mustOk("itemFlagSet", { code: S1.code, status: "pending", eta: null, note: "" }, DF);
+    ok(f3.changed && f3.flag.status === "pending" && f3.flag.note === null && f3.flag.eta === null, "dispenser edits an admin-set flag of its unit (out → pending, note/eta cleared)");
+
+    // ---- PCU sees flags in pcuBootstrap; ordering a flagged item still works ----
+    const pb = await mustOk("pcuBootstrap", {}, TP);
+    eq(pb.item_flags[S2.code], { status: "pending", note: null, eta: null }, "pcuBootstrap.item_flags[S2]");
+    eq(pb.item_flags[LB.code], { status: "out", note: null, eta: null }, "pcuBootstrap.item_flags[LAB]");
+    await mustOk("itemFlagSet", { code: S1.code, status: "out", eta: "2027-01-10", note: "รอบริษัทส่ง" }, ADM2);
+    eq((await mustOk("pcuBootstrap", {}, TP)).item_flags[S1.code], { status: "out", note: "รอบริษัทส่ง", eta: "2027-01-10" }, "flag change shows on the next pcuBootstrap");
+    const ts = (k) => new Date(Date.parse("2026-11-28T00:00:00Z") + k * 1000).toISOString();
+    const sv = await api("saveLines", { month: CUR, send: true, lines: { [S1.code]: { stock: 0, op: 4, pp: 2, updated_at: ts(1) }, [LB.code]: { stock: 0, op: 1, pp: 0, updated_at: ts(2) } } }, TP);
+    ok(sv.ok, "saveLines + send with qty > 0 on flagged items → ok (flags never block)");
+    const rq = (await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request;
+    eq([rq.status, rq.lines[S1.code].op, rq.lines[S1.code].pp], ["submitted", 4, 2], "…stored and sent");
+
+    // ---- issue: out_of_stock keeps its note ----
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [S1.code]: { issued_total: 2, reason: "out_of_stock", note: "ของเข้า ม.ค." } } }, DF);
+    const l1 = (await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.lines[S1.code];
+    eq([l1.issued_total, l1.issue_reason, l1.issue_note], [2, "out_of_stock", "ของเข้า ม.ค."], "issueLines out_of_stock + note stored");
+    await mustOk("issueDone", { pcu: P, month: CUR, unit: "พัสดุ", done: 1 }, DF);
+    eq((await mustOk("pcuGetMonth", { month: CUR }, TP)).request.issued[S1.code], { total: 2, op: 0, pp: 2, reason: "out_of_stock", note: "ของเข้า ม.ค." }, "PCU view returns the out_of_stock note");
+    await mustOk("issueLines", { pcu: P, month: CUR, lines: { [S1.code]: { issued_total: 2, reason: "out_of_stock" } } }, ADM2);
+    eq((await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.lines[S1.code].issue_note, null, "out_of_stock without a note → note cleared");
+
+    // ---- clear ----
+    const a1 = await auditN();
+    eq(await mustOk("itemFlagClear", { code: S2.code }, DF), { ok: true, changed: true }, "dispenser clears its own S2 flag");
+    eq(await mustOk("itemFlagClear", { code: S2.code }, DF), { ok: true, changed: false }, "clearing again → changed:false");
+    eq(await auditN(), a1 + 1, "…only the real clear wrote an audit row");
+    eq(S2.code in (await mustOk("pcuBootstrap", {}, TP)).item_flags, false, "cleared flag is gone from pcuBootstrap");
+
+    // ---- announcements ----
+    expectErr(await api("adminAnnouncementSave", { text: "" }, ADM2), "BAD_REQUEST", "announcement blank text");
+    expectErr(await api("adminAnnouncementSave", { text: "x".repeat(1001) }, ADM2), "BAD_REQUEST", "announcement text > 1,000");
+    expectErr(await api("adminAnnouncementSave", { text: "x", expires_at: "31/12/2026" }, ADM2), "BAD_REQUEST", "announcement bad expires_at");
+    expectErr(await api("adminAnnouncementSave", { text: "x", active: "yes" }, ADM2), "BAD_REQUEST", "announcement active not boolean");
+    expectErr(await api("adminAnnouncementSave", { text: "x" }, DF), "FORBIDDEN", "adminAnnouncementSave as dispenser");
+    expectErr(await api("adminAnnouncementSave", { text: "x" }, TP), "FORBIDDEN", "adminAnnouncementSave with a pcu token");
+    expectErr(await api("adminAnnouncementList", {}, TP), "FORBIDDEN", "adminAnnouncementList with a pcu token");
+    const live1 = (await mustOk("adminAnnouncementSave", { text: " ประชุมผู้รับผิดชอบวันศุกร์ " }, ADM2)).announcement;
+    const live2 = (await mustOk("adminAnnouncementSave", { text: "ส่งใบเบิกภายในวันที่ 25", expires_at: "2099-12-31" }, ADM2)).announcement;
+    const old = (await mustOk("adminAnnouncementSave", { text: "หมดอายุแล้ว", expires_at: "2020-01-01" }, ADM2)).announcement;
+    const off = (await mustOk("adminAnnouncementSave", { text: "ปิดไว้", active: false }, ADM2)).announcement;
+    ok(live1.text === "ประชุมผู้รับผิดชอบวันศุกร์" && live1.live && live1.active && live1.expires_at === null, "announcement saved (trimmed, no end, live)");
+    ok(!old.live && old.active && !off.live && !off.active, "expired → live:false · switched off → live:false");
+    const pa = (await mustOk("pcuBootstrap", {}, TP)).announcements;
+    eq(pa.map((a) => a.id), [live2.id, live1.id], "pcuBootstrap.announcements = live only, newest first (expired + switched-off left out)");
+    eq(Object.keys(pa[0]).sort(), ["expires_at", "id", "text", "updated_at"], "…PCU gets id/text/expires_at/updated_at only");
+    const a2 = await auditN();
+    eq((await mustOk("adminAnnouncementSave", { id: live1.id, text: "ประชุมผู้รับผิดชอบวันศุกร์" }, ADM2)).announcement.updated_at, live1.updated_at, "edit with no change → nothing written");
+    eq(await auditN(), a2, "…no audit");
+    const off1 = (await mustOk("adminAnnouncementSave", { id: live1.id, text: live1.text, active: false }, ADM2)).announcement;
+    ok(!off1.active && (await auditN()) === a2 + 1, "switch off → 1 audit row");
+    eq((await mustOk("pcuBootstrap", {}, TP)).announcements.map((a) => a.id), [live2.id], "switched-off announcement no longer sent to the PCU");
+    const on1 = (await mustOk("adminAnnouncementSave", { id: live1.id, text: "ประชุมเลื่อนเป็นวันจันทร์" }, ADM2)).announcement;
+    ok(!on1.active && on1.text === "ประชุมเลื่อนเป็นวันจันทร์", "edit without `active` keeps it switched off");
+    const reo = (await mustOk("adminAnnouncementSave", { id: old.id, text: old.text, expires_at: null }, ADM2)).announcement;
+    ok(reo.live, "clearing expires_at revives an expired announcement");
+    expectErr(await api("adminAnnouncementSave", { id: 999999, text: "x" }, ADM2), "NOT_FOUND", "announcement update unknown id");
+    eq((await mustOk("adminAnnouncementList", {}, ADM2)).announcements.length, 4, "adminAnnouncementList lists all (incl. switched off)");
+    expectErr(await api("adminAnnouncementDelete", { id: live2.id }, DF), "FORBIDDEN", "adminAnnouncementDelete as dispenser");
+    for (const a of [live1, live2, old, off]) eq(await mustOk("adminAnnouncementDelete", { id: a.id }, ADM2), { ok: true }, `adminAnnouncementDelete #${a.id}`);
+    expectErr(await api("adminAnnouncementDelete", { id: live2.id }, ADM2), "NOT_FOUND", "deleted announcement is gone");
+    eq((await mustOk("pcuBootstrap", {}, TP)).announcements, [], "no announcements → []");
+    ok((await mustOk("adminAuditLog", { limit: 50 }, ADM2)).entries.some((e) => e.action === "adminAnnouncementDelete"), "announcement delete audited");
+
+    // ---- migration v9 re-run keeps data ----
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 9, "devRerunMigration v9 again");
+    eq((await mustOk("itemFlagList", {}, ADM2)).flags.length, 2, "…flags kept");
+
+    for (const c of [S1.code, LB.code]) await mustOk("itemFlagClear", { code: c }, ADM2);
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+    await mustOk("adminUsersRemove", { email: DSPF }, ADM2);
   }
 
   // ------------------------------------------------------------------------------------------------------------------------

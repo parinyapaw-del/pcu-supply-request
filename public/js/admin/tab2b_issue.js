@@ -35,7 +35,7 @@ function createEditor(rows, { onChange } = {}) {
   function norm(d, r) {
     if (!isShort(d, r)) return { total: d.total, reason: null, note: null };
     const reason = d.reason || null;
-    return { total: d.total, reason, note: reason === "other" ? ((d.note || "").trim() || null) : null };
+    return { total: d.total, reason, note: reason ? ((d.note || "").trim() || null) : null }; // 2ae: a note rides with "ของหมด" too (optional there)
   }
   const same = (a, b) => a.total === b.total && a.reason === b.reason && a.note === b.note;
   function isChanged(key) {
@@ -56,7 +56,11 @@ function createEditor(rows, { onChange } = {}) {
     const short = isShort(d, r);
     const sel = q(key, ".t2b-reason"), note = q(key, ".t2b-note");
     if (sel) { sel.disabled = r.disabled || !short; sel.value = short ? (d.reason || "") : ""; }
-    if (note) { note.hidden = !(short && d.reason === "other"); note.disabled = r.disabled; }
+    if (note) {
+      note.hidden = !(short && d.reason);
+      note.disabled = r.disabled;
+      note.placeholder = notePlaceholder(d.reason);
+    }
     const tr = host && host.querySelector(`tr[data-key="${CSS.escape(key)}"]`);
     if (tr) {
       tr.classList.toggle("t2b-changed", !r.disabled && isChanged(key));
@@ -124,11 +128,9 @@ function createEditor(rows, { onChange } = {}) {
       if (d.total !== null && d.total > r.req) return { key, msg: `${r.label}: จ่ายเกินขอไม่ได้ (ขอ ${r.req})`, el: q(key, ".t2b-in") };
       if (!isShort(d, r)) continue;
       if (!d.reason) return { key, msg: `${r.label}: จ่ายไม่ครบ — เลือกเหตุผล`, el: q(key, ".t2b-reason") };
-      if (d.reason === "other") {
-        const n = (d.note || "").trim();
-        if (!n) return { key, msg: `${r.label}: ระบุเหตุผล (อื่น ๆ)`, el: q(key, ".t2b-note") };
-        if (n.length > 200) return { key, msg: `${r.label}: เหตุผลยาวเกิน 200 ตัวอักษร`, el: q(key, ".t2b-note") };
-      }
+      const n = (d.note || "").trim();
+      if (d.reason === "other" && !n) return { key, msg: `${r.label}: ระบุเหตุผล (อื่น ๆ)`, el: q(key, ".t2b-note") };
+      if (n.length > 200) return { key, msg: `${r.label}: หมายเหตุยาวเกิน 200 ตัวอักษร`, el: q(key, ".t2b-note") };
     }
     return null;
   }
@@ -163,6 +165,9 @@ function createEditor(rows, { onChange } = {}) {
   };
 }
 
+// 2ae: "ของหมด" takes an optional note (e.g. "ใช้รายการ … แทนได้") · "อื่น ๆ" needs one
+const notePlaceholder = (reason) => (reason === "out_of_stock" ? "หมายเหตุ (ถ้ามี)" : "ระบุเหตุผล");
+
 function inputCell(r) {
   const d = r.base;
   return `<td class="t2b-in-cell"><input class="t2b-in" type="text" inputmode="numeric" maxlength="5" autocomplete="off"
@@ -176,7 +181,7 @@ function reasonCell(r) {
   const opts = [`<option value="">—</option>`]
     .concat(Object.entries(ISSUE_REASONS).map(([v, label]) => `<option value="${v}">${escapeHtml(label)}</option>`)).join("");
   return `<td class="left t2b-reason-cell"><select class="t2b-reason select-input" aria-label="เหตุผล ${escapeHtml(r.label)}" disabled>${opts}</select>
-    <input class="t2b-note" type="text" maxlength="200" placeholder="ระบุเหตุผล" value="${escapeHtml(r.base.note || "")}" hidden ${r.disabled ? "disabled" : ""}></td>`;
+    <input class="t2b-note" type="text" maxlength="200" placeholder="${notePlaceholder(r.base.reason)}" value="${escapeHtml(r.base.note || "")}" hidden ${r.disabled ? "disabled" : ""}></td>`;
 }
 
 export function renderTab2b(container, ctx) {
@@ -855,7 +860,7 @@ export function renderTab2b(container, ctx) {
     card.insertAdjacentHTML("beforeend", `<div class="t2b-wiz-reason" id="t2b-wiz-reason"><strong>เหตุผลที่จ่ายไม่ครบ:</strong>
       <label><input type="radio" name="t2b-wiz-reason" value="out_of_stock" ${rs.reason === "out_of_stock" ? "checked" : ""}> ของหมด/รอจัดซื้อ</label>
       <label><input type="radio" name="t2b-wiz-reason" value="other" ${rs.reason === "other" ? "checked" : ""}> อื่น ๆ</label>
-      <input class="t2b-note t2b-wiz-note" id="t2b-wiz-note" type="text" maxlength="200" placeholder="ระบุเหตุผล" value="${escapeHtml(rs.note)}" ${rs.reason === "other" ? "" : "hidden"}></div>`);
+      <input class="t2b-note t2b-wiz-note" id="t2b-wiz-note" type="text" maxlength="200" placeholder="${notePlaceholder(rs.reason)}" value="${escapeHtml(rs.note)}"></div>`);
     const foot = el("div", { class: "t2b-footer" });
     const err = el("span", { class: "admin-err-text t2b-err", id: "t2b-wiz-err", hidden: true });
     const back = el("button", { type: "button", class: "btn btn-secondary btn-sm", id: "t2b-wiz-back" }, "ย้อนกลับ");
@@ -891,7 +896,7 @@ export function renderTab2b(container, ctx) {
     const noteIn = card.querySelector("#t2b-wiz-note");
     card.querySelectorAll('input[name="t2b-wiz-reason"]').forEach((r) => r.addEventListener("change", () => {
       rs.reason = r.value;
-      noteIn.hidden = rs.reason !== "other";
+      noteIn.placeholder = notePlaceholder(rs.reason);
       if (rs.reason === "other") noteIn.focus();
     }));
     noteIn.addEventListener("input", () => { rs.note = noteIn.value; noteIn.classList.remove("input-error"); });
@@ -903,9 +908,9 @@ export function renderTab2b(container, ctx) {
       card.querySelectorAll(".t2b-wiz-in").forEach((i) => {
         if (i.value === "") { rs.bad.add(cellKey(i.dataset.code, i.dataset.pcu)); i.classList.add("input-error"); if (!first) { first = i; msg = "กรอกยอดที่ได้ให้ครบทุกช่อง (0…ขอ)"; } }
       });
-      if (!first && rs.reason === "other") {
+      if (!first) {
         const n = rs.note.trim();
-        if (!n) { first = noteIn; msg = "ระบุเหตุผล (อื่น ๆ)"; } else if (n.length > 200) { first = noteIn; msg = "เหตุผลยาวเกิน 200 ตัวอักษร"; }
+        if (!n && rs.reason === "other") { first = noteIn; msg = "ระบุเหตุผล (อื่น ๆ)"; } else if (n.length > 200) { first = noteIn; msg = "หมายเหตุยาวเกิน 200 ตัวอักษร"; }
         if (first) noteIn.classList.add("input-error");
       }
       if (first) {
@@ -933,7 +938,7 @@ export function renderTab2b(container, ctx) {
     card.insertAdjacentHTML("beforeend", wizardHead("ตรวจสอบและยืนยัน", 3));
     const x = otherLineCount();
     card.insertAdjacentHTML("beforeend", `<ul class="t2b-wiz-sum" id="t2b-wiz-sum">
-      <li>รายการที่เลือก ${rs.selected.size} รายการ ตามที่กรอก (${escapeHtml(rs.reason === "other" ? "เหตุผล: " + rs.note.trim() : "เหตุผล: ของหมด/รอจัดซื้อ")})</li>
+      <li>รายการที่เลือก ${rs.selected.size} รายการ ตามที่กรอก (${escapeHtml(rs.reason === "other" ? "เหตุผล: " + rs.note.trim() : "เหตุผล: ของหมด/รอจัดซื้อ" + (rs.note.trim() ? " — " + rs.note.trim() : ""))})</li>
       <li>รายการอื่น ${formatInt(x)} บรรทัด จะตั้ง = ขอ (ทับยอดที่กรอกไว้)</li>
       <li>ใบ ${n} ใบ จะเป็นจ่ายแล้ว (หน่วย ${escapeHtml(ts.unit)})</li></ul>`);
     const foot = el("div", { class: "t2b-footer" });
@@ -953,7 +958,7 @@ export function renderTab2b(container, ctx) {
         rs.pending.forEach((p) => { if (p.lines[c]) items[c][p.pcu] = rs.vals.get(cellKey(c, p.pcu)); });
       });
       const params = { month: ts.month, unit: ts.unit, items, reason: rs.reason };
-      if (rs.reason === "other") params.note = rs.note.trim();
+      if (rs.note.trim()) params.note = rs.note.trim(); // 2ae: also with "ของหมด"
       go.disabled = true;
       try {
         const res = await ctx.adminCall("issueExcept", params);

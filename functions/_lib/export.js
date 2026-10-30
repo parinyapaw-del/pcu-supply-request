@@ -69,7 +69,7 @@ export async function buildExport(DB, { month, fy }) {
         r.month, r.pcu, pcuName.get(r.pcu) || r.pcu, ent ? ent.step.sheet || ent.step.code : "", l.item_code, ent ? ent.item.name : "", ent ? ent.item.unit : "", price,
         op, pp, { t: "n", v: op + pp, f: `I${rowNo}+J${rowNo}` }, { t: "n", v: round2((op + pp) * price), f: `K${rowNo}*H${rowNo}` },
         issued ? nz(l.issued_op) : "", issued ? nz(l.issued_pp) : "", issued ? l.issued_total : "",
-        issued ? (l.issue_reason === "other" ? l.issue_note || "อื่น ๆ" : REASON_TH[l.issue_reason] || l.issue_reason || "") : "",
+        issued ? (l.issue_reason === "other" ? l.issue_note || "อื่น ๆ" : (REASON_TH[l.issue_reason] || l.issue_reason || "") + (l.issue_reason && l.issue_note ? " — " + l.issue_note : "")) : "", // 2ae: note with ของหมด
         STATUS_TH[r.status] || r.status, bangkokDateTime(r.submitted_at), r.form_version_id ?? "",
         l.used ?? "", l.adj ?? "", l.adj_reason ? ADJ_REASON_TH[l.adj_reason] || l.adj_reason : "",
       ]);

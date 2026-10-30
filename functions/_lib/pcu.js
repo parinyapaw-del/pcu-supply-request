@@ -13,6 +13,7 @@ import {
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
+import { pcuNotices } from "./notices.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
 const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
@@ -126,7 +127,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   // 2l: history = every round month from the first round of FY F-1 (F = monthFy(cur)) up to (excluding) prev, newest first
   const histFrom = fyMonths(monthFy(cur) - 1)[0];
 
-  const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes, reqFirst] = await Promise.all([
+  const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes, reqFirst, live] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(code).all(),
     DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
@@ -142,6 +143,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     pcuMonthView(DB, code, prev, fy),
     DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND status = 'issued' AND issued_seen_at IS NULL`).bind(code).all(),
     firstRequester(DB, code),
+    pcuNotices(DB), // 2ae
   ]);
 
   // never_prev: active items this PCU never withdrew last fy (only meaningful when we have history for the PCU)
@@ -217,6 +219,8 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     byMonth: { [cur]: curView.view, [prev]: prevView.view },
     issue_notices: notices,
     prices, // 2p: { round: {code: price} } — only codes whose round price differs from the form ({} per round when none)
+    item_flags: live.item_flags, // 2ae: {code: {status, note, eta}} — every PCU, never blocks ordering
+    announcements: live.announcements, // 2ae: live admin banners for the home page, newest first
   };
 }
 
