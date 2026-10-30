@@ -14,6 +14,7 @@ import { call, getAdminToken, getPcuToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
 import { esc, requestOf, isEditable, statusText, monthLabel, roundTitle, roundOf, isTrialMonth, alertDialog, confirmDialog, formForRequest, requesterOf } from "./common.js";
 import { trySend } from "./send.js";
+import { getXLSX, requestRows, monthlyWorkbook, saveWorkbook, safeName } from "../xlsx_export.js";
 import { requestPdfReady, startPdfDownload, openPdfInline, pdfErrorHtml } from "../pdf_client.js";
 
 const COL_WIDTHS_PT = [40, 43.5, 47.8, 47.8, 47.8, 47.8, 47.8, 40, 47.8, 43.5, 47.8, 43.5, 55.7];
@@ -163,8 +164,9 @@ export async function renderPrint(container, app, params) {
       <span class="muted">มีผลเฉพาะใบนี้ · ชื่อตั้งต้นของ รพ.สต. แก้ที่แท็บ รพ.สต.</span>
     </div>` : ""}`}
     <div class="print-actions">
-      <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
       <button type="button" class="btn btn-secondary" id="btn-do-pdf">ดาวน์โหลด PDF</button>
+      <button type="button" class="btn btn-secondary" id="btn-do-xlsx">ดาวน์โหลด Excel</button>
+      <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
       <button type="button" class="btn btn-secondary" id="btn-print-back">กลับ</button>
     </div>`;
   wrap.appendChild(controls);
@@ -194,6 +196,7 @@ export async function renderPrint(container, app, params) {
     );
     const pdfBtn = document.getElementById("btn-do-pdf");
     if (pdfBtn) pdfBtn.style.display = "none"; // no PDF for an unsaved draft form
+    document.getElementById("btn-do-xlsx").style.display = "none"; // nor Excel
     document.getElementById("btn-do-print").addEventListener("click", browserPrintFallback); // no PDF for an unsaved form
     document.getElementById("btn-print-back").addEventListener("click", () => window.close());
     return;
@@ -389,6 +392,27 @@ export async function renderPrint(container, app, params) {
     } finally {
       pdfBtn.disabled = false;
       printBtn.disabled = false;
+    }
+  });
+
+  // 2ag: Excel of this month's sheet, built in the browser (no server call, no send). Lines as they are now.
+  const xlsxBtn = document.getElementById("btn-do-xlsx");
+  xlsxBtn.addEventListener("click", async () => {
+    const statusEl = document.getElementById("print-status");
+    xlsxBtn.disabled = true;
+    try {
+      const prices = {};
+      steps.forEach((st) => (st.rows || []).forEach((r) => { if (r.type === "item") prices[r.code] = r.price; }));
+      const rows = requestRows(request, form, (code) => prices[code]);
+      const XLSX = await getXLSX();
+      const name = `ใบเบิก_${safeName(pcu.print_name || pcu.name || pcu.code)}_${month}.xlsx`;
+      saveWorkbook(XLSX, monthlyWorkbook(XLSX, rows), name);
+      renderStatus();
+      statusEl.textContent += ` — ดาวน์โหลดแล้ว: ${name}`;
+    } catch (e) {
+      await alertDialog("ดาวน์โหลด Excel ไม่สำเร็จ", `<p>${esc((e && e.message) || "ลองใหม่อีกครั้ง")}</p>`);
+    } finally {
+      xlsxBtn.disabled = false;
     }
   });
 

@@ -1205,7 +1205,7 @@ function renderSummary(app, month, steps) {
         ? `<button type="button" class="btn btn-primary" id="btn-save">บันทึก</button>
            <button type="button" class="btn btn-secondary" id="btn-print">พิมพ์</button>
            <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf; = send + download, spec §4.4). Not in 2a. -->`
-        : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์ใบเบิก</button>`}
+        : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์/ดาวน์โหลดใบเบิก</button>`}
     </div>
     <p class="muted send-hint">${editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
     ${round && editable && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}

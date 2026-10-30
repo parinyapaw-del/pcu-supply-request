@@ -80,7 +80,7 @@ function cardHtml(app, round) {
       ${locked
         ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
         : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${started ? "ทำต่อ" : "กรอก"}</button>`}
-      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์/ดาวน์โหลด</button>
       ${isSent(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}" data-issue="${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
@@ -98,7 +98,7 @@ function collapsedHtml(app, round) {
     <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)}${request && request.no_order ? ' <span class="badge badge-info">ไม่เบิก</span>' : ""} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
-      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์</button>
+      <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์/ดาวน์โหลด</button>
       ${isSent(request) ? receivedBtnHtml(round.month) : ""}
       ${issue && issue.units_done > 0 ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}">ดูการจ่าย</a>` : ""}
     </div>
@@ -174,7 +174,7 @@ function historyRowHtml(h) {
     <summary>${title} ${historyStatusBadge(h)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
-      <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์</button>
+      <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์/ดาวน์โหลด</button>
       ${isSent(h) ? receivedBtnHtml(h.month) : ""}
       ${h.status === "issued" ? `<a class="btn btn-secondary" href="#/issue?month=${esc(h.month)}">ดูการจ่าย</a>` : ""}
     </div>

@@ -220,20 +220,8 @@ export function downloadJson(obj, filename) {
   downloadBlob(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }), filename);
 }
 
-// SheetJS: admin.html loads it with a <script> tag; fall back to a dynamic load from cdnjs.
-let xlsxPromise = null;
-export function getXLSX() {
-  if (window.XLSX) return Promise.resolve(window.XLSX);
-  if (xlsxPromise) return xlsxPromise;
-  xlsxPromise = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-    s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error("โหลด SheetJS ไม่สำเร็จ")));
-    s.onerror = () => { xlsxPromise = null; reject(new Error("โหลด SheetJS ไม่สำเร็จ (ตรวจอินเทอร์เน็ต)")); };
-    document.head.appendChild(s);
-  });
-  return xlsxPromise;
-}
+// SheetJS lazy loader is shared with the PCU pages (xlsx_export.js).
+export { getXLSX } from "../xlsx_export.js";
 
 // Heat shading for the previous-year heatmap: 0 -> near-transparent, max -> full accent.
 export function heatColor(value, max) {

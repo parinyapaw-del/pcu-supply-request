@@ -511,7 +511,8 @@ export function bodyShellHtml() {
           <div class="dash-tools">
             <input type="text" class="select-input dash-search" placeholder="ค้นหาชื่อหรือรหัสรายการ" aria-label="ค้นหารายการ" autocomplete="off">
             <label class="switch-label"><input type="checkbox" class="dash-showall"> รวมรายการที่ยังไม่เบิก</label>
-            <button type="button" class="btn btn-secondary dash-export" title="ไฟล์ CSV เปิดด้วย Excel ได้">ดาวน์โหลด Excel</button>
+            <button type="button" class="btn btn-secondary dash-export-xlsx" title="ไฟล์ Excel (.xlsx) แยกทุกเดือน ทุกรายการ — แผ่น data สำหรับทำสถิติ + แผ่น สรุป">ดาวน์โหลด Excel (.xlsx)</button>
+            <button type="button" class="btn btn-secondary dash-export" title="ไฟล์ CSV สรุปตามตารางนี้ เปิดด้วย Excel ได้">ดาวน์โหลด CSV</button>
           </div>
           <div id="dash-table"></div></div>
       </div>`;
@@ -522,7 +523,7 @@ export function bodyShellHtml() {
  * `onRender(agg)` runs after every body render (the admin view hangs its extra sections there).
  * `heat` = heatmap table (admin per-PCU view); `hiddenLink` = link to #/hidden in the never-requested card (PCU page only).
  */
-export function createBody(box, data, { onRender, heat = false, hiddenLink = false } = {}) {
+export function createBody(box, data, { onRender, heat = false, hiddenLink = false, xlsx = null } = {}) {
   let agg = null;
   const $ = (id) => box.querySelector(id);
 
@@ -603,6 +604,17 @@ export function createBody(box, data, { onRender, heat = false, hiddenLink = fal
     renderBody();
     const exp = $(".dash-export");
     if (exp) exp.addEventListener("click", () => { if (agg) downloadCsv(data, visibleRows(agg)); });
+    // 2ag: the Excel (.xlsx) button exists only where the page supplies a builder (the PCU dashboard)
+    const xl = $(".dash-export-xlsx");
+    if (xl && !xlsx) xl.remove();
+    else if (xl) {
+      xl.addEventListener("click", async () => {
+        const label = xl.textContent;
+        xl.disabled = true;
+        xl.textContent = "กำลังสร้างไฟล์…";
+        try { await xlsx(); } finally { xl.disabled = false; xl.textContent = label; }
+      });
+    }
   }
 
   return { bind, renderBody, setUnit, syncSeg };
