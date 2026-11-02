@@ -99,6 +99,8 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   - **2ai**: item locked by the admin for this PCU and month (`item_locks.from_month <= month`, no `item_lock_exempt` row for the pcu) and `op` or `pp` raised
     above the stored value → `ITEM_LOCKED{items:[{code,op,pp}]}` "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin" (lowering / same value / stock allowed;
     `adminSaveLines` is never locked).
+    **2ak A2**: the PCU fill page follows this rule — OP/PP of a locked item stay open when a quantity is stored (to lower it); typing above the stored
+    value is clamped back with a notice (`sync.getServerQty`); a field with nothing stored is read-only. `ITEM_LOCKED` stays the backstop.
   - **2af**: request with `no_order = 1` and a line's `op+pp` changed to > 0 → `NO_ORDER{items:[{code,op,pp}]}` "เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กดยกเลิก … ก่อน"
     (stock / used stay editable; `send:true` on such a request keeps `no_order`).
   - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`, also for `NO_ORDER`).

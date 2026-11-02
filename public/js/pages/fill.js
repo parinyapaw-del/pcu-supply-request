@@ -90,8 +90,12 @@ function itemLock(app, month, code) {
   const l = app.boot.item_locks && app.boot.item_locks[code];
   return l && month >= l.from_month ? l : null;
 }
-// OP/PP of a line are typed in unless: the page is read-only · the line is qty-locked · a "ไม่เบิก" month · an admin item lock (table row + card)
-const qtyEditableOf = (app, month, code, editable) => editable && !qtyLocked(app, month, code) && !isNoOrder(app, month) && !itemLock(app, month, code);
+// OP/PP (`field`) of a line are typed in unless: the page is read-only · the line is qty-locked · a "ไม่เบิก" month (table row + card).
+// 2ak A2: an admin item lock only stops raising (server ITEM_LOCKED, API.md §4) — a field with a stored quantity stays open to be lowered
+// (lockedCap clamps the input); one with nothing stored stays read-only.
+const lockedCap = (app, month, code, field) => Number(sync.getServerQty(pcuCode(app), month, code)[field]) || 0;
+const qtyEditableOf = (app, month, code, editable, field) => editable && !qtyLocked(app, month, code) && !isNoOrder(app, month)
+  && (!itemLock(app, month, code) || lockedCap(app, month, code, field) > 0);
 const lockText = (l) => `ล็อกรายการตั้งแต่รอบขอเบิก ${formatMonthKeyThai(l.from_month)}${l.note ? ` (${l.note})` : ""} — ถ้าต้องการเบิก ติดต่อ admin`;
 // 2af: a "ไม่เบิก" month takes no requested quantity (OP/PP read-only, คงเหลือ / ใช้ไป still editable) until it is cancelled
 const isNoOrder = (app, month) => !!(requestOf(app, month) || {}).no_order;
@@ -860,7 +864,10 @@ function rowNoteHtml(app, month, item, editable) {
   if (item.active === false) return `<div class="row-note">${esc(cancelText(app, item))}</div>`;
   if (editable && qtyLocked(app, month, item.code)) return `<div class="row-note">${esc(QTY_LOCKED_TEXT)}</div>`;
   const lk = itemLock(app, month, item.code);
-  if (lk) return `<div class="row-note row-note-lock" data-item-lock>🔒 ${esc(lockText(lk))}</div>`;
+  if (lk) {
+    const lower = editable && (lockedCap(app, month, item.code, "op") > 0 || lockedCap(app, month, item.code, "pp") > 0) ? " · ลดยอดขอที่กรอกไว้ได้" : "";
+    return `<div class="row-note row-note-lock" data-item-lock>🔒 ${esc(lockText(lk) + lower)}</div>`;
+  }
   return "";
 }
 // 2ae: "ของหมด" / "รอจัดซื้อ" flag set by the hospital (pcuBootstrap.item_flags) — yellow (out) / grey (pending), still orderable
@@ -883,7 +890,6 @@ function buildItemTr(app, month, item, editable) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const modeB = isModeB(app);
-  const qtyEditable = qtyEditableOf(app, month, item.code, editable);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
@@ -896,8 +902,8 @@ function buildItemTr(app, month, item, editable) {
     <td class="col-price">${formatMoney(priceOf(app, month, item))}</td>
     ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
     <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
-    <td class="col-num">${inputHtml("op", line.op, qtyEditable)}</td>
-    <td class="col-num">${inputHtml("pp", line.pp, qtyEditable)}</td>
+    <td class="col-num">${inputHtml("op", line.op, qtyEditableOf(app, month, item.code, editable, "op"))}</td>
+    <td class="col-num">${inputHtml("pp", line.pp, qtyEditableOf(app, month, item.code, editable, "pp"))}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
     <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
     <td class="col-action">${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}</td>`;
@@ -930,7 +936,6 @@ function buildItemCard(app, month, item, editable) {
   const total = lineTotal(line);
   const req = stockRequired(app);
   const modeB = isModeB(app);
-  const qtyEditable = qtyEditableOf(app, month, item.code, editable);
 
   card.innerHTML = `
     <div class="item-card-head">
@@ -945,8 +950,8 @@ function buildItemCard(app, month, item, editable) {
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
       ${modeB ? `<label>ใช้ไป${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</label>` : ""}
       <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
-      <label>OP${inputHtml("op", line.op, qtyEditable)}</label>
-      <label>PP${inputHtml("pp", line.pp, qtyEditable)}</label>
+      <label>OP${inputHtml("op", line.op, qtyEditableOf(app, month, item.code, editable, "op"))}</label>
+      <label>PP${inputHtml("pp", line.pp, qtyEditableOf(app, month, item.code, editable, "pp"))}</label>
     </div>
     <div class="item-card-total">รวม <span class="row-total">${formatInt(total)}</span> · เป็นเงิน <span class="row-money">${formatMoney(total * priceOf(app, month, item))}</span></div>
     <div class="limit-msg" data-limit-for="${esc(item.code)}"></div>`;
@@ -1006,6 +1011,12 @@ function wireStepEvents(app, month, step, editable) {
         const digits = input.value.replace(/[^0-9]/g, "").slice(0, 5);
         if (digits !== input.value) input.value = digits;
         value = digits === "" ? null : parseInt(digits, 10);
+      }
+      // 2ak A2: an admin-locked item may be lowered, never raised above what the server holds (its ITEM_LOCKED revert stays the backstop)
+      if ((field === "op" || field === "pp") && value !== null && itemLock(app, month, code) && value > lockedCap(app, month, code, field)) {
+        value = lockedCap(app, month, code, field);
+        input.value = String(value);
+        toast("รายการนี้ถูกล็อก — ลดยอดขอได้ แต่เพิ่มเกินยอดเดิมไม่ได้ (ถ้าต้องการเบิก ติดต่อ admin)");
       }
 
       const cur = sync.getLine(pcuCode(app), month, code);

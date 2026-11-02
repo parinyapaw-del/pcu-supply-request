@@ -82,6 +82,14 @@ function cloneLine(l) {
   return out;
 }
 
+// 2ak A2: the op/pp the server holds per line (what saveLines compares an admin item lock against — lowering is fine, raising is not).
+// Kept apart from session.request.lines, which carry unsaved edits; refreshed from every RequestObj the server returns.
+function rememberServerQty(session, serverReq) {
+  const out = {};
+  Object.entries((serverReq && serverReq.lines) || {}).forEach(([code, l]) => { out[code] = { op: l.op == null ? null : l.op, pp: l.pp == null ? null : l.pp }; });
+  session.serverQty = out;
+}
+
 // Initializes (or refreshes) a session from the server's RequestObj (or null = not started yet).
 // - New session: merges in any local mirror lines that are still dirty and newer than the server's copy
 //   ("on load, if the local mirror has dirty lines newer than the server's, re-send them").
@@ -102,6 +110,7 @@ export function initSession(pcu, month, serverRequest) {
     }
     if (existing.dirtyLines.size && request.submitted_at) request.edited_after_submit = true;
     existing.request = request;
+    rememberServerQty(existing, serverRequest);
     return existing;
   }
 
@@ -121,7 +130,9 @@ export function initSession(pcu, month, serverRequest) {
     offline: false,
     conflict: false, // server said CONFLICT: round locked -> read-only
     listeners: new Set(),
+    serverQty: {},
   };
+  rememberServerQty(session, serverRequest);
 
   const mirror = loadMirror(pcu, month);
   if (mirror && mirror.lines) {
@@ -182,6 +193,12 @@ export function subscribe(pcu, month, fn) {
   session.listeners.add(fn);
   fn(statusOf(session));
   return () => session.listeners.delete(fn);
+}
+
+// 2ak A2: {op, pp} the server holds for the line (nulls when it has none)
+export function getServerQty(pcu, month, code) {
+  const session = getSession(pcu, month);
+  return (session && session.serverQty && session.serverQty[code]) || { op: null, pp: null };
 }
 
 export function getLine(pcu, month, code) {
@@ -253,6 +270,7 @@ function scheduleRetry(session) {
 // Applies the RequestObj the server returned to the session without clobbering still-dirty lines.
 function applyServerRequest(session, serverReq) {
   if (!serverReq) return;
+  rememberServerQty(session, serverReq);
   Object.keys(serverReq.lines || {}).forEach((code) => {
     if (!session.dirtyLines.has(code)) session.request.lines[code] = serverReq.lines[code];
   });
@@ -403,6 +421,7 @@ function fixRefusedQty(session, err) {
     const cur = it && session.request.lines[it.code];
     if (!cur) return;
     const line = { ...cur, op: it.op == null ? null : it.op, pp: it.pp == null ? null : it.pp, updated_at: new Date().toISOString() };
+    if (session.serverQty) session.serverQty[it.code] = { op: line.op, pp: line.pp }; // the refusal carries the stored values
     if (err.code === "LINE_LOCKED") line.qty_locked = true;
     session.request.lines[it.code] = line;
     session.dirtyLines.add(it.code);
@@ -510,6 +529,7 @@ export async function reloadSession(pcu, month) {
   clearMirror(pcu, month);
   session.request = data.request ? JSON.parse(JSON.stringify(data.request)) : blankRequest(pcu, month);
   session.request.lines = session.request.lines || {};
+  rememberServerQty(session, data.request);
   notify(session);
   return data;
 }
