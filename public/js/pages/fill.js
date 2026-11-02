@@ -1020,7 +1020,10 @@ function wireStepEvents(app, month, step, editable) {
       }
 
       const cur = sync.getLine(pcuCode(app), month, code);
-      sync.setLineFields(pcuCode(app), month, code, patchForEdit(isModeB(app), baselineOf(app, month, code), cur, field, value));
+      const patch = patchForEdit(isModeB(app), baselineOf(app, month, code), cur, field, value);
+      // 2ak B4: nothing actually changes (e.g. a stripped character, the clamped value again) → the line is not marked dirty / re-sent
+      if (Object.keys(patch).every((k) => (cur[k] ?? null) === (patch[k] ?? null))) return;
+      sync.setLineFields(pcuCode(app), month, code, patch);
       if (field === "stock") {
         input.classList.remove("input-error");
         sendUi.missing.delete(code);
