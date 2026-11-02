@@ -366,10 +366,13 @@ export async function saveLines(ctx, p) {
        WHERE request_lines.updated_at IS NULL OR excluded.updated_at > request_lines.updated_at`
     ).bind(id, l.code, l.stock, l.op, l.pp, l.used, l.adj, l.adj_reason, l.calc_from, l.updated_at));
   }
+  // 2ak B3: last_step / submitter_name only when they differ from the stored row (a new row starts with both null) — written together
+  // with the updated_at bump below in one UPDATE (autosave runs every few seconds; D1 write quota)
   const metaSets = [], metaVals = [];
-  if (p.last_step !== undefined && p.last_step !== null && String(p.last_step)) { metaSets.push("last_step = ?"); metaVals.push(String(p.last_step).slice(0, 64)); }
-  if (p.submitter_name !== undefined && p.submitter_name !== null) { metaSets.push("submitter_name = ?"); metaVals.push(String(p.submitter_name).slice(0, 120)); }
-  if (metaSets.length) stmts.push(DB.prepare(`UPDATE requests SET ${metaSets.join(", ")} WHERE id = ?`).bind(...metaVals, id));
+  const step = p.last_step !== undefined && p.last_step !== null && String(p.last_step) ? String(p.last_step).slice(0, 64) : null;
+  if (step !== null && step !== (reqRow ? reqRow.last_step ?? null : null)) { metaSets.push("last_step = ?"); metaVals.push(step); }
+  const name = p.submitter_name !== undefined && p.submitter_name !== null ? String(p.submitter_name).slice(0, 120) : null;
+  if (name !== null && name !== (reqRow ? reqRow.submitter_name ?? null : null)) { metaSets.push("submitter_name = ?"); metaVals.push(name); }
 
   let changed = 0, qtyChanged = false;
   const recalc = {}; // 2o: written lines whose stored stock/used differ from what the client sent
@@ -384,9 +387,8 @@ export async function saveLines(ctx, p) {
       if (l.stock !== l.sent.stock || l.used !== l.sent.used) recalc[l.code] = { stock: l.stock, used: l.used };
     });
   }
-  if (changed > 0) {
-    await DB.prepare(`UPDATE requests SET updated_at = ? WHERE id = ?`).bind(now, id).run();
-  }
+  if (changed > 0) { metaSets.push("updated_at = ?"); metaVals.push(now); }
+  if (metaSets.length) await DB.prepare(`UPDATE requests SET ${metaSets.join(", ")} WHERE id = ?`).bind(...metaVals, id).run();
   // 2o: the next rounds' calc lines use this round as baseline (only once it is sent) — recalc them (no updated_at bump, no audit)
   const wasSent = !!reqRow && reqRow.status !== "draft";
   if (qtyChanged && wasSent) await recalcStockChain(DB, pcu.code, month);
@@ -416,6 +418,7 @@ export async function saveLines(ctx, p) {
     for (const l of lines) {
       const c = l.item_code;
       const price = priceFor(hist, latest.index.has(c) ? latest : bound, c, month);
+      if (price === (l.price_snapshot ?? null) && price === (l.price_print ?? null)) continue; // 2ak B3: unchanged → no write (as admin_entry)
       fin.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE request_id = ? AND item_code = ?`).bind(price, price, id, c));
     }
     fin.push(DB.prepare(

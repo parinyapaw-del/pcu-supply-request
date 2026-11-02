@@ -4030,6 +4030,21 @@ async function main() {
     eq([ii.find((r) => r.pcu === P).entry_by, ii.find((r) => r.pcu === Q).entry_by], [null, "admin"], "A3: adminItemIssue.rows[].entry_by (pcu → null · admin-keyed → 'admin')");
     await mustOk("devDeleteRequest", { pcu: Q, month: CUR });
 
+    // ---- B3: meta (last_step / submitter_name) + updated_at in one UPDATE, written only when changed ----
+    await mustOk("devDeleteRequest", { pcu: P, month: PREV });
+    const m1 = await mustOk("saveLines", { month: PREV, lines: L({ [X.code]: { op: 2 } }), last_step: "P1", submitter_name: "สมชาย" }, TP);
+    eq([m1.request.last_step, m1.request.submitter_name], ["P1", "สมชาย"], "B3: new request stores last_step + submitter_name");
+    const m2 = await mustOk("saveLines", { month: PREV, lines: {}, last_step: "P1", submitter_name: "สมชาย" }, TP);
+    eq(m2.request.updated_at, m1.request.updated_at, "B3: same meta, no line → updated_at not bumped");
+    const m3 = await mustOk("saveLines", { month: PREV, lines: {}, last_step: "P2", submitter_name: "สมหญิง" }, TP);
+    eq([m3.request.last_step, m3.request.submitter_name, m3.request.updated_at], ["P2", "สมหญิง", m1.request.updated_at], "B3: changed meta written, updated_at still only on a line change");
+    const m4 = await mustOk("saveLines", { month: PREV, lines: L({ [X.code]: { op: 3 } }), last_step: "P3" }, TP);
+    eq([m4.request.last_step, m4.request.submitter_name, m4.request.updated_at > m1.request.updated_at], ["P3", "สมหญิง", true], "B3: line change + meta → both in one UPDATE");
+    const s1 = await mustOk("saveLines", { month: PREV, lines: {}, send: true }, TP);
+    const s2 = await mustOk("saveLines", { month: PREV, lines: {}, send: true }, TP);
+    eq([s2.submitted, s2.request.submit_count], [true, s1.request.submit_count + 1], "B3: re-send with unchanged prices still sends");
+    eq((await mustOk("adminGetRequest", { pcu: P, month: PREV }, ADM2)).request.lines[X.code].price_print, X.price, "B3: price_print stamped on the first send, kept on the re-send");
+
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }
   // ------------------------------------------------------------------------------------------------------------------------

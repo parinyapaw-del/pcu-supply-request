@@ -88,7 +88,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - Values: integer 0–99999 or `null`. Per-line **last-write-wins** (done in SQL): a line is written only if its `updated_at` is **strictly newer**
   than the stored one (equal = idempotent retry → no-op; missing `updated_at` = now). Item codes must exist in the latest form (or the request's bound version) else `BAD_REQUEST`.
 - Request `updated_at` is bumped only when at least one line actually changed (an all-stale or empty call is a no-op for `edited_after_submit`).
-  `last_step` / `submitter_name` are stored when present.
+  `last_step` / `submitter_name` are stored when present (2ak B3: only when they differ from the stored row, in the same UPDATE as the `updated_at` bump).
 - Autosave is **not** written to `audit_log` (would flood it); `send:true` is (`submit`).
 - **2ad per-line rules** (replace the 2c issued-page lock — a page whose unit is issued stays fully editable; checked on every call, before any write;
   a line counts only when its `op`/`pp` differ from the stored line, so re-sending the stored quantity with a new `stock`/`used` is fine):
@@ -110,7 +110,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   returned; `limit_unlocks` are ignored) → submit succeeds and the list is returned as `over_limit:[{code,total,limit_year,used_fy}]` (information for the PCU).
   `off`: `over_limit:[]`.
   2z: on send every line of the request gets `price_snapshot` **and** `price_print` = the item's price in the latest form of the round's fy (else the bound
-  version) — one price per fy (§5.2); a later price change rewrites both on every sent line of the fy.
+  version) — one price per fy (§5.2); a later price change rewrites both on every sent line of the fy. 2ak B3: a line whose two prices already equal it is not rewritten.
 - **2o stock calculation** (server owns the formula — `functions/_lib/stock.js`). Extra per-line keys, all optional: `used` (int 0–99999 | null) · `adj`
   (int −99999…99999 | null) · `adj_reason` (`received_extra|borrow_return|expired_damaged|recount|other` | null — null accepted with a non-zero adj) ·
   `calc_from` (`'used'|'stock'|null`). A key **not sent keeps the stored value** (old clients that only send `stock,op,pp` lose nothing); `stock/op/pp`
