@@ -344,7 +344,7 @@ export async function saveLines(ctx, p) {
     }
   }
   if (qtyLocked.length) {
-    throw err("LINE_LOCKED", "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)", { items: qtyLocked });
+    throw err("LINE_LOCKED", "รายการนี้บันทึกจ่ายหรือแจ้งได้รับแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)", { items: qtyLocked });
   }
   if (cancelled.length) throw err("ITEM_CANCELLED", "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้", { items: cancelled });
   if (itemLocked.length) throw err("ITEM_LOCKED", "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin", { items: itemLocked });

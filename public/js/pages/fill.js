@@ -78,9 +78,9 @@ function applyIssueRefresh(app, month, d) {
   else if (app.older && app.older[month]) app.older[month].issue = d.issue || null;
 }
 
-// 2ad: the requested quantity of a line whose issue is recorded stays as it is (server: views.lineQtyLocked → line.qty_locked);
-// คงเหลือ / ใช้ไป / ปรับยอด and every other line stay editable until the round closes.
-const QTY_LOCKED_TEXT = "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม";
+// 2ad: the requested quantity of a line whose issue is recorded — or (2af) whose receipt the PCU reported — stays as it is
+// (server: views.lineQtyLocked → line.qty_locked); คงเหลือ / ใช้ไป / ปรับยอด and every other line stay editable until the round closes.
+const QTY_LOCKED_TEXT = "รายการนี้บันทึกจ่ายหรือแจ้งได้รับแล้ว ยอดขอคงไว้ตามเดิม";
 function qtyLocked(app, month, code) {
   return !!sync.getLine(pcuCode(app), month, code).qty_locked;
 }

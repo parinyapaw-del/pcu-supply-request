@@ -93,7 +93,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - **2ad per-line rules** (replace the 2c issued-page lock — a page whose unit is issued stays fully editable; checked on every call, before any write;
   a line counts only when its `op`/`pp` differ from the stored line, so re-sending the stored quantity with a new `stock`/`used` is fine):
   - line with a recorded issue (`issued_total` not null) **or a PCU received report (2af, `received_reports` row)** — `views.lineQtyLocked` → `LINE_LOCKED{items:[{code,op,pp}]}`
-    "รายการนี้บันทึกรับของแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)" (`op`/`pp` = the stored values). `stock`, `used`, `adj`, `adj_reason`, `calc_from` stay editable.
+    "รายการนี้บันทึกจ่ายหรือแจ้งได้รับแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)" (`op`/`pp` = the stored values). `stock`, `used`, `adj`, `adj_reason`, `calc_from` stay editable.
   - item with `active:false` in the latest form of the round's fy (= cancelled for good) and `op+pp > 0` → `ITEM_CANCELLED{items:[{code,op,pp}]}`
     "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้" (lowering it to 0 / null is allowed).
   - **2ai**: item locked by the admin for this PCU and month (`item_locks.from_month <= month`, no `item_lock_exempt` row for the pcu) and `op` or `pp` raised
@@ -199,8 +199,8 @@ RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, las
                no_order:bool,         // 2af: "เดือนนี้ไม่เบิก" (status 'submitted', no requested line)
                mismatch_count:int,    // 2af: lines with mismatch:true (PCU view: against issues of done units only; admin: against issued_total)
                lines: { code: {stock,op,pp,used,adj,adj_reason,calc_from,updated_at} },   // 2o: used/adj/adj_reason/calc_from (null when unset), PCU + admin views
-                                                                   // 2ad: PCU view adds qty_locked:true on a line whose issue is recorded (op/pp read-only, saveLines LINE_LOCKED)
-                                                                   //      2af: … or whose received qty the PCU reported
+                                                                   // 2ad/2af: PCU view adds qty_locked:true on a line whose issue is recorded OR whose received qty the PCU
+                                                                   //      reported (views.lineQtyLocked · op/pp read-only, saveLines LINE_LOCKED "…บันทึกจ่ายหรือแจ้งได้รับแล้ว…")
                                                                    // 2af (PCU + admin views) — present ONLY when the PCU reported the line (absent = not reported ≠ 0):
                                                                    //   rcv_qty:int, rcv_date:"YYYY-MM-DD", rcv_note|null, rcv_at (iso) · admin view + rcv_by (pcu code)
                                                                    //   mismatch:bool — only when an issue figure exists to compare (admin: issued_total not null ·
