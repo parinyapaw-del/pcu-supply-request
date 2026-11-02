@@ -238,7 +238,7 @@ export async function adminItemIssue(ctx, p) {
   for (const r of rows) {
     const unit = await unitFor(r);
     out.push({
-      pcu: r.pcu, pcu_name: r.pcu_name || r.pcu, status: r.status, op: r.op || 0, pp: r.pp || 0, requested: (r.op || 0) + (r.pp || 0),
+      pcu: r.pcu, pcu_name: r.pcu_name || r.pcu, status: r.status, entry_by: r.entry_by || null, op: r.op || 0, pp: r.pp || 0, requested: (r.op || 0) + (r.pp || 0),
       issued_total: r.issued_total ?? null, issued_op: r.issued_op ?? null, issued_pp: r.issued_pp ?? null,
       reason: r.issue_reason ?? null, note: r.issue_note ?? null,
       unit_done: !!(doneBy.get(r.id) && doneBy.get(r.id).has(unit)),

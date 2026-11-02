@@ -1504,7 +1504,7 @@ async function main() {
     const ai = await mustOk("adminItemIssue", { month: CUR, item_code: LABI.code }, DL);
     eq([ai.item.code, ai.item.name, ai.item.unit, ai.item.price, ai.item.dispense_unit, ai.item.step], [LABI.code, LABI.name, LABI.unit, LABI.price, "LAB", "LAB"], "adminItemIssue.item {code,name,unit,price,dispense_unit,step}");
     eq(ai.rows.map((x) => x.pcu), ["PCU03", "PCU04"], "adminItemIssue: one row per PCU that requested the item");
-    eq(ai.rows[0], { pcu: "PCU03", pcu_name: ai.rows[0].pcu_name, status: "issued", op: 3, pp: 2, requested: 5, issued_total: 3, issued_op: 1, issued_pp: 2, reason: "other", note: "ส่งไม่ทัน", unit_done: true }, "adminItemIssue row shape (PCU03, LAB unit done)");
+    eq(ai.rows[0], { pcu: "PCU03", pcu_name: ai.rows[0].pcu_name, status: "issued", entry_by: null, op: 3, pp: 2, requested: 5, issued_total: 3, issued_op: 1, issued_pp: 2, reason: "other", note: "ส่งไม่ทัน", unit_done: true }, "adminItemIssue row shape (PCU03, LAB unit done)");
     ok(ai.rows[0].pcu_name && ai.rows[1].status === "submitted" && ai.rows[1].unit_done === false && ai.rows[1].requested === 6, "adminItemIssue: PCU04 row (submitted, unit not done)");
     expectErr(await api("adminItemIssue", { month: CUR, item_code: A.code }, DL), "FORBIDDEN", "adminItemIssue: item of another unit → FORBIDDEN for a dispenser");
     const aiA = await mustOk("adminItemIssue", { month: CUR, item_code: A.code }, ADM2);
@@ -4019,6 +4019,16 @@ async function main() {
     eq([rd.changed, "rcv_qty" in rd.request.lines[Y.code], rd.request.lines[Y.code].qty_locked], [1, false, undefined], "A1: qty null on a 0 line removes the report → unlocked");
     expectErr(await api("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: null }] }, TP), "BAD_REQUEST", "A1: 0 line without a report → still BAD_REQUEST");
     ok((await sv(TP, CUR, { [Y.code]: { op: 1 } })).ok, "A1: Y requestable again");
+
+    // ---- A3: adminItemIssue rows say who keyed the request (the issue tab keeps admin-keyed rows open past the dispenser window) ----
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+    ok((await sv(TP, CUR, { [X.code]: { op: 1 } }, { send: true })).ok, "A3 setup: P sends CUR (own request)");
+    const Q = real.at(-3).code;
+    await mustOk("devDeleteRequest", { pcu: Q, month: CUR });
+    await mustOk("adminSaveLines", { pcu: Q, month: CUR, lines: { [X.code]: { op: 2, pp: 0 } }, send: true }, ADM2);
+    const ii = (await mustOk("adminItemIssue", { month: CUR, item_code: X.code }, ADM2)).rows;
+    eq([ii.find((r) => r.pcu === P).entry_by, ii.find((r) => r.pcu === Q).entry_by], [null, "admin"], "A3: adminItemIssue.rows[].entry_by (pcu → null · admin-keyed → 'admin')");
+    await mustOk("devDeleteRequest", { pcu: Q, month: CUR });
 
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }

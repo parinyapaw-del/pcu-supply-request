@@ -298,6 +298,11 @@ export function renderTab2b(container, ctx) {
   function windowExpired(month) {
     return !state.isAdmin && compareMonthKey(state.bootstrap.current_month, month) > 0;
   }
+  // 2ak A3: per request, like issue.js windowClosed — past the window a dispenser still records the requests an admin keyed (entry_by 'admin').
+  // `ts.late` = the month is past the window · ts.expired only when none of the requests on screen is admin-keyed (else those stay editable).
+  const adminKeyed = (r) => !!r && r.entry_by === "admin";
+  const expiredFor = (reqs) => (ts.late && !reqs.some(adminKeyed) ? EXPIRED_MSG : null);
+  const lateNote = () => el("div", { class: "notice notice-info", id: "t2b-late" }, "หมดเวลาแก้ไขการจ่ายใบที่ รพ.สต. ส่งเอง — บันทึกได้เฉพาะใบที่ admin คีย์ให้");
 
   async function guardDirty() {
     const n = ts.editor ? ts.editor.dirtyCount() : 0;
@@ -311,7 +316,8 @@ export function renderTab2b(container, ctx) {
       host.innerHTML = `<p class="admin-note">ยังไม่มีรอบหรือใบเบิกบนเว็บในปีงบ ${escapeHtml(String(ctx.fySelected()))}</p>`;
       return;
     }
-    ts.expired = windowExpired(ts.month) ? EXPIRED_MSG : null;
+    ts.late = windowExpired(ts.month);
+    ts.expired = ts.late ? EXPIRED_MSG : null;
     ts.editor = null;
     if (ts.mode === "sheet") loadSheet(); else if (ts.mode === "round") loadRound(); else loadItem();
   }
@@ -390,6 +396,7 @@ export function renderTab2b(container, ctx) {
       const data = await ctx.adminCall("adminGetRequest", { pcu: ts.pcu, month: ts.month });
       if (my !== ts.seq) return;
       ts.sheet = { request: data.request, form: data.form, issue: data.issue || null };
+      ts.expired = expiredFor([data.request]);
       drawSheet();
     } catch (err) {
       if (my !== ts.seq) return;
@@ -581,6 +588,7 @@ export function renderTab2b(container, ctx) {
       const data = await ctx.adminCall("adminItemIssue", { month: ts.month, item_code: ts.itemCode });
       if (my !== ts.seq) return;
       ts.item = data;
+      ts.expired = expiredFor(data.rows);
       drawItem();
     } catch (err) {
       if (my !== ts.seq) return;
@@ -598,6 +606,7 @@ export function renderTab2b(container, ctx) {
     head.appendChild(el("p", { class: "t2b-meta small" },
       `${monthLong(ts.month)} · หน่วย ${item.unit || "–"} · ราคา ${formatMoney(((state.bootstrap.prices || {})[ts.month] || {})[item.code] ?? item.price)} บาท · หน้า ${item.step || "–"}${item.step_title ? " " + item.step_title : ""} · หน่วยจ่าย ${item.dispense_unit || "–"}`));
     if (ts.expired) head.appendChild(el("div", { class: "notice notice-error", id: "t2b-expired" }, ts.expired + " — ดูได้อย่างเดียว"));
+    else if (ts.late) head.appendChild(lateNote());
     host.appendChild(head);
     if (skipped && skipped.length) {
       const names = skipped.map((s) => `${s.pcu}${s.why ? ` (${s.why})` : ""}`).join(", ");
@@ -612,7 +621,7 @@ export function renderTab2b(container, ctx) {
     const erows = rows.map((r) => ({
       key: r.pcu, label: r.pcu, op: Number(r.op) || 0, pp: Number(r.pp) || 0, req: Number(r.requested) || ((Number(r.op) || 0) + (Number(r.pp) || 0)),
       base: { total: numOrNull(r.issued_total), reason: r.reason || null, note: r.note || "" },
-      disabled: !!r.unit_done || !canAct, r
+      disabled: !!r.unit_done || !canAct || (ts.late && !adminKeyed(r)), r
     }));
     const editor = createEditor(erows, { onChange: () => { refreshFooter(); refreshItemTotals(); } });
     ts.editor = editor;
@@ -693,6 +702,7 @@ export function renderTab2b(container, ctx) {
       const data = await loadMonth(ctx, ts.month);
       if (my !== rs.seq) return;
       rs.data = data;
+      ts.expired = expiredFor(data.entries.map((e) => e.request));
       drawRound();
     } catch (err) {
       if (my !== rs.seq) return;
@@ -713,6 +723,7 @@ export function renderTab2b(container, ctx) {
       const u = m && m.issue && m.issue.units && m.issue.units[unit];
       if (!u || !u.needed || !e.request) return;
       if (u.done) { doneCount += 1; return; }
+      if (ts.late && !adminKeyed(e.request)) return; // past the window: only admin-keyed requests are still recordable (server skips the rest)
       const lines = {}; // code -> {req, item}
       Object.entries(e.request.lines || {}).forEach(([code, l]) => {
         const req = (Number(l.op) || 0) + (Number(l.pp) || 0);
@@ -746,6 +757,7 @@ export function renderTab2b(container, ctx) {
     const card = el("div", { class: "admin-card t2b-round", id: "t2b-round" });
     card.appendChild(el("h2", {}, `ทั้งรอบ — ขอเบิก ${monthLong(ts.month)} · หน่วย ${unit}`));
     if (ts.expired) card.appendChild(el("div", { class: "notice notice-error", id: "t2b-expired" }, ts.expired + " — ดูได้อย่างเดียว"));
+    else if (ts.late) card.appendChild(lateNote());
     card.insertAdjacentHTML("beforeend", `<p class="t2b-meta" id="t2b-round-sum"><span class="badge ${n ? "badge-warn" : "badge-success"}">${n} ใบรอจ่าย</span>
       <span class="badge badge-muted">${rs.doneCount} ใบจ่ายแล้ว</span></p>`);
     if (rs.skipped) card.insertAdjacentHTML("beforeend", skippedHtml(rs.skipped));

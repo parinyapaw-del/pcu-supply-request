@@ -309,7 +309,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `issueItem` (staff) | `month, item_code, entries:{pcu:{issued_total, reason?, note?}}` | `{updated:[pcu], skipped:[{pcu, why}]}` — §5.3 |
 | `issueDoneAll` (staff, 2y) | `month, unit` | `{done:[pcu], skipped:[{pcu, why}]}` — §5.3 |
 | `issueExcept` (staff, 2y) | `month, unit, items:{code:{pcu: issued_total}}, reason, note?` | `{done:[pcu], skipped:[{pcu, why}], lines}` — §5.3 |
-| `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price (= priceFor(month), 2p),dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
+| `adminItemIssue` (staff) | `month, item_code` | `{item:{code,name,unit,price (= priceFor(month), 2p),dispense_unit,step,step_title}, rows:[{pcu,pcu_name,status,entry_by,op,pp,requested,issued_total,issued_op,issued_pp,reason,note,unit_done}], form_version_id}` — §5.3 |
 | `adminNote` | `pcu, month, note` (empty/blank clears) | `{request}` — creates a `draft` row if none; status unchanged |
 | `adminSaveLines` (2w) | `pcu, month, lines:{code:{op?,pp?,stock?,used?}}, send?:bool` | `{saved_at, status, submitted, clamped:[{code,from,to}], request: RequestObj(admin view)}` — §5.1b |
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
@@ -660,6 +660,7 @@ Flags = one row per item code (not per fy; kept until cleared by hand). Writes o
 The PCU's figure (`received_reports`) and the dispenser's (`request_lines.issued_*`) are stored apart — neither side overwrites the other.
 Admin RequestObj lines (`adminGetRequest`, issue views §5.3) carry `rcv_qty / rcv_date / rcv_note / rcv_at / rcv_by / mismatch` (§4.1) + `request.mismatch_count`;
 `adminRequests` rows carry `mismatch_count` (lines reported ≠ issued_total) and `no_order`; `adminItemIssue.rows[]` carry `rcv_qty / rcv_date / rcv_note / mismatch`.
+2ak A3: `adminItemIssue.rows[]` also carry `entry_by` (`'admin'|null`) — the issue tab keeps admin-keyed rows editable for a dispenser past the time window (same rule as `windowClosed`).
 | action | who | params | data |
 |---|---|---|---|
 | `adminReceivedReport` | admin | `fy?` (default fy_current), `month?` (must be a round of that fy), `pcu?`, `all?:true` | `{fy, month|null, pcu|null, counts:{reported, mismatch}, rows:[{month, pcu, pcu_name, code, name, unit, dispense_unit, requested, issued_total|null, rcv_qty, diff|null (= rcv_qty − issued_total), mismatch:bool, rcv_date, rcv_note, issue_reason, issue_note, reported_at}]}` · default rows = mismatches only (issued_total set and ≠ rcv_qty), `all:true` = every reported line · sorted month, pcu, code · unknown pcu → `NOT_FOUND` · bad fy / month outside the fy → `BAD_REQUEST`. CSV is built client side. |
