@@ -507,6 +507,7 @@ export async function pcuNoOrderCancel(ctx, p) {
 // ---- 2af: รายงานของได้จริง ---------------------------------------------------------------------------------------------------------
 // pcuReceivedSave{month, lines:[{code, qty|null, received_date?, note?}]} — what the PCU actually got, per requested line (op+pp > 0) of a
 // request (any status — 2ai, not "ไม่เบิก") of fy_current or the fy before (any month, closed rounds too). qty null = remove the report (back to "not reported").
+// 2ak A1: removing (qty null) also works on a line whose requested qty is 0 by now — otherwise the report would lock that line for good.
 // received_date defaults to today (Bangkok), never in the future. Stored in received_reports only (issued_* untouched); only rows whose
 // values change are written. A reported line's requested quantity is then locked (lineQtyLocked).
 const RCV_NOTE_MAX = 200;
@@ -537,11 +538,13 @@ export async function pcuReceivedSave(ctx, p) {
     if (seen.has(code)) throw err("BAD_REQUEST", "รหัสรายการซ้ำ: " + code);
     seen.add(code);
     const l = byCode.get(code);
-    if (!l || requestedQty(l) <= 0) throw err("BAD_REQUEST", `รายการ ${code} ไม่ได้ขอในเดือนนี้ จึงแจ้งได้รับไม่ได้`, { item_code: code });
+    const reported = !!l && l.rcv_qty !== null && l.rcv_qty !== undefined;
+    // 2ak A1: an existing report can always be removed (qty null), also when the requested qty became 0 after it was made
+    if (!l || (requestedQty(l) <= 0 && !(reported && r.qty === null))) throw err("BAD_REQUEST", `รายการ ${code} ไม่ได้ขอในเดือนนี้ จึงแจ้งได้รับไม่ได้`, { item_code: code });
     if (!has(r, "qty")) throw err("BAD_REQUEST", "ต้องระบุ qty (จำนวนเต็ม หรือ null เพื่อลบการแจ้ง)");
     const qty = r.qty === null ? null : assertQty(r.qty === "" ? undefined : r.qty);
     if (r.qty !== null && qty === null) throw err("BAD_REQUEST", "จำนวนที่ได้รับต้องเป็นเลขจำนวนเต็ม 0–99999 (null = ลบการแจ้ง)");
-    if (qty === null) { if (l.rcv_qty !== null && l.rcv_qty !== undefined) plan.push({ code, del: true }); continue; }
+    if (qty === null) { if (reported) plan.push({ code, del: true }); continue; }
     let date = r.received_date === undefined || r.received_date === null || r.received_date === "" ? (l.rcv_date || today) : r.received_date;
     if (!isDate(date)) throw err("BAD_REQUEST", "วันที่รับไม่ถูกต้อง (YYYY-MM-DD)");
     if (date > today) throw err("BAD_REQUEST", "วันที่รับต้องไม่เกินวันนี้");

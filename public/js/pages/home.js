@@ -51,7 +51,8 @@ function withIssueStatus(st, issue) {
 // 2af: "รายงานของได้จริง" — any sent month of the fy (closed rounds too), not a "ไม่เบิก" month · `cls` = button style
 // 2ai: "รายงานของได้จริง" shows on every month whose request has a requested line — the PCU's own or keyed by admin, sent or not
 // (history rows carry has_req; current rounds carry their lines) · never on a "ไม่เบิก" month
-const canReport = (r) => !!r && !r.no_order && (r.lines ? itemsRequested(r) > 0 : !!r.has_req);
+// 2ak A1: … or a report left on a line whose requested qty became 0 (it can still be removed there)
+const canReport = (r) => !!r && !r.no_order && (r.lines ? itemsRequested(r) > 0 || Object.values(r.lines).some((l) => l && l.rcv_qty !== undefined) : !!r.has_req);
 const receivedBtnHtml = (month) =>
   `<a class="btn btn-secondary" href="#/received?month=${esc(month)}" data-received="${esc(month)}">รายงานของได้จริง</a>`;
 

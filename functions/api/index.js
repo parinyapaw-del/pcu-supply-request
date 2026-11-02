@@ -172,6 +172,10 @@ async function devAction(action, ctx, p) {
     else throw err("BAD_REQUEST", "op ไม่ถูกต้อง");
     return { ok: true };
   }
+  if (action === "devZeroLine") { // 2ak A1 fixture: {pcu, month, code} → op/pp 0 straight in SQL (a received report left on a 0 line, as before 2ak)
+    await ctx.DB.prepare(`UPDATE request_lines SET op = 0, pp = 0 WHERE request_id = ? AND item_code = ?`).bind(`${String(p.pcu)}_${String(p.month)}`, String(p.code)).run();
+    return { ok: true };
+  }
   throw err("BAD_REQUEST", "ไม่รู้จัก action");
 }
 
@@ -184,7 +188,7 @@ export async function onRequestPost({ request, env }) {
     if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
-    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester|DeleteRequest)$/.test(action);
+    const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester|DeleteRequest|ZeroLine)$/.test(action);
     if (!known) throw err("BAD_REQUEST", "ไม่รู้จัก action: " + action.slice(0, 60));
 
     const DB = getDb(env);

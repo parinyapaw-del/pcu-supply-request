@@ -125,6 +125,8 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `month`: `YYYY-MM`, ≤ `currentRound`, round fy = `fy_current` or `fy_current − 1` (else `BAD_REQUEST`) — **closed rounds too** (the round lock only closes the request).
 - 2ai: the PCU's own request of that month must exist (any status — keyed by the PCU or by admin, sent or not) else `NOT_FOUND` "เดือนนี้ยังไม่มีใบเบิก…" · a "ไม่เบิก" month → `BAD_REQUEST`.
 - Each `code` must be a line with `op+pp > 0` else `BAD_REQUEST{item_code}` "รายการ … ไม่ได้ขอในเดือนนี้" · duplicate code / missing `qty` → `BAD_REQUEST`.
+  **2ak A1**: exception — `qty:null` on a line that already has a report is accepted even when its `op+pp` is 0 by now (removes the report → the line unlocks).
+  The received page lists such a line (remove only).
 - `qty`: integer 0–99999 = the total received (one figure, not OP/PP) · `null` = remove the report (back to "not reported"; **not reported ≠ 0**).
 - `received_date`: valid date ≤ Bangkok today; omitted = the stored date, else today · `note`: trimmed, clipped to 200, `""` → null; omitted = keep.
 - Writes only rows whose (qty, date, note) change (upsert / delete, `reported_by` = pcu code, `reported_at` = now) + 1 audit `pcuReceivedSave`
@@ -394,7 +396,8 @@ else the last day of `prevMonth(month)` (2j: round 2026-11 → `2026-10-31`; rou
   below it → reason kept (or `other` + note "ปรับยอดขอโดย admin"). Every decrease is reported in `clamped`.
 - `send:true` → status `submitted` (an `issued` request stays `issued`), `form_version_id` = fy's latest, `submitted_at`, `submit_count+1`, and
   `price_snapshot = price_print = priceFor` (the fy's price, 2z) on every line. Editing an already-sent request without `send` re-stamps prices too and
-  moves `submitted_at` to the save time (no "แก้หลังส่ง" flag). Audit `admin_lines` (`changed=n items=n send=0|1 clamped=…`); stock chain recalc (2o).
+  moves `submitted_at` to the save time (no "แก้หลังส่ง" flag). Audit `admin_lines` (`changed=n items=n send=0|1 clamped=… rcv_cleared=…`); stock chain recalc (2o).
+- **2ak A1**: a written line whose `op+pp` becomes 0 and that has a PCU received report → that `received_reports` row is deleted (listed in the audit as `rcv_cleared=`).
 
 ### 5.2 Form editor + seed export (2d) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
 A form version is immutable. "Editing" the form = `adminFormSave` inserts a new `form_versions` row (`data = {fy, note, steps}`, `fy` = the base's fy,

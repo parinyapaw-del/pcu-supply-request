@@ -3984,6 +3984,45 @@ async function main() {
     await mustOk("devDeleteRequest", { pcu: Q, month: CUR });
   }
   // ------------------------------------------------------------------------------------------------------------------------
+  section("2ak P1: received report on a 0 line · stale lines · saveLines writes");
+  {
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
+    const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const real = b0.pcus.filter((x) => x.group !== "ทดลอง");
+    const P = real.at(-2).code;
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+    for (const m of [CUR, PREV]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2027-01-28T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (tok, month, lines, extra = {}) => api("saveLines", { month, lines: L(lines), ...extra }, tok);
+    const pLine = async (m, c) => (await mustOk("pcuGetMonth", { month: m }, TP)).request.lines[c];
+
+    // ---- A1: admin sets a reported line to 0 → the report goes, the line unlocks ----
+    ok((await sv(TP, CUR, { [X.code]: { op: 4 }, [Y.code]: { op: 2 } }, { send: true })).ok, "setup: P sends CUR X 4, Y 2");
+    await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 4 }, { code: Y.code, qty: 2 }] }, TP);
+    eq((await pLine(CUR, X.code)).qty_locked, true, "A1: reported X locked");
+    await mustOk("adminSaveLines", { pcu: P, month: CUR, lines: { [X.code]: { op: 0, pp: 0 } } }, ADM2);
+    const x1 = await pLine(CUR, X.code);
+    eq([x1.op, "rcv_qty" in x1, x1.qty_locked], [0, false, undefined], "A1: adminSaveLines X → 0 deletes its received report → unlocked");
+    eq((await pLine(CUR, Y.code)).rcv_qty, 2, "A1: …Y's report untouched");
+    ok((await mustOk("adminAuditLog", { limit: 20 }, ADM2)).entries.some((e) => e.action === "admin_lines" && String(e.detail || "").includes(`rcv_cleared=${X.code}`)), "A1: audit admin_lines rcv_cleared=X");
+    ok((await sv(TP, CUR, { [X.code]: { op: 3 } })).ok, "A1: PCU can request X again");
+    // ---- A1: a report left on a 0 line (data from before 2ak) can still be removed ----
+    await mustOk("devZeroLine", { pcu: P, month: CUR, code: Y.code });
+    eq([(await pLine(CUR, Y.code)).qty_locked, (await pLine(CUR, Y.code)).rcv_qty], [true, 2], "A1 fixture: Y requested 0, report 2 left, locked");
+    expectErr(await api("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 1 }] }, TP), "BAD_REQUEST", "A1: a 0 line takes no new figure");
+    expectErr(await api("pcuNoOrder", { month: CUR }, TP), "HAS_LOCKED_LINES", "A1: …and blocks ไม่เบิก while reported");
+    const rd = await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: null }] }, TP);
+    eq([rd.changed, "rcv_qty" in rd.request.lines[Y.code], rd.request.lines[Y.code].qty_locked], [1, false, undefined], "A1: qty null on a 0 line removes the report → unlocked");
+    expectErr(await api("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: null }] }, TP), "BAD_REQUEST", "A1: 0 line without a report → still BAD_REQUEST");
+    ok((await sv(TP, CUR, { [Y.code]: { op: 1 } })).ok, "A1: Y requestable again");
+
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+  }
+  // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }
 

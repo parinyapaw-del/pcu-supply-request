@@ -2,6 +2,7 @@
 // for any sent month of the fy (closed rounds too). Empty box = not reported (≠ 0) · clearing a reported box removes the report.
 // When the dispenser's figure is visible (unit done → request.issued) the page shows ขอ | ผู้จ่ายบันทึก | รพ.สต. แจ้ง and a yellow "ไม่ตรง".
 // Saved with pcuReceivedSave (only changed rows); a reported line's requested qty is then locked on the fill page (qty_locked).
+// 2ak A1: a reported line whose requested qty is 0 by now is still listed — its report can only be removed (that unlocks the line).
 import { call, getPcuToken } from "../api.js";
 import { getOrderedSteps } from "../data.js";
 import { formatInt } from "../format.js";
@@ -32,7 +33,7 @@ export async function renderReceived(container, app, params) {
   container.appendChild(box);
 
   // 2ai: any request with a requested line (own or keyed by admin, sent or not) — not a "ไม่เบิก" month
-  const anyReq = !!request && Object.values(request.lines || {}).some((l) => (Number(l && l.op) || 0) + (Number(l && l.pp) || 0) > 0);
+  const anyReq = !!request && Object.values(request.lines || {}).some((l) => (Number(l && l.op) || 0) + (Number(l && l.pp) || 0) > 0 || (l && l.rcv_qty !== undefined));
   if (!anyReq || request.no_order) {
     box.innerHTML = `<h2>รายงานของได้จริง ${esc(title)}</h2>
       <p class="muted">${request && request.no_order ? 'เดือนนี้แจ้ง "ไม่เบิก" — ไม่มีรายการให้รายงาน' : "เดือนนี้ยังไม่มียอดขอเบิก — ไม่มีรายการให้รายงาน"}</p>
@@ -45,16 +46,17 @@ export async function renderReceived(container, app, params) {
   const groups = [], seen = new Set();
   const lineOf = (code) => (request.lines || {})[code];
   const req = (l) => (Number(l && l.op) || 0) + (Number(l && l.pp) || 0);
+  const listed = (l) => req(l) > 0 || (!!l && l.rcv_qty !== undefined);
   getOrderedSteps(form).forEach((step) => {
     const rows = [];
     (step.rows || []).forEach((r) => {
-      if (r.type !== "item" || seen.has(r.code) || req(lineOf(r.code)) <= 0) return;
+      if (r.type !== "item" || seen.has(r.code) || !listed(lineOf(r.code))) return;
       seen.add(r.code);
       rows.push({ code: r.code, name: r.name, unit: r.unit || "" });
     });
     if (rows.length) groups.push({ title: step.sheet || step.title || step.code, rows });
   });
-  const extra = Object.keys(request.lines || {}).filter((c) => !seen.has(c) && req(lineOf(c)) > 0).map((c) => ({ code: c, name: c, unit: "" }));
+  const extra = Object.keys(request.lines || {}).filter((c) => !seen.has(c) && listed(lineOf(c))).map((c) => ({ code: c, name: c, unit: "" }));
   if (extra.length) groups.push({ title: "อื่น ๆ", rows: extra });
   const all = groups.flatMap((g) => g.rows);
 
@@ -77,17 +79,19 @@ export async function renderReceived(container, app, params) {
         <div class="rcv-list">${g.rows.map((r) => {
           const l = lineOf(r.code), got = issued[r.code];
           const has = l.rcv_qty !== undefined;
+          const zero = req(l) <= 0; // reported, requested 0 by now → remove only
           return `<div class="rcv-row${l.mismatch ? " rcv-mismatch" : ""}" data-code="${esc(r.code)}">
             <div class="rcv-name">${esc(r.name)} <span class="muted small">${esc(r.unit)}</span></div>
             <div class="rcv-nums">
               <span class="rcv-cell"><span class="rcv-lbl">ขอ</span><strong>${formatInt(req(l))}</strong></span>
               ${anyIssued ? `<span class="rcv-cell"><span class="rcv-lbl">ผู้จ่ายบันทึก</span>${got ? `<strong>${formatInt(got.total)}</strong>` : '<span class="muted">—</span>'}</span>` : ""}
               <label class="rcv-cell"><span class="rcv-lbl">รพ.สต. แจ้ง</span>
-                <input type="number" inputmode="numeric" min="0" step="1" class="num-input rcv-qty" data-qty="${esc(r.code)}" value="${has ? esc(l.rcv_qty) : ""}" aria-label="ได้รับจริง ${esc(r.name)}"></label>
+                <input type="number" inputmode="numeric" min="0" step="1" class="num-input rcv-qty" data-qty="${esc(r.code)}" value="${has ? esc(l.rcv_qty) : ""}"${zero ? " readonly" : ""} aria-label="ได้รับจริง ${esc(r.name)}"></label>
               <span class="badge badge-warn rcv-flag"${l.mismatch ? "" : " hidden"}>ไม่ตรง</span>
             </div>
-            <input type="text" class="rcv-note" data-note="${esc(r.code)}" maxlength="200" placeholder="หมายเหตุ (ถ้ามี)" value="${esc(l.rcv_note || "")}">
+            <input type="text" class="rcv-note" data-note="${esc(r.code)}" maxlength="200" placeholder="หมายเหตุ (ถ้ามี)" value="${esc(l.rcv_note || "")}"${zero ? " readonly" : ""}>
             ${has ? `<div class="muted small rcv-meta">แจ้งแล้ว · รับวันที่ ${esc(formatThaiYmd(l.rcv_date))}</div>` : ""}
+            ${zero ? `<div class="muted small rcv-zero">ยอดขอเป็น 0 แล้ว — ลบการแจ้งได้อย่างเดียว <button type="button" class="btn btn-link" data-rcv-clear="${esc(r.code)}">ลบการแจ้ง</button></div>` : ""}
           </div>`;
         }).join("")}</div>`).join("")}
       <div class="summary-actions rcv-actions">
@@ -129,6 +133,11 @@ export async function renderReceived(container, app, params) {
       dirtyEl.textContent = n ? `ยังไม่บันทึก ${n} รายการ` : "";
     };
     box.querySelectorAll(".rcv-qty, .rcv-note").forEach((inp) => inp.addEventListener("input", () => refresh(inp.closest(".rcv-row"))));
+    box.querySelectorAll("[data-rcv-clear]").forEach((b) => b.addEventListener("click", () => {
+      const row = b.closest(".rcv-row");
+      row.querySelector(".rcv-qty").value = "";
+      refresh(row);
+    }));
     box.querySelector("#rcv-back").addEventListener("click", async () => {
       if (changes().length && !(await confirmDialog("ยังไม่ได้บันทึก", "<p>ออกจากหน้านี้โดยไม่บันทึกตัวเลขที่กรอก?</p>", "ออก", "อยู่ต่อ"))) return;
       location.hash = "#/home";
@@ -138,7 +147,7 @@ export async function renderReceived(container, app, params) {
       let n = 0;
       box.querySelectorAll(".rcv-row").forEach((row) => {
         const inp = row.querySelector(".rcv-qty");
-        if (inp.value.trim() !== "") return;
+        if (inp.value.trim() !== "" || inp.readOnly) return;
         inp.value = String(req(lineOf(row.dataset.code)));
         refresh(row); n++;
       });

@@ -2,6 +2,7 @@
 // adminSaveLines{pcu, month, lines:{code:{op,pp,stock?,used?}}, send?} — functions/API.md §5.1b. Admin only (router ADMIN table).
 // month ∈ fyMonths(fy_current) · skips deadline / round lock / limits / issued pages · requests.entry_by = 'admin' (sticky) · audit admin_lines.
 // Only lines whose values change are written (D1 write quota). An issued figure above the new requested qty is clamped down (`clamped`).
+// 2ak A1: a line set to requested 0 loses its PCU received report (audit `rcv_cleared=`).
 import { err, assertQty } from "./http.js";
 import { auditStmt, batchChunked, formForFy, getConfigAll, loadForm, publicConfig } from "./db.js";
 import { currentRound, fyMonths, isMonth, monthFy, nowIso } from "./time.js";
@@ -54,7 +55,7 @@ export async function adminSaveLines(ctx, p) {
 
   const now = nowIso();
   const stmts = [];
-  const clamped = [];
+  const clamped = [], rcvCleared = [];
   let qtyChanged = false, nChanged = 0;
   if (!reqRow) {
     stmts.push(DB.prepare(`INSERT OR IGNORE INTO requests (id,pcu,month,status,created_at,updated_at,submit_count,entry_by) VALUES (?,?,?, 'draft', ?, ?, 0, 'admin')`)
@@ -81,6 +82,11 @@ export async function adminSaveLines(ctx, p) {
       stmts.push(DB.prepare(
         `UPDATE request_lines SET issued_total=?, issued_op=?, issued_pp=?, issue_reason=?, issue_note=? WHERE request_id=? AND item_code=?`
       ).bind(total, sp.issued_op, sp.issued_pp, full ? null : e.issue_reason ?? "other", full ? null : e.issue_note ?? "ปรับยอดขอโดย admin", id, x.code));
+    }
+    // 2ak A1: the requested qty set to 0 → the PCU's received report of that line goes too (it would lock the line for good)
+    if (e && e.rcv_qty !== null && e.rcv_qty !== undefined && (v.op || 0) + (v.pp || 0) === 0) {
+      rcvCleared.push(x.code);
+      stmts.push(DB.prepare(`DELETE FROM received_reports WHERE request_id = ? AND item_code = ?`).bind(id, x.code));
     }
   }
   const wasSent = !!reqRow && reqRow.status !== "draft";
@@ -114,7 +120,7 @@ export async function adminSaveLines(ctx, p) {
   }
   const n = parsed.filter((x) => (x.v.op || 0) + (x.v.pp || 0) > 0).length;
   await DB.batch([auditStmt(DB, who.email, who.role, "admin_lines", pcu, month,
-    `changed=${nChanged} items=${n} send=${send ? 1 : 0}${clamped.length ? " clamped=" + clamped.map((c) => `${c.code}:${c.from}→${c.to}`).join(",") : ""}`.slice(0, 1500))]);
+    `changed=${nChanged} items=${n} send=${send ? 1 : 0}${clamped.length ? " clamped=" + clamped.map((c) => `${c.code}:${c.from}→${c.to}`).join(",") : ""}${rcvCleared.length ? " rcv_cleared=" + rcvCleared.join(",") : ""}`.slice(0, 1500))]);
   if (qtyChanged && (wasSent || send)) await recalcStockChain(DB, pcu, month); // 2o: this round is (now) a baseline
 
   const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu, month), getLines(DB, id)]);
