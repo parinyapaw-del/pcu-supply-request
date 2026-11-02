@@ -84,11 +84,14 @@ const QTY_LOCKED_TEXT = "รายการนี้บันทึกจ่า�
 function qtyLocked(app, month, code) {
   return !!sync.getLine(pcuCode(app), month, code).qty_locked;
 }
-// 2ai: an item the admin locked from round from_month on (pcuBootstrap.item_locks, this PCU's exemptions already left out) — OP/PP read-only
+// 2ai: an item the admin locked from round from_month on (pcuBootstrap.item_locks, this PCU's exemptions already left out) — OP/PP read-only.
+// Mirrors the server's notices.lockedCodes (from_month <= month) — keep the two in step.
 function itemLock(app, month, code) {
   const l = app.boot.item_locks && app.boot.item_locks[code];
   return l && month >= l.from_month ? l : null;
 }
+// OP/PP of a line are typed in unless: the page is read-only · the line is qty-locked · a "ไม่เบิก" month · an admin item lock (table row + card)
+const qtyEditableOf = (app, month, code, editable) => editable && !qtyLocked(app, month, code) && !isNoOrder(app, month) && !itemLock(app, month, code);
 const lockText = (l) => `ล็อกรายการตั้งแต่รอบขอเบิก ${formatMonthKeyThai(l.from_month)}${l.note ? ` (${l.note})` : ""} — ถ้าต้องการเบิก ติดต่อ admin`;
 // 2af: a "ไม่เบิก" month takes no requested quantity (OP/PP read-only, คงเหลือ / ใช้ไป still editable) until it is cancelled
 const isNoOrder = (app, month) => !!(requestOf(app, month) || {}).no_order;
@@ -880,7 +883,7 @@ function buildItemTr(app, month, item, editable) {
   const line = sync.getLine(pcuCode(app), month, item.code);
   const total = lineTotal(line);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month) && !itemLock(app, month, item.code);
+  const qtyEditable = qtyEditableOf(app, month, item.code, editable);
 
   tr.innerHTML = `
     <td class="col-seq">${esc(item.seq)}</td>
@@ -927,7 +930,7 @@ function buildItemCard(app, month, item, editable) {
   const total = lineTotal(line);
   const req = stockRequired(app);
   const modeB = isModeB(app);
-  const qtyEditable = editable && !qtyLocked(app, month, item.code) && !isNoOrder(app, month) && !itemLock(app, month, item.code);
+  const qtyEditable = qtyEditableOf(app, month, item.code, editable);
 
   card.innerHTML = `
     <div class="item-card-head">

@@ -17,13 +17,18 @@ const actorOf = (who) => (who.backup ? "backup" : who.email);
 // 2ai: item_locks = {code: {from_month, note, banner}} — locks that apply to this PCU (its exemptions left out) · banner = still inside the
 // home-page notice window (from setting the lock until LOCK_BANNER_ROUNDS rounds from from_month).
 export const LOCK_BANNER_ROUNDS = 3;
+// 2ai: the item_locks rows that apply to `pcu` (its item_lock_exempt releases left out) · `month` given → only locks in force for that round
+// (from_month <= month). The one SQL for pcuNotices (all of them, for the home banner) and lockedCodes (saveLines); fill.js itemLock mirrors it.
+function locksForPcu(DB, pcu, cols, month) {
+  return DB.prepare(`SELECT ${cols} FROM item_locks WHERE ${month ? "from_month <= ? AND " : ""}item_code NOT IN (SELECT item_code FROM item_lock_exempt WHERE pcu = ?)`)
+    .bind(...(month ? [month] : []), String(pcu || "")).all();
+}
 export async function pcuNotices(DB, pcu) {
   const [fr, ar, lr] = await Promise.all([
     DB.prepare(`SELECT item_code, status, note, eta FROM item_flags`).all(),
     DB.prepare(`SELECT id, text, expires_at, updated_at FROM announcements WHERE active = 1 AND (expires_at IS NULL OR expires_at >= ?) ORDER BY id DESC LIMIT ?`)
       .bind(bangkokDate(), L.announcements_live).all(),
-    DB.prepare(`SELECT item_code, from_month, note FROM item_locks
-      WHERE item_code NOT IN (SELECT item_code FROM item_lock_exempt WHERE pcu = ?)`).bind(String(pcu || "")).all(),
+    locksForPcu(DB, pcu, "item_code, from_month, note"),
   ]);
   const item_flags = {};
   for (const r of fr.results) item_flags[r.item_code] = { status: r.status, note: r.note || null, eta: r.eta || null };
@@ -163,8 +168,7 @@ export async function adminAnnouncementDelete(ctx, p) {
 // ---- item locks (admin, 2ai) ----------------------------------------------------------------------------------------------------
 // Codes whose requested qty `pcu` may not raise in round `month` (lock from_month <= month, no exemption for that pcu).
 export async function lockedCodes(DB, pcu, month) {
-  const { results } = await DB.prepare(`SELECT item_code FROM item_locks WHERE from_month <= ?
-    AND item_code NOT IN (SELECT item_code FROM item_lock_exempt WHERE pcu = ?)`).bind(month, pcu).all();
+  const { results } = await locksForPcu(DB, pcu, "item_code", month);
   return new Set(results.map((r) => r.item_code));
 }
 
