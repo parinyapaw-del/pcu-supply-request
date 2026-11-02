@@ -41,26 +41,31 @@ export async function renderReceived(container, app, params) {
     return;
   }
 
-  // requested lines in form order, grouped by page
+  // requested lines in form order, grouped by page (rebuilt on every render: a removed report on a 0 line drops its row)
   const form = formForRequest(app, request);
-  const groups = [], seen = new Set();
+  let groups = [], all = [];
   const lineOf = (code) => (request.lines || {})[code];
   const req = (l) => (Number(l && l.op) || 0) + (Number(l && l.pp) || 0);
   const listed = (l) => req(l) > 0 || (!!l && l.rcv_qty !== undefined);
-  getOrderedSteps(form).forEach((step) => {
-    const rows = [];
-    (step.rows || []).forEach((r) => {
-      if (r.type !== "item" || seen.has(r.code) || !listed(lineOf(r.code))) return;
-      seen.add(r.code);
-      rows.push({ code: r.code, name: r.name, unit: r.unit || "" });
+  const buildGroups = () => {
+    groups = [];
+    const seen = new Set();
+    getOrderedSteps(form).forEach((step) => {
+      const rows = [];
+      (step.rows || []).forEach((r) => {
+        if (r.type !== "item" || seen.has(r.code) || !listed(lineOf(r.code))) return;
+        seen.add(r.code);
+        rows.push({ code: r.code, name: r.name, unit: r.unit || "" });
+      });
+      if (rows.length) groups.push({ title: step.sheet || step.title || step.code, rows });
     });
-    if (rows.length) groups.push({ title: step.sheet || step.title || step.code, rows });
-  });
-  const extra = Object.keys(request.lines || {}).filter((c) => !seen.has(c) && listed(lineOf(c))).map((c) => ({ code: c, name: c, unit: "" }));
-  if (extra.length) groups.push({ title: "อื่น ๆ", rows: extra });
-  const all = groups.flatMap((g) => g.rows);
+    const extra = Object.keys(request.lines || {}).filter((c) => !seen.has(c) && listed(lineOf(c))).map((c) => ({ code: c, name: c, unit: "" }));
+    if (extra.length) groups.push({ title: "อื่น ๆ", rows: extra });
+    all = groups.flatMap((g) => g.rows);
+  };
 
   const render = () => {
+    buildGroups();
     const issued = request.issued || {};
     const anyIssued = all.some((r) => issued[r.code]);
     const reported = all.filter((r) => lineOf(r.code).rcv_qty !== undefined).length;
