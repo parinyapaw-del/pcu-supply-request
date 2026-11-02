@@ -350,12 +350,19 @@ async function runSave(session) {
       session.request.lines[code] = { ...cur, stock: rc.stock === undefined ? cur.stock : rc.stock, used: rc.used === undefined ? cur.used : rc.used };
     });
 
+    // 2ak A9: lines the server did not write because its copy is newer (this device's clock is behind, or admin keyed them meanwhile) —
+    // they are clean now and show the server's values; the user is told (like qtyRefused). Lines typed again meanwhile go out again.
+    const stale = (Array.isArray(data.stale) ? data.stale : []).filter((code) => !session.dirtyLines.has(code));
+
     session.lastSavedAt = new Date();
     session.retryIdx = 0;
     session.offline = false;
     session.lastOutcome = "ok";
     saveMirror(session);
-    notify(session, session.dirtyLines.size || session.dirtyMeta ? "pending" : "saved", recalcCodes.length ? { recalc: recalcCodes } : null);
+    const extra = {};
+    if (recalcCodes.length) extra.recalc = recalcCodes;
+    if (stale.length) extra.stale = stale;
+    notify(session, session.dirtyLines.size || session.dirtyMeta ? "pending" : "saved", Object.keys(extra).length ? extra : null);
     if (session.dirtyLines.size || session.dirtyMeta) scheduleSave(session, 200);
   } catch (err) {
     if (err instanceof ApiError && err.code === "NETWORK") {

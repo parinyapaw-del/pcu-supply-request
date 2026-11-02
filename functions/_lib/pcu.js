@@ -376,11 +376,18 @@ export async function saveLines(ctx, p) {
 
   let changed = 0, qtyChanged = false;
   const recalc = {}; // 2o: written lines whose stored stock/used differ from what the client sent
+  // 2ak A9: lines sent with other values than the stored ones but not written — the stored updated_at is newer (e.g. admin keyed the line after
+  // this device's clock time) → the client tells the user instead of silently showing the server's values
+  const stale = [];
   if (stmts.length) {
     const res = await batchChunked(DB, stmts);
     parsed.forEach((l, i) => {
       const n = (res[nLineStart + i] && res[nLineStart + i].meta && res[nLineStart + i].meta.changes) || 0;
-      if (!n) return;
+      if (!n) {
+        const e = existing.get(l.code);
+        if (e && LINE_FIELDS.some((k) => (e[k] ?? null) !== (l[k] ?? null))) stale.push(l.code);
+        return;
+      }
       changed += n;
       const e = existing.get(l.code) || {};
       if (["stock", "op", "pp", "used", "adj"].some((k) => (e[k] ?? null) !== l[k])) qtyChanged = true;
@@ -434,7 +441,7 @@ export async function saveLines(ctx, p) {
   }
 
   const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu.code, month), getLines(DB, id)]);
-  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc };
+  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc, stale };
 }
 
 // ---- 2af: เดือนนี้ไม่เบิก ----------------------------------------------------------------------------------------------------------
@@ -577,6 +584,7 @@ export async function pcuReceivedSave(ctx, p) {
 
 // ---- 2o: stock mode + saveLines field rules ------------------------------------------------------------------------------------
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const LINE_FIELDS = ["stock", "op", "pp", "used", "adj", "adj_reason", "calc_from"]; // the stored values of a request line (saveLines' upsert)
 
 function assertAdj(v) {
   if (v === null || v === undefined || v === "") return null;

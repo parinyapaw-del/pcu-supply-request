@@ -4045,6 +4045,15 @@ async function main() {
     eq([s2.submitted, s2.request.submit_count], [true, s1.request.submit_count + 1], "B3: re-send with unchanged prices still sends");
     eq((await mustOk("adminGetRequest", { pcu: P, month: PREV }, ADM2)).request.lines[X.code].price_print, X.price, "B3: price_print stamped on the first send, kept on the re-send");
 
+    // ---- A9: a line the guard refused (stored updated_at newer — e.g. admin keyed it, device clock behind) → stale:[code] ----
+    await mustOk("adminSaveLines", { pcu: P, month: PREV, lines: { [X.code]: { op: 7, pp: 0 } } }, ADM2); // stamped with the server's now
+    const old = "2020-01-01T00:00:00.000Z";
+    const a9 = await mustOk("saveLines", { month: PREV, lines: { [X.code]: { stock: null, op: 9, pp: null, updated_at: old }, [Y.code]: { stock: null, op: 1, pp: null, updated_at: tsn() } } }, TP);
+    eq([a9.stale, a9.request.lines[X.code].op, a9.request.lines[Y.code].op], [[X.code], 7, 1], "A9: older line with other values → stale:[X], server value kept; Y written");
+    const a9b = await mustOk("saveLines", { month: PREV, lines: { [X.code]: { stock: null, op: 7, pp: 0, updated_at: old } } }, TP);
+    eq(a9b.stale, [], "A9: older line with the stored values (idempotent) → not stale");
+    eq((await mustOk("saveLines", { month: PREV, lines: L({ [X.code]: { op: 6, pp: 0 } }) }, TP)).stale, [], "A9: newer line → written, stale []");
+
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }
   // ------------------------------------------------------------------------------------------------------------------------

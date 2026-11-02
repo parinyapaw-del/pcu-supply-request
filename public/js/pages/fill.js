@@ -339,6 +339,11 @@ function renderNav(app, month, stepCode, codes) {
         : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
     }
+    // 2ak A9: the server kept its newer copy of some lines (saveLines `stale`) — show its values and say so
+    if (st.stale) {
+      toast(`ค่าที่กรอก ${st.stale.length} รายการไม่ถูกบันทึก เพราะบน server มีค่าที่ใหม่กว่า (เช่น admin แก้ไว้) — แสดงค่าล่าสุดแล้ว · ถ้าเกิดบ่อย ให้ตรวจวันเวลาของเครื่อง`, "error");
+      setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
+    }
     if (st.state === "conflict" && wasEditable) {
       // The server refused an edit (round locked meanwhile): re-render read-only with the "รอบนี้ปิดรับแล้ว" banner.
       wasEditable = false;
