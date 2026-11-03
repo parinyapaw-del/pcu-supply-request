@@ -4,14 +4,7 @@ import * as auth from "../auth.js";
 import * as store from "../store.js";
 import { formatBangkokHHMM } from "../format.js";
 import { isTrialPcu } from "../admin/util.js";
-
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import { esc } from "../esc.js";
 
 export async function renderLogin(container, app, onLoggedIn) {
   const savedPcu = store.getLastPcu();

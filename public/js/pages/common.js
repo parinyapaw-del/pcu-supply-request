@@ -1,16 +1,12 @@
 // Shared helpers for the PCU pages (home / fill / print / issue): escaping, round + status helpers,
 // Thai date formatting, older-month loading and the in-page dialog/toast (no native alert/confirm).
 import { call, getPcuToken } from "../api.js";
-import { THAI_MONTHS, shortMonthKeyThai } from "../format.js";
+import { THAI_MONTHS, beYear, formatMonthKeyThai, shortMonthKeyThai } from "../format.js";
 import * as sync from "../sync.js";
+import { lineQty } from "../data.js";
+import { esc } from "../esc.js";
 
-export function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+export { esc };
 
 // ---------------- dates ----------------
 const BKK_DATETIME = new Intl.DateTimeFormat("th-TH", {
@@ -37,13 +33,10 @@ export function formatThaiShortDate(iso) {
 export function formatThaiYmd(ymd) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
   if (!m) return "";
-  return `${Number(m[3])} ${THAI_MONTHS[Number(m[2]) - 1]} ${Number(m[1]) + 543}`;
+  return `${Number(m[3])} ${THAI_MONTHS[Number(m[2]) - 1]} ${beYear(Number(m[1]))}`;
 }
 
-export function monthLabel(monthKey) {
-  const [y, m] = monthKey.split("-").map(Number);
-  return `${THAI_MONTHS[m - 1]} ${y + 543}`;
-}
+export const monthLabel = formatMonthKeyThai;
 
 export { shortMonthKeyThai };
 
@@ -216,7 +209,7 @@ export async function noOrderFlow(app, month, on) {
       await alertDialog("แจ้ง \"ไม่เบิก\" ไม่ได้", `<p>${esc(title)} มีรายการที่บันทึกจ่ายหรือแจ้งได้รับของแล้ว จึงเปลี่ยนเป็น "ไม่เบิก" ไม่ได้ — ใบเดือนนี้คงไว้ตามเดิม</p>`);
       return false;
     }
-    const n = Object.values(lines).filter((l) => l && (Number(l.op) || 0) + (Number(l.pp) || 0) > 0).length;
+    const n = Object.values(lines).filter((l) => lineQty(l) > 0).length;
     const ok = await confirmDialog(`${title} — เดือนนี้ไม่เบิก`,
       `<p>ระบบจะส่งใบเปล่าสถานะ <strong>"ไม่เบิก"</strong> ให้ผู้ดูแล (นับว่าส่งแล้ว ไม่มีการจ่ายของ)</p>`
       + (n ? `<p class="notice notice-warn">ยอดขอที่กรอกไว้ ${n} รายการ จะถูกล้างเป็นว่างทั้งหมด (คงเหลือยังอยู่)</p>` : "")

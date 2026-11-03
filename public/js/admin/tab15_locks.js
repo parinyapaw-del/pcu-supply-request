@@ -2,14 +2,9 @@
 // from_month on, for every PCU except the ones the admin released (per PCU, kept until taken back). The PCU sees a 🔒 note on the row
 // and a combined home-page notice for 3 rounds from from_month. Admin keying (tab1 คีย์/แก้ใบ) is never locked.
 import { el, escapeHtml, toast, errMessage, confirmDialog, formDialog, formatBangkokDateTime, tableScroll } from "./util.js";
-import { formatMonthKeyThai } from "../format.js";
+import { formatMonthKeyThai, shiftMonth } from "../format.js";
 
 const MAX_RESULTS = 50;
-const plusMonths = (m, n) => {
-  const [y, mo] = m.split("-").map(Number);
-  const k = y * 12 + (mo - 1) + n;
-  return `${Math.floor(k / 12)}-${String((k % 12) + 1).padStart(2, "0")}`;
-};
 
 export function mountLockCard(container, ctx) {
   const { state } = ctx;
@@ -82,12 +77,12 @@ export function mountLockCard(container, ctx) {
   async function editLock(code) {
     const it = itemOf(code);
     const cur = lockOf(code);
-    const base = curRound || plusMonths(new Date().toISOString().slice(0, 7), 1);
+    const base = curRound || shiftMonth(new Date().toISOString().slice(0, 7), 1);
     const months = [];
-    for (let i = 0; i < 12; i++) months.push(plusMonths(base, i));
+    for (let i = 0; i < 12; i++) months.push(shiftMonth(base, i));
     if (cur && !months.includes(cur.from_month)) months.unshift(cur.from_month);
     const v = await formDialog(`ล็อกรายการ ${code}${it ? " — " + it.name : ""}`, [
-      { key: "from_month", label: "ล็อกตั้งแต่รอบขอเบิก", type: "select", value: cur ? cur.from_month : plusMonths(base, 1),
+      { key: "from_month", label: "ล็อกตั้งแต่รอบขอเบิก", type: "select", value: cur ? cur.from_month : shiftMonth(base, 1),
         options: months.map((m) => ({ value: m, label: `${formatMonthKeyThai(m)}${m === base ? " (รอบที่เปิดกรอกตอนนี้)" : ""}` })) },
       { key: "note", label: "หมายเหตุถึง รพ.สต. (ถ้ามี)", maxlength: 200, value: cur ? cur.note || "" : "", placeholder: "เช่น ใช้รายการ … แทน" },
     ], { okText: "บันทึกล็อก", intro: "รพ.สต. ที่กรอกยอดขอไว้แล้วในรอบนั้น ยอดเดิมยังอยู่ (ลดได้ เพิ่มไม่ได้) — admin แก้ให้ได้ในคีย์/แก้ใบ" });

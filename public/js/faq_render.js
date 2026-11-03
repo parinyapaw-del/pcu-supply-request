@@ -1,15 +1,9 @@
 // faq_render.js — FAQ answer text → safe HTML (2ab; the 2ac /help page reuses it). Shared by both frontends.
 // Order: escape every HTML character → **bold** → [label](url) (only https://, http://, #…, /… — anything else stays plain text)
 // → line breaks. No images, no raw HTML.
+import { esc } from "./esc.js";
 
-export function escapeFaq(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+export const escapeFaq = (str) => esc(str).replace(/'/g, "&#39;"); // + ' (FAQ text may sit in single-quoted contexts)
 
 const SAFE_URL = /^(https?:\/\/[^\s]+|#[^\s]*|\/(?!\/)[^\s]*)$/i;
 

@@ -15,17 +15,12 @@ import { renderDashboard } from "./pages/dashboard.js";
 import { renderFeedback } from "./pages/feedback.js";
 import { loadOlderMonth, requestOf } from "./pages/common.js";
 import { mountFeedbackWidget } from "./feedback_widget.js";
+import { esc as escapeHtml } from "./esc.js";
 
 // app.boot = pcuBootstrap (functions/API.md §4.1) · app.older = months loaded via pcuGetMonth · app.offline = running on the cached bootstrap
 const app = { pcuList: null, boot: null, monthKey: null, flash: null, older: {}, bootAt: 0, offline: false };
 const BOOT_REFRESH_AFTER_MS = 5000;
 
-function escapeHtml(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, "") || "/login";

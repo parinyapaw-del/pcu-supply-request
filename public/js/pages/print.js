@@ -9,7 +9,7 @@
 // Browser print in a non-Chromium browser (browserPrintFallback) is only the fallback when the PDF cannot be produced, and
 // is the only place the compact (0.58) layout is switched on, so the on-screen preview always shows the real 0.78 sheet.
 // No draft watermark: printing implies the request has been sent (the print button sends first when it has not).
-import { getOrderedSteps, getItemRows } from "../data.js";
+import { getOrderedSteps, getItemRows, lineQty } from "../data.js";
 import { call, getAdminToken, getPcuToken } from "../api.js";
 import { formatMoney, formatInt, THAI_MONTHS, monthKeyToParts, beYear } from "../format.js";
 import { esc, requestOf, isEditable, statusText, monthLabel, roundTitle, roundOf, isTrialMonth, alertDialog, confirmDialog, formForRequest, requesterOf } from "./common.js";
@@ -34,7 +34,7 @@ function headerSlot(value, widthEm) {
 // when the request carries a quantity on it (2t: requests follow the latest form of their fy, so a page may close after the request was sent).
 function printableSteps(form, request) {
   const lines = (request && request.lines) || {};
-  const hasQty = (s) => (s.rows || []).some((r) => r.type === "item" && lines[r.code] && (Number(lines[r.code].op) || 0) + (Number(lines[r.code].pp) || 0) > 0);
+  const hasQty = (s) => (s.rows || []).some((r) => r.type === "item" && lineQty(lines[r.code]) > 0);
   return getOrderedSteps(form).filter((s) => s.active !== false || hasQty(s));
 }
 

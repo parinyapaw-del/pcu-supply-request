@@ -32,26 +32,35 @@ export function fiscalYearStartMonthKey(fy) {
   return partsToMonthKey(ceYear, 10);
 }
 
+export const THAI_MONTHS_SHORT = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+
+// "2026-10" -> "ตุลาคม 2569"
 export function formatMonthKeyThai(monthKey) {
   const { year, month } = monthKeyToParts(monthKey);
   return `${THAI_MONTHS[month - 1]} ${beYear(year)}`;
 }
 
+// "2026-10" -> "ต.ค. 2569"
 export function shortMonthKeyThai(monthKey) {
   const { year, month } = monthKeyToParts(monthKey);
-  const shortNames = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-  return `${shortNames[month - 1]} ${beYear(year)}`;
+  return `${THAI_MONTHS_SHORT[month - 1]} ${beYear(year)}`;
 }
 
-export function nextMonthKey(monthKey) {
-  const { year, month } = monthKeyToParts(monthKey);
-  return month === 12 ? partsToMonthKey(year + 1, 1) : partsToMonthKey(year, month + 1);
+// "2026-10" -> "ต.ค. 69" (compact, for column headers / charts)
+export function monthShortYY(monthKey) {
+  const { year, month } = monthKeyToParts(String(monthKey));
+  return `${THAI_MONTHS_SHORT[month - 1]} ${String(beYear(year) % 100).padStart(2, "0")}`;
 }
 
-export function prevMonthKey(monthKey) {
+// "2026-10" shifted by n months (n may be negative): shiftMonth("2026-10", -11) === "2025-11". Same arithmetic as time.js monthMinus.
+export function shiftMonth(monthKey, n) {
   const { year, month } = monthKeyToParts(monthKey);
-  return month === 1 ? partsToMonthKey(year - 1, 12) : partsToMonthKey(year, month - 1);
+  const k = year * 12 + (month - 1) + n;
+  return partsToMonthKey(Math.floor(k / 12), (k % 12) + 1);
 }
+
+export const nextMonthKey = (monthKey) => shiftMonth(monthKey, 1);
+export const prevMonthKey = (monthKey) => shiftMonth(monthKey, -1);
 
 export function compareMonthKey(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;

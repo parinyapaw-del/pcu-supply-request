@@ -3,13 +3,11 @@
 // gone, 2ak E1); over the annual plan is a light-yellow note (row + summary + toast), never a block.
 // phase 2 spec §4.3 — there is no withdraw; re-sending overwrites.
 import { ApiError } from "../api.js";
-import { getOrderedSteps, getActiveItemRows, getItemRows } from "../data.js";
+import { getOrderedSteps, getActiveItemRows, getItemRows, lineQty } from "../data.js";
 import * as sync from "../sync.js";
 import { esc, pcuCode, monthData, roundUsesCurrentFy, alertDialog, toast } from "./common.js";
 
-export function lineTotal(line) {
-  return (Number(line && line.op) || 0) + (Number(line && line.pp) || 0);
-}
+export { lineQty as lineTotal };
 
 // 2ad (Q3=ก): used this fy (other sent rounds) + requested now > annual plan (plan_op + plan_pp of fy_current) → note. No plan / plan 0 /
 // nothing requested → null. Only meaningful on rounds of fy_current (the caller checks roundUsesCurrentFy).

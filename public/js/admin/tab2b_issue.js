@@ -5,6 +5,7 @@
 // A dispenser only receives lines of its own units (API filter) and may write until the end of the round month
 // (round m = "ขอเบิก m": keyed in m-1, dispensed in m-1 and m) — the server answers FORBIDDEN "หมดเวลา…" afterwards (admin.js keeps the session for it).
 import { formatInt, formatMoney, compareMonthKey } from "../format.js";
+import { lineQty } from "../data.js";
 import { el, escapeHtml, tableScroll, monthLong, formatBangkokDateTime, confirmDialog, toast, errMessage } from "./util.js";
 import { buildCatalog, addForm, DISPENSE_UNITS, ISSUE_REASONS, splitIssued, isUsableStatus, itemOrPlaceholder } from "./compute.js";
 import { clearRequestCache, loadMonth } from "./requests.js";
@@ -726,7 +727,7 @@ export function renderTab2b(container, ctx) {
       if (ts.late && !adminKeyed(e.request)) return; // past the window: only admin-keyed requests are still recordable (server skips the rest)
       const lines = {}; // code -> {req, item}
       Object.entries(e.request.lines || {}).forEach(([code, l]) => {
-        const req = (Number(l.op) || 0) + (Number(l.pp) || 0);
+        const req = lineQty(l);
         const item = itemOrPlaceholder(cat, code);
         if (req > 0 && (item.dispenseUnit || "") === unit) lines[code] = { req, item };
       });

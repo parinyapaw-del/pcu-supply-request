@@ -3,7 +3,7 @@
 // "ได้" comes from request.issued[code] (pcuGetMonth / pcuBootstrap) which only carries lines of units that are
 // marked done — other units show "—" (ยังไม่จ่าย). "รับทราบ" (pcuAck) only when every needed unit is done.
 import { call, getPcuToken } from "../api.js";
-import { getOrderedSteps } from "../data.js";
+import { getOrderedSteps, lineQty } from "../data.js";
 import { formatInt } from "../format.js";
 import { esc, monthData, monthLabel, roundTitle, loadOlderMonth, alertDialog, formForRequest, formatThaiDateTime, toast } from "./common.js";
 
@@ -69,7 +69,7 @@ export async function renderIssue(container, app, params) {
   });
   // lines whose code is not in the form any more (should not happen; keep them visible)
   const extra = Object.entries((request && request.lines) || {})
-    .filter(([code, l]) => !seen.has(code) && (Number(l.op) || 0) + (Number(l.pp) || 0) > 0)
+    .filter(([code, l]) => !seen.has(code) && lineQty(l) > 0)
     .map(([code, l]) => ({ code, name: code, unit: "", op: Number(l.op) || 0, pp: Number(l.pp) || 0, got: issued[code] || null }));
   if (extra.length) groups.push({ step: { sheet: "อื่น ๆ", code: "?" }, unit: "", done: false, rows: extra });
 

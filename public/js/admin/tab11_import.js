@@ -4,7 +4,7 @@
 // (3) server preview (adminImportPreview) → download the JSON → "เปิดปีงบ <fy>" (adminImportApply)
 //     or, for a file of the current fy, "แทนที่ปีงบ <fy>" (adminImportOverride, 2t).
 // Parsing / mapping / JSON building are pure and live in import_parse.js (shared with tools/check_import_2570.mjs).
-import { formatMoney } from "../format.js";
+import { formatMoney, monthShortYY } from "../format.js";
 import { el, escapeHtml, tableScroll, toast, errMessage, confirmDialog, formDialog, downloadJson, getXLSX } from "./util.js";
 import {
   parseFormWorkbook, parsePlanWorkbook, mapItems, resolveMapping, buildImportJson, validateImportJson,
@@ -660,6 +660,5 @@ function versionLabel(a) {
 function srcLabel(s) { return s === "file" ? "ไฟล์" : s === "db" ? "ใบเบิกในระบบ" : (s || "–"); }
 function monthRange(ms) {
   if (!Array.isArray(ms) || !ms.length) return "ไม่มีเดือนที่มีข้อมูล";
-  const th = (k) => { const [y, m] = k.split("-").map(Number); return `${["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."][m - 1]} ${String(y + 543).slice(2)}`; };
-  return `${ms.length} เดือน (${th(ms[0])} – ${th(ms[ms.length - 1])})`;
+  return `${ms.length} เดือน (${monthShortYY(ms[0])} – ${monthShortYY(ms[ms.length - 1])})`;
 }

@@ -14,6 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { fyExcelMonths, monthMinus } from "../functions/_lib/time.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
@@ -40,8 +41,7 @@ function mulberry32(a) {
 }
 const rnd = mulberry32(2570);
 const ri = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1));
-const shiftMonth = (k, d) => { const [y, m] = k.split("-").map(Number); const n = y * 12 + (m - 1) + d; return `${Math.floor(n / 12)}-${String((n % 12) + 1).padStart(2, "0")}`; };
-const fyExcelMonths = (fy) => { const out = []; let k = `${fy - 543 - 1}-10`; for (let i = 0; i < 12; i++) { out.push(k); k = shiftMonth(k, 1); } return out; };
+const shiftMonth = (k, d) => monthMinus(k, -d); // 2ak D4: the server's month arithmetic (functions/_lib/time.js)
 
 function buildFakeSeed() {
   const f = JSON.parse(fs.readFileSync(path.join(REPO, "public", "data", "form2569.json"), "utf8"));

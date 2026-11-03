@@ -13,6 +13,7 @@ import {
   alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
+import { availableOf, deriveFields } from "../stock_calc.js";
 
 let unsubStatus = null;
 const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
@@ -589,7 +590,8 @@ async function toggleHidden(app, code, hide) {
 
 // ---------------- 2o: stock mode B (ใช้ไป / ปรับยอด / calc_from) ----------------
 // คงเหลือ = ยกมา + ได้รับ + ปรับยอด − ใช้ไป. The server owns the formula and re-derives on save; the client uses the same
-// formula only to show the result straight away and then accepts the server's values (sync.js `recalc`).
+// formula (stock_calc.js — test_api.mjs checks it against the server's stock.js computeLine) only to show the result straight
+// away and then accepts the server's values (sync.js `recalc`).
 const ADJ_REASONS = [
   ["received_extra", "ได้รับเพิ่ม"], ["borrow_return", "ยืม/คืน"], ["expired_damaged", "หมดอายุ/เสียหาย"],
   ["recount", "นับใหม่"], ["other", "อื่น ๆ"],
@@ -604,26 +606,6 @@ function baselineOf(app, month, code) {
   const pl = monthData(app, month).prev_lines;
   const prev = pl && pl[code];
   return prev && prev.stock != null ? prev : null;
-}
-
-function availableOf(base, line) {
-  return (Number(base.stock) || 0) + (Number(base.received) || 0) + (Number(line.adj) || 0);
-}
-
-// The derived field of a line from its driver (`calc_from`): { stock } (driver used) or { used } (driver stock).
-// A negative result becomes null (Q14).
-function deriveFields(base, line) {
-  if (!base || !line.calc_from) return {};
-  const avail = availableOf(base, line);
-  if (line.calc_from === "used" && line.used != null) {
-    const v = avail - Number(line.used);
-    return { stock: v < 0 ? null : v };
-  }
-  if (line.calc_from === "stock" && line.stock != null) {
-    const v = avail - Number(line.stock);
-    return { used: v < 0 ? null : v };
-  }
-  return {};
 }
 
 // "ok" | "nobase" | "neg" (ใช้ไป > available: red, stock not computed) | "surplus" (stock > available: yellow + put-as-received)

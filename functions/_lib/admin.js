@@ -302,14 +302,24 @@ export async function adminRequests(ctx, p) {
   const byReq = new Map();
   for (const l of lineRes.results) { if (!byReq.has(l.request_id)) byReq.set(l.request_id, []); byReq.get(l.request_id).push(l); }
 
-  const formFor = async (r) => (r.form_version_id ? loadForm(DB, r.form_version_id) : formForFy(DB, monthFy(r.month), cfg.fy_current));
+  // 2ak D7: one lookup per form version / round fy for the whole call (up to ~30 requests share 1–2 forms), active-item count per form
+  const formMemo = new Map(), activeMemo = new Map();
+  const formFor = (r) => {
+    const k = r.form_version_id ? `v${r.form_version_id}` : `fy${monthFy(r.month)}`;
+    if (!formMemo.has(k)) formMemo.set(k, r.form_version_id ? loadForm(DB, r.form_version_id) : formForFy(DB, monthFy(r.month), cfg.fy_current));
+    return formMemo.get(k);
+  };
+  const activeOf = (form) => {
+    if (!form) return 0;
+    if (!activeMemo.has(form.id)) { let n = 0; for (const [, { item }] of form.index) if (item.active !== false) n++; activeMemo.set(form.id, n); }
+    return activeMemo.get(form.id);
+  };
   const H = priceHistories(DB); // 2p: fallback price = the round's price (priceFor), not the form's
   const requests = [];
   for (const r of reqRes.results) {
     const form = await formFor(r);
     const hist = await H(monthFy(r.month));
-    let activeN = 0;
-    if (form) for (const [, { item }] of form.index) if (item.active !== false) activeN++;
+    const activeN = activeOf(form);
     let items = 0, filled = 0, qop = 0, qpp = 0, baht = 0;
     const lines = byReq.get(r.id) || [];
     for (const l of lines) {

@@ -18,7 +18,7 @@ export const fbCategoryLabel = (v) => ([...FB_CATEGORIES, ...FB_LEGACY_CATEGORIE
 const MAX_BODY = 2000, MAX_BODY_GUEST = 1000;
 const DEVICE_KEY = "pcuSupply2:fbDevice";
 
-const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+import { esc } from "./esc.js";
 const fmtNum = (n) => Number(n).toLocaleString("en-US");
 
 export function fbDateTime(iso) {

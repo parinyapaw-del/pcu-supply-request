@@ -2,7 +2,7 @@
 // A topic = {id, title, intro, shots:[{img, alt, marks:[{n, sel_key}], steps:["① …"]}], warn?, note?, after?}. The numbered marks are HTML laid over
 // the screenshot: their boxes come from help/shots.json ({<img>: {w, h, marks: {<sel_key>: {x, y, w, h}}}}, written by
 // tools/capture_help.mjs from the selectors) and are placed in % of the image so they follow the image at any width.
-const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+import { esc } from "./esc.js";
 const pct = (v, of) => `${Math.round((v / of) * 10000) / 100}%`;
 
 // shots.json once per page

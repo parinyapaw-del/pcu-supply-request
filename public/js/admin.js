@@ -4,7 +4,7 @@
 import { call, ApiError, getAdminToken, clearAdminToken } from "./api.js";
 import { mountLogin } from "./admin/login.js";
 import { el, escapeHtml, toast, monthLong } from "./admin/util.js";
-import { fiscalYearOf, nextMonthKey } from "./format.js";
+import { fiscalYearOf, fiscalYearStartMonthKey, nextMonthKey, shiftMonth } from "./format.js";
 import { buildCatalog } from "./admin/compute.js";
 import { clearRequestCache } from "./admin/requests.js";
 import { renderTab1 } from "./admin/tab1_status.js";
@@ -115,9 +115,9 @@ function nextFyWarning() {
   if (!state.isAdmin) return "";
   const b = state.bootstrap, F = fyCurrent();
   const cal = b.current_month || "";
-  const nextFy = F + 1, startCe = nextFy - 1 - 543; // first round of F+1 = <startCe>-10, keyed from <startCe>-09-01
+  const nextFy = F + 1, first = fiscalYearStartMonthKey(nextFy); // first round of F+1 (Oct), keyed from 1 Sep
   if (fiscalYearOf(roundMonth()) > F) return `รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} เปิดกรอกแล้ว แต่ยังไม่ได้เปิดปีงบ ${nextFy} — ตอนนี้ใช้แบบฟอร์ม/ราคาของปีงบ ${F} ไปก่อน · เปิดปีงบ ${nextFy} ที่แท็บ "นำเข้า"`;
-  if (cal === `${startCe}-08`) return `ต้องเปิดปีงบ ${nextFy} ก่อน 1 ก.ย. ${nextFy - 1} (รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} = รอบแรกของปีงบ ${nextFy} เริ่มกรอก 1 ก.ย.) — แท็บ "นำเข้า"`;
+  if (cal === shiftMonth(first, -2)) return `ต้องเปิดปีงบ ${nextFy} ก่อน 1 ก.ย. ${nextFy - 1} (รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} = รอบแรกของปีงบ ${nextFy} เริ่มกรอก 1 ก.ย.) — แท็บ "นำเข้า"`;
   return "";
 }
 

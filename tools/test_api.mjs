@@ -200,6 +200,27 @@ async function main() {
   const CSI = seedItems.find((i) => i.step === "CS"), LABI = seedItems.find((i) => i.step === "LAB");
 
   // ------------------------------------------------------------------------------------------------------------------------
+  section("2ak D5: server ↔ client formula parity (pure modules, no HTTP)");
+  {
+    const srvIssue = await import("../functions/_lib/issue.js"), cliCompute = await import("../public/js/admin/compute.js");
+    let bad = 0;
+    for (let op = 0; op <= 6; op++) for (let pp = 0; pp <= 6; pp++) for (let t = 0; t <= op + pp; t++) {
+      const sv = srvIssue.splitIssued(op, pp, t), cv = cliCompute.splitIssued(op, pp, t);
+      if (sv.issued_op !== cv.op || sv.issued_pp !== cv.pp) bad++;
+    }
+    eq(bad, 0, "splitIssued: server (issue.js) = client (compute.js) for every 0 ≤ total ≤ op+pp (OP short first)");
+    const srvStock = await import("../functions/_lib/stock.js"), cliStock = await import("../public/js/stock_calc.js");
+    bad = 0;
+    const vals = [null, 0, 3, 10];
+    for (const bs of [0, 5]) for (const rc of [0, 4]) for (const adj of [null, -2, 3]) for (const cf of ["used", "stock"]) for (const v of vals) {
+      const base = { stock: bs, received: rc }, line = { adj, calc_from: cf, used: cf === "used" ? v : null, stock: cf === "stock" ? v : null };
+      const sv = srvStock.computeLine(base, line), cv = { ...line, ...cliStock.deriveFields(base, line) };
+      if (sv.stock !== cv.stock || sv.used !== cv.used) bad++;
+    }
+    eq(bad, 0, "stock mode B: server computeLine = client deriveFields (คงเหลือ = ยกมา + ได้รับ + ปรับยอด − ใช้ไป, negative → null)");
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
   section("transport / routing");
   {
     const h = await (await fetch(BASE + "/api")).json();

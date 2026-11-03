@@ -2,6 +2,11 @@
 // (`pcuBootstrap.form`, or `adminGetRequest.form` for the admin reprint) — there is no static JSON any more.
 // The form object itself is `bootstrap.form` (app.boot.form); these are pure helpers over it. getStep / getItemRows keep their phase-1.5 signatures.
 
+// Requested quantity of a request line: OP + PP (missing / empty = 0) — the one "has a request" rule of both frontends (2ak D6).
+export function lineQty(line) {
+  return (Number(line && line.op) || 0) + (Number(line && line.pp) || 0);
+}
+
 export function getStep(form, code) {
   return form.steps.find((s) => s.code === code) || null;
 }

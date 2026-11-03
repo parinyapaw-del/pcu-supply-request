@@ -1,7 +1,7 @@
 // Home page (#/home): one card per round (current + previous month), status badge, deadline, admin note,
 // issue-notice bar + "ดูการจ่าย" (2c). Brief 2l: round timeline for the whole fiscal year (preview of the next round,
 // editable cards, read-only history rows incl. "ไม่ได้ส่ง") + a fiscal-year dropdown reaching back one year.
-import { getOrderedSteps } from "../data.js";
+import { getOrderedSteps, lineQty } from "../data.js";
 import {
   esc, pcuCode, requestOf, requestStatus,
   loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow,
@@ -20,7 +20,7 @@ function itemsRequested(request) {
   if (request && request.lines) {
     Object.keys(request.lines).forEach((c) => {
       const l = request.lines[c];
-      if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) n++;
+      if (lineQty(l) > 0) n++;
     });
   }
   return n;

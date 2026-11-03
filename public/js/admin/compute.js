@@ -1,5 +1,6 @@
 // js/admin/compute.js — pure aggregation over the adminBootstrap / adminGetRequest payloads.
 // No DOM, no API calls. The form arrives in adminBootstrap.form (functions/API.md §5.1).
+import { lineQty } from "../data.js";
 
 export const DISPENSE_UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
 
@@ -182,7 +183,7 @@ export function aggregateIssued(cat, entries, opts) {
     if (!request || !isUsableStatus(request.status)) return;
     let any = false, requested = false;
     Object.entries(request.lines || {}).forEach(([code, line]) => {
-      if ((Number(line.op) || 0) + (Number(line.pp) || 0) > 0) requested = true;
+      if (lineQty(line) > 0) requested = true;
       if (line.issued_total === null || line.issued_total === undefined) return;
       any = true;
       const price = linePrice(line, itemOrPlaceholder(cat, code), opts);

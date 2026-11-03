@@ -177,15 +177,15 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   for (const r of limRes.results) limits[r.item_code] = [null, r.limit_year ?? null]; // 2z (R10): the PCU never sees the monthly ceiling
   for (const r of planRes.results) plans[r.item_code] = [r.plan_op || 0, r.plan_pp || 0];
 
-  const notices = [];
-  for (const rr of noticeRes.results) {
+  // 2ak D7: the unseen issue notices are summarised in parallel (was one request after another); order kept
+  const notices = (await Promise.all(noticeRes.results.map(async (rr) => {
     const [lines, units] = await Promise.all([
       getLines(DB, rr.id),
       DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(rr.id).all(),
     ]);
     const s = await issueSummary(DB, rr, lines, units.results.map((u) => u.dispense_unit), fy);
-    if (s) notices.push({ month: rr.month, complete: s.complete, incomplete: s.incomplete });
-  }
+    return s ? { month: rr.month, complete: s.complete, incomplete: s.incomplete } : null;
+  }))).filter(Boolean);
 
   // forms bound to the shown requests when they differ from the latest (another fy's form) — PCU-stripped; 2t: also the latest form itself,
   // unstripped, when the request still carries a quantity on one of its closed pages

@@ -1,15 +1,10 @@
 // js/admin/util.js — small DOM / formatting / dialog helpers shared by the admin tab modules.
 // No aggregation logic here (see compute.js) and no direct API calls (use ctx.adminCall).
-import { THAI_MONTHS } from "../format.js";
+import { THAI_MONTHS_SHORT, beYear, formatMonthKeyThai, monthShortYY } from "../format.js";
 import { downloadBlob } from "../csv.js";
+import { esc } from "../esc.js";
 
-export function escapeHtml(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+export { esc as escapeHtml }; // 2ak D6: one escaper (esc.js)
 
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
@@ -71,24 +66,14 @@ export function formatBangkokTimeSec(iso) {
   }
 }
 
-const SHORT_TH = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
 // "2026-10-31" -> "31 ต.ค. 2569"
 export function formatDateThai(ymd) {
   if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return "–";
   const [y, m, d] = ymd.split("-").map(Number);
-  return `${d} ${SHORT_TH[m - 1]} ${y + 543}`;
+  return `${d} ${THAI_MONTHS_SHORT[m - 1]} ${beYear(y)}`;
 }
 
-// "2026-10" -> "ต.ค. 69" (compact, for column headers)
-export function monthShort(monthKey) {
-  const [y, m] = monthKey.split("-").map(Number);
-  return `${SHORT_TH[m - 1]} ${String(y + 543).slice(2)}`;
-}
-
-export function monthLong(monthKey) {
-  const [y, m] = monthKey.split("-").map(Number);
-  return `${THAI_MONTHS[m - 1]} ${y + 543}`;
-}
+export { monthShortYY as monthShort, formatMonthKeyThai as monthLong }; // "ต.ค. 69" (column headers) · "ตุลาคม 2569"
 
 export function fmtPct(n, digits = 0) {
   if (n === null || n === undefined || !isFinite(n)) return "–";

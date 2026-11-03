@@ -4,18 +4,13 @@
 // `ui` (mode / unit / search ...) is module state shared by every user of this module.
 import { formatInt } from "../format.js";
 import { downloadCsvFile } from "../csv.js";
+import { esc } from "../esc.js";
 import {
   aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact,
   top3Rows, spentSum, limitStatus, notYetRequested, stockRows, avgPerMonth, buildCsv,
 } from "./dashboard_calc.js";
 
-export function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+export { esc };
 
 export const SERIES = [
   { key: "req", label: "ขอเบิก", cls: "req" },

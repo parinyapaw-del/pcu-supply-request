@@ -5,14 +5,7 @@ import * as auth from "../auth.js";
 import * as store from "../store.js";
 import * as sync from "../sync.js";
 import { formatBangkokHHMM } from "../format.js";
-
-function esc(str) {
-  return String(str == null ? "" : str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import { esc } from "../esc.js";
 
 export async function renderChangePin(container, app) {
   const pcu = app.boot.pcu;

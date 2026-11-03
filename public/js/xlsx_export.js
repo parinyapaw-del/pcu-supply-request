@@ -3,7 +3,7 @@
 // Row source = RequestObj lines (functions/API.md §4.1): PCU view has issued figures in `request.issued[code].total` (done units only),
 // admin view in `lines[code].issued_total`. A missing figure is an EMPTY cell, never 0 (rcv_qty absent = not reported ≠ 0).
 import { getOrderedSteps } from "./data.js";
-import { THAI_MONTHS } from "./format.js";
+import { formatMonthKeyThai } from "./format.js";
 import { downloadBlob } from "./csv.js";
 
 // SheetJS: admin.html loads it with a <script> tag; every other page lazy-loads it from cdnjs (only when a download is asked for).
@@ -31,10 +31,7 @@ export function beMonth(month) {
   const [y, m] = String(month).split("-");
   return `${Number(y) + 543}-${m}`;
 }
-export function monthName(month) {
-  const [y, m] = String(month).split("-").map(Number);
-  return `${THAI_MONTHS[m - 1]} ${y + 543}`;
-}
+export const monthName = (month) => formatMonthKeyThai(String(month));
 
 /**
  * One request -> row objects in form order (page by page), then lines whose code is not in the form.

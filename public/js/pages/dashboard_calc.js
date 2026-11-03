@@ -3,6 +3,7 @@
 
 import { IDX, UNIT_ORDER, cumulative, num, withShares, zeros } from "../calc_common.js";
 import { buildCsvText } from "../csv.js";
+import { monthShortYY } from "../format.js";
 
 export { UNIT_ORDER };
 export const OTHER_GROUP = "อื่น ๆ";
@@ -162,11 +163,7 @@ export function isEmpty(data) {
 }
 
 /** "2026-11" -> "พ.ย. 69" */
-const SHORT = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
-export function shortRound(monthKey) {
-  const [y, m] = String(monthKey).split("-").map(Number);
-  return `${SHORT[m - 1]} ${String((y + 543) % 100).padStart(2, "0")}`;
-}
+export const shortRound = monthShortYY;
 
 /** "Nice" axis ticks from 0 to >= max (about `count` steps). */
 export function niceTicks(max, count = 5) {
