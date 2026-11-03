@@ -1,9 +1,9 @@
 // Tab 13 — Feedback (2ab, admin only; functions/API.md §5.6): feedback review (filters · status · reply · CSV · "สร้าง FAQ จาก feedback นี้")
 // + FAQ editor (adminFaqSave / adminFaqDelete, preview through faq_render.js). The tab badge = count of status "new" (ctx.setFeedbackBadge).
-import { el, escapeHtml, toast, errMessage, confirmDialog, formatBangkokDateTime, downloadBlob } from "./util.js";
+import { el, escapeHtml, toast, errMessage, confirmDialog, formatBangkokDateTime } from "./util.js";
 import { FB_CATEGORIES, FB_LEGACY_CATEGORIES, FB_STATUS, fbCategoryLabel } from "../feedback_widget.js";
 import { renderFaqAnswer } from "../faq_render.js";
-import { csvField } from "../pages/dashboard_calc.js";
+import { buildCsvText, downloadCsvFile } from "../csv.js";
 
 const ROLE_LABEL = { pcu: "รพ.สต.", dispenser: "ผู้จ่าย", admin: "admin", guest: "ไม่ได้ login" };
 const AUD = [["pcu", "รพ.สต."], ["dispenser", "ผู้จ่าย"], ["admin", "admin"]];
@@ -156,15 +156,13 @@ export function renderTab13(container, ctx) {
         if (!before) break;
       }
       const head = ["id", "เวลา", "วันที่ (ไทย)", "ผู้ส่ง", "รพ.สต.", "อีเมล", "นิรนาม", "หมวด", "ข้อความ", "สถานะ", "เปลี่ยนสถานะเมื่อ", "เปลี่ยนโดย", "คำตอบ", "ตอบเมื่อ", "ตอบโดย", "บริบท"];
-      const lines = [head.map(csvField).join(",")];
-      all.forEach((x) => lines.push([
+      const text = buildCsvText(head, all.map((x) => [
         x.id, formatBangkokDateTime(x.created_at), x.day, ROLE_LABEL[x.role] || x.role, x.pcu || "", x.email || "", x.anonymous ? "ใช่" : "",
         fbCategoryLabel(x.category), x.body, FB_STATUS[x.status] || x.status, x.status_at ? formatBangkokDateTime(x.status_at) : "", x.status_by || "",
         x.reply || "", x.reply_at ? formatBangkokDateTime(x.reply_at) : "", x.reply_by || "", x.context ? JSON.stringify(x.context) : "",
-      ].map(csvField).join(",")));
-      const text = "﻿" + lines.join("\r\n") + "\r\n";
+      ]));
       const stamp = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
-      downloadBlob(new Blob([text], { type: "text/csv;charset=utf-8" }), `feedback_${stamp}.csv`);
+      downloadCsvFile(text, `feedback_${stamp}.csv`);
       toast(`ส่งออก ${all.length} แถว`);
     } catch (err) { toast(errMessage(err), "err"); } finally { csvBtn.disabled = false; }
   }

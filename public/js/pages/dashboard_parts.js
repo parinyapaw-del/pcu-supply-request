@@ -3,6 +3,7 @@
 // Charts are hand-written SVG (no library); colors come from the --dv-* tokens in main.css.
 // `ui` (mode / unit / search ...) is module state shared by every user of this module.
 import { formatInt } from "../format.js";
+import { downloadCsvFile } from "../csv.js";
 import {
   aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact,
   top3Rows, spentSum, limitStatus, notYetRequested, stockRows, avgPerMonth, buildCsv,
@@ -239,7 +240,7 @@ export function attachTips(card, tips) {
 export function kpiHtml(agg, data) {
   const { totals, coverage, pctPlan } = agg;
   const flagged = agg.flagged || new Map();
-  const pctMode = agg.pctBasis || ui.mode; // the admin overview only has % แผน in baht
+  const pctMode = agg.pctBasis || ui.mode; // 2ak A4: % แผน is baht everywhere (server plan_baht / req_baht_on_plan)
   const unitLine = ui.mode === "baht" ? "บาท" : MIXED_UNITS;
   const tile = (label, value, sub, extra) => `
     <div class="dash-kpi">
@@ -396,14 +397,7 @@ export function downloadCsv(data, rows) {
   const text = buildCsv(data, rows);
   const pcu = data.pcu && (data.pcu.code || (typeof data.pcu === "string" ? data.pcu : ""));
   const name = `dashboard_${pcu ? `${pcu}_` : ""}${data.fy}.csv`;
-  const url = URL.createObjectURL(new Blob([text], { type: "text/csv;charset=utf-8" }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  downloadCsvFile(text, name);
 }
 
 export function tableHtml(agg, data, { heat } = {}) {

@@ -2683,7 +2683,8 @@ async function main() {
 
     // items
     const ia = d.items[A.code];
-    eq(ia, { name: fItem(A.code).name, unit: fItem(A.code).unit || "", unit_group: unitOf(A.code), plan_qty: 120 }, "items[A] = {name, unit, unit_group = step.dispense_unit, plan_qty = plan_op + plan_pp}");
+    eq(ia, { name: fItem(A.code).name, unit: fItem(A.code).unit || "", unit_group: unitOf(A.code), plan_qty: 120, plan_baht: Math.round(120 * fItem(A.code).price * 100) / 100, has_used: true },
+      "items[A] = {name, unit, unit_group = step.dispense_unit, plan_qty = plan_op + plan_pp, 2ak: plan_baht = plan × form price, has_used}");
     eq([d.items[B.code].plan_qty, d.items[CSI.code].plan_qty, d.items[CSI.code].unit_group, d.items[LABI.code].unit_group], [12, 0, "จ่ายกลาง", "LAB"], "items: plan_qty 12 / 0 (no plan) · unit_group จ่ายกลาง / LAB");
     const activeCodes = FD.steps.filter((s) => s.active !== false).flatMap((s) => s.rows.filter((r) => r.type === "item" && r.active !== false).map((r) => r.code));
     eq(Object.keys(d.items).sort(), [...new Set([...activeCodes, A.code, B.code, CSI.code, LABI.code])].sort(), "items = active items of the FY2570 form (+ any with data)");
@@ -2859,7 +2860,7 @@ async function main() {
     const netQ = { [X.code]: a + b + 2, [Y.code]: 3 * qy, [Z.code]: qz, [W.code]: 4, [K.code]: 5 };
     const netB = { [X.code]: (a + b + 2) * px, [Y.code]: 3 * qy * py, [Z.code]: qz * pz, [W.code]: 4 * pw, [K.code]: 5 * pkk };
     const top = (o) => Object.keys(o).sort((u, v) => o[v] - o[u] || byForm(u, v)).slice(0, 3);
-    eq(N.network.top3, { qty: top(netQ), baht: top(netB) }, "network.top3 by req qty / req baht");
+    ok(!("top3" in N.network) && netQ && netB && top, "2ak D2: network.top3 dropped (the client computes it)");
     const plan98 = (a + b) * X.price + qz * 10 * Z.price, on98 = (a + b) * px + qz * pz;
     eq([pc.PCU98.plan_baht, pc.PCU98.pct_plan, pc.PCU01.pct_plan, pc.PCU11.pct_plan], [r2(plan98), r4(on98 / plan98), 0.1, null], "pcus: plan_baht + pct_plan (null without a plan)");
     eq(pc.PCU98.units, { "พัสดุ": [r2(T.PCU98), r2((a - 2) * px), r2(plan98), r2(on98)], "จ่ายกลาง": [0, 0, 0, 0], LAB: [0, 0, 0, 0] }, "pcus[PCU98].units = [req, got, plan, req_on_plan] per unit");
@@ -2909,7 +2910,11 @@ async function main() {
       { code: X.code, rule: "share", value: fShare.value, threshold: fShare.threshold },
     ], "pcu view flags: every rule (no pcu field) · pace also carries cum_qty / plan_qty / elapsed");
     const q98 = { [X.code]: a + b, [Z.code]: qz, [W.code]: 2 }, bb98 = { [X.code]: (a + b) * px, [Z.code]: qz * pz, [W.code]: 2 * pw };
-    eq(V.top3, { qty: top(q98), baht: top(bb98) }, "pcu view top3 (qty / baht)");
+    ok(!("top3" in V) && q98 && bb98, "2ak D2: pcu view top3 dropped");
+    // 2ak A4: the drill-down's % of plan per unit = the ranking row's units[u][2..3] (one rule for PCU page, drill-down and ranking)
+    const unitsPlan = (o) => Object.fromEntries(Object.entries(o).map(([u, v]) => [u, [v[2], v[3]]]).filter(([, v]) => v[0] || v[1]).sort());
+    const viewPlan = Object.fromEntries([...new Set([...Object.keys(V.plan_baht), ...Object.keys(V.req_baht_on_plan)])].sort().map((u) => [u, [V.plan_baht[u] || 0, V.req_baht_on_plan[u] || 0]]));
+    eq(viewPlan, unitsPlan(pc.PCU98.units), "2ak A4: pcu view plan_baht / req_baht_on_plan per unit = pcus[PCU98].units plan / on-plan");
     eq(V.info_new, [Z.code, W.code].sort(byForm), "pcu view info_new = [codes]");
     eq([V.pattern, V.pattern_prev, V.pattern_note, V.endyear_prev], [pc.PCU98.pattern, "เบาบาง", "ข้อมูลยังน้อย", true], "pcu view pattern fields = the network row");
     ok(V.prev_fy && V.prev_fy.qty.reduce((s, v) => s + v, 0) === 3 && V.used_coverage && V.items[X.code].plan_qty === a + b, "pcu view keeps the pcuDashboard fields (prev_fy, used_coverage, items.plan_qty)");

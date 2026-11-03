@@ -1,19 +1,12 @@
-// Brief 2q — pure aggregation helpers for the PCU dashboard (no DOM, no imports; unit-testable in node).
+// Brief 2q — pure aggregation helpers for the PCU dashboard (no DOM; unit-testable in node).
 // Input = the `pcuDashboard` payload (functions/API.md): monthly[code][round] = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht].
 
-export const UNIT_ORDER = ["พัสดุ", "จ่ายกลาง", "LAB"];
+import { IDX, UNIT_ORDER, cumulative, num, withShares, zeros } from "../calc_common.js";
+import { buildCsvText } from "../csv.js";
+
+export { UNIT_ORDER };
 export const OTHER_GROUP = "อื่น ๆ";
 export const SERIES_KEYS = ["req", "got", "used"];
-const IDX = { qty: { req: 0, got: 2, used: 4 }, baht: { req: 1, got: 3, used: 5 } };
-
-function zeros(n) {
-  return new Array(n).fill(0);
-}
-
-function num(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
 
 /** Distinct unit_group values of the items (UNIT_ORDER first, then any other value alphabetically). */
 export function unitGroups(data) {
@@ -29,20 +22,10 @@ function groupOf(item) {
   return (item && item.unit_group) || OTHER_GROUP;
 }
 
-/** Latest price per piece seen in the requests of this FY (req_baht / req_qty of the latest round with req_qty > 0). */
-export function latestPrice(data, code) {
-  const byRound = (data.monthly || {})[code];
-  if (!byRound) return null;
-  for (let i = data.rounds.length - 1; i >= 0; i--) {
-    const v = byRound[data.rounds[i]];
-    if (v && num(v[0]) > 0) return num(v[1]) / num(v[0]);
-  }
-  return null;
-}
-
 /**
  * One row per item (every item of the form + any code that only appears in `monthly`).
  * Per row: m[series][roundIdx] (selected measure), cum[series], plan (selected measure or null), pct (cum.req / plan or null).
+ * 2ak A4: the baht plan is the server's items[code].plan_baht (plan × latest form price — the rule of the network ranking).
  */
 export function buildRows(data, mode) {
   const rounds = data.rounds || [];
@@ -74,12 +57,9 @@ export function buildRows(data, mode) {
       used: m.used.reduce((a, b) => a + b, 0),
     };
     const planQty = num(it.plan_qty);
-    const price = latestPrice(data, code);
+    const planBaht = num(it.plan_baht);
     let plan = null;
-    if (planQty > 0) {
-      if (mode === "baht") plan = price != null ? planQty * price : null;
-      else plan = planQty;
-    }
+    if (planQty > 0) plan = mode === "baht" ? (planBaht > 0 ? planBaht : null) : planQty;
     rows.push({
       code,
       name: it.name || code,
@@ -94,7 +74,7 @@ export function buildRows(data, mode) {
       gq,
       uq,
       planQty,
-      price,
+      hasUsed: !!it.has_used,
       m,
       cum,
       plan,
@@ -102,11 +82,6 @@ export function buildRows(data, mode) {
     });
   });
   return rows;
-}
-
-function cumulative(arr) {
-  let s = 0;
-  return arr.map((v) => (s += v));
 }
 
 /** Index of the last round that has any activity (req/got/used) in `rows`, or -1. */
@@ -132,16 +107,16 @@ export function groupTotals(rows, groups) {
     o.got += r.cum.got;
     o.used += r.cum.used;
   });
-  const totalReq = out.reduce((a, o) => a + o.req, 0);
-  out.forEach((o) => { o.share = totalReq > 0 ? o.req / totalReq : 0; });
-  return out;
+  return withShares(out);
 }
 
 /**
  * Everything the page draws, for (mode, unit). `unit` = "all" or a unit_group.
  * - perRound / cumul: arrays aligned to data.rounds, per series
  * - prevCum: cumulative of prev_fy (only when unit === "all"; else null) aligned to rounds
- * - pctPlan: Σ cum.req / Σ plan over the filtered rows that have a plan (baht mode: also a price), or null
+ * - pctPlan (2ak A4): always baht, from the server's per-unit plan_baht / req_baht_on_plan (same figures as the admin ranking and
+ *   drill-down; a quantity % summed over different units means nothing) · pctBasis "baht" labels it so in either mode
+ * - coverage (2ak A6): requested rows with a used figure entered (0 counts) / requested rows — one rule for every unit filter
  */
 export function aggregate(data, mode, unit) {
   const rounds = data.rounds || [];
@@ -165,17 +140,12 @@ export function aggregate(data, mode, unit) {
 
   let planSum = 0;
   let reqOnPlan = 0;
-  rows.forEach((r) => {
-    if (r.plan > 0) { planSum += r.plan; reqOnPlan += r.cum.req; }
-  });
+  Object.keys(data.plan_baht || {}).forEach((g) => { if (unit === "all" || g === unit) planSum += num(data.plan_baht[g]); });
+  Object.keys(data.req_baht_on_plan || {}).forEach((g) => { if (unit === "all" || g === unit) reqOnPlan += num(data.req_baht_on_plan[g]); });
   const pctPlan = planSum > 0 ? reqOnPlan / planSum : null;
 
-  const withReq = rows.filter((r) => r.cum.req > 0).length;
-  const withUsed = rows.filter((r) => r.cum.used > 0).length;
-  let coverage = { with: withUsed, total: withReq };
-  if (unit === "all" && data.used_coverage) {
-    coverage = { with: num(data.used_coverage.items_with_used), total: num(data.used_coverage.items_total) };
-  }
+  const requested = rows.filter((r) => r.cq > 0);
+  const coverage = { with: requested.filter((r) => r.hasUsed).length, total: requested.length };
 
   const rowCodes = new Set(rows.map((r) => r.code));
   const flagged = new Map();
@@ -183,7 +153,7 @@ export function aggregate(data, mode, unit) {
 
   const top = rows.filter((r) => r.cum.req > 0).sort((a, b) => b.cum.req - a.cum.req).slice(0, 10);
 
-  return { rounds, rows, allRows, perRound, cumul, totals, lastActive, prevCum, pctPlan, coverage, flagged, top };
+  return { rounds, rows, allRows, perRound, cumul, totals, lastActive, prevCum, pctPlan, pctBasis: "baht", coverage, flagged, top };
 }
 
 /** True when the payload has no request data at all. */
@@ -296,12 +266,6 @@ export function avgPerMonth(cumReq, elapsed) {
   return e > 0 ? cumReq / e : null;
 }
 
-/** One CSV field (RFC 4180 quoting). */
-export function csvField(v) {
-  const s = v == null ? "" : String(v);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
 /** CSV text (UTF-8 BOM first) for `rows` (buildRows output; quantities, independent of the on-screen mode). */
 export function buildCsv(data, rows) {
   const rounds = data.rounds || [];
@@ -309,14 +273,12 @@ export function buildCsv(data, rows) {
   const head = ["รหัส", "รายการ", "หน่วย", "หน่วยจ่าย", ...rounds.map((r) => `ขอเบิก ${shortRound(r)}`),
     "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้รับจริง", "ใช้ไป", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
   const r2 = (x) => Math.round(x * 100) / 100;
-  const lines = [head.map(csvField).join(",")];
-  rows.forEach((r) => {
+  return buildCsvText(head, rows.map((r) => {
     const avg = avgPerMonth(r.cq, elapsed);
-    lines.push([
+    return [
       r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq),
       r.planQty > 0 ? r.planQty : "", r.planQty > 0 ? `${Math.round((r.cq / r.planQty) * 1000) / 10}%` : "",
       avg == null ? "" : r2(avg), avg == null ? "" : r2(avg * 12),
-    ].map(csvField).join(","));
-  });
-  return "\uFEFF" + lines.join("\r\n") + "\r\n";
+    ];
+  }));
 }

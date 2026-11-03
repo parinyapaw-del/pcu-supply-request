@@ -1,6 +1,7 @@
 // js/admin/util.js — small DOM / formatting / dialog helpers shared by the admin tab modules.
 // No aggregation logic here (see compute.js) and no direct API calls (use ctx.adminCall).
 import { THAI_MONTHS } from "../format.js";
+import { downloadBlob } from "../csv.js";
 
 export function escapeHtml(str) {
   return String(str == null ? "" : str)
@@ -205,16 +206,7 @@ export function errMessage(err) {
 }
 
 // ---- download helpers ----------------------------------------------------------------------------
-export function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
-}
+export { downloadBlob }; // 2ak D3: one implementation (csv.js)
 
 export function downloadJson(obj, filename) {
   downloadBlob(new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" }), filename);

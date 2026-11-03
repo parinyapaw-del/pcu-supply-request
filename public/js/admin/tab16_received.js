@@ -1,9 +1,9 @@
 // Tab 16 — รับของไม่ตรง (2af, admin only; functions/API.md §5.8 adminReceivedReport): lines where what the รพ.สต. reported it received
 // differs from the issue recorded by the dispenser / admin (both figures are kept — nobody overwrites the other side).
 // Filters: round of the selected fy (or the whole fy) · รพ.สต. · "แสดงทุกรายการที่แจ้ง" (all reported lines, not only mismatches) · CSV (client side).
-import { el, escapeHtml, toast, errMessage, tableScroll, downloadBlob, formatBangkokDateTime } from "./util.js";
+import { el, escapeHtml, toast, errMessage, tableScroll, formatBangkokDateTime } from "./util.js";
 import { formatInt } from "../format.js";
-import { csvField } from "../pages/dashboard_calc.js";
+import { buildCsvText, downloadCsvFile } from "../csv.js";
 
 const REASON = { out_of_stock: "ของหมด/รอจัดซื้อ", other: "อื่น ๆ" };
 
@@ -73,13 +73,12 @@ export function renderTab16(container, ctx) {
     if (!data || !data.rows.length) { toast("ไม่มีข้อมูลให้ส่งออก"); return; }
     const head = ["รอบ", "รหัส รพ.สต.", "รพ.สต.", "รหัสรายการ", "รายการ", "หน่วย", "หน่วยจ่าย", "ขอ", "ผู้จ่ายบันทึก", "รพ.สต. แจ้งได้รับ", "ต่าง", "ไม่ตรง",
       "วันที่รับ", "หมายเหตุ รพ.สต.", "เหตุผลผู้จ่าย", "แจ้งเมื่อ"];
-    const lines = [head.map(csvField).join(",")];
-    data.rows.forEach((r) => lines.push([
+    const text = buildCsvText(head, data.rows.map((r) => [
       r.month, r.pcu, r.pcu_name, r.code, r.name, r.unit, r.dispense_unit || "", r.requested, r.issued_total ?? "", r.rcv_qty, r.diff ?? "",
       r.mismatch ? "ไม่ตรง" : "", r.rcv_date || "", r.rcv_note || "", reasonText(r), r.reported_at ? formatBangkokDateTime(r.reported_at) : "",
-    ].map(csvField).join(",")));
+    ]));
     const stamp = new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
-    downloadBlob(new Blob(["﻿" + lines.join("\r\n") + "\r\n"], { type: "text/csv;charset=utf-8" }), `received_${data.fy}${data.month ? "_" + data.month : ""}_${stamp}.csv`);
+    downloadCsvFile(text, `received_${data.fy}${data.month ? "_" + data.month : ""}_${stamp}.csv`);
     toast(`ส่งออก ${data.rows.length} แถว`);
   }
 

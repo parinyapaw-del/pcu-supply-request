@@ -1,8 +1,6 @@
 // Brief 2s — pure aggregation helpers for the admin dashboard (no DOM; unit-testable in node).
 // Input = the adminDashboard payload (briefs/2s_admin_dashboard.md §6). V6 = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht].
-import { UNIT_ORDER } from "../pages/dashboard_calc.js";
-
-const IDX = { qty: { req: 0, got: 2, used: 4 }, baht: { req: 1, got: 3, used: 5 } };
+import { IDX, UNIT_ORDER, cumulative, num, withShares, zeros } from "../calc_common.js";
 
 export const RULE_LABEL = {
   p90: "สูงกว่าปกติของแห่งนี้ (P90)",
@@ -11,13 +9,6 @@ export const RULE_LABEL = {
   info_new: "เริ่มเบิกรายการใหม่ (ปีก่อนไม่เคยเบิก)",
 };
 export const RULE_ORDER = ["p90", "pace", "share", "info_new"];
-
-function num(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-const zeros = (n) => new Array(n).fill(0);
 
 /** unit_group values present anywhere in the payload (UNIT_ORDER first, then the rest alphabetically). */
 export function adminGroups(data) {
@@ -43,11 +34,6 @@ export function isAdminEmpty(data) {
   const anyMonthly = Object.keys(monthly).some((g) => Object.keys(monthly[g] || {}).length > 0);
   const anyPcu = (data.pcus || []).some((p) => num(p.req_baht) > 0 || num(p.got_baht) > 0);
   return !anyMonthly && !anyPcu;
-}
-
-function cumulative(arr) {
-  let s = 0;
-  return arr.map((v) => (s += v));
 }
 
 /**
@@ -157,9 +143,7 @@ export function groupBreakdown(data, mode) {
     o.got += got;
     o.used += used;
   });
-  const total = out.reduce((a, o) => a + o.req, 0);
-  out.forEach((o) => { o.share = total > 0 ? o.req / total : 0; });
-  return out;
+  return withShares(out);
 }
 
 /** Flags + info_new of the payload as one list (rows tagged with pcu code), filtered by unit_group of the item. */

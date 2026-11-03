@@ -81,7 +81,7 @@ export function renderTab6(container, ctx) {
         data.entries.forEach((e) => {
           const base = {};
           ((e.form && e.form.steps) || []).forEach((st) => (st.rows || []).forEach((r) => { if (r.type === "item") base[r.code] = r.price; }));
-          const rows = requestRows(e.request, e.form, (code, l) => (l.price_print ?? l.price_snapshot ?? base[code]));
+          const rows = requestRows(e.request, e.form, (code) => base[code]);
           if (rows.length) entries.push({ pcu: e.pcu, pcu_name: nameOf.get(e.pcu), month: m, rows });
         });
       }

@@ -4,6 +4,7 @@
 // admin view in `lines[code].issued_total`. A missing figure is an EMPTY cell, never 0 (rcv_qty absent = not reported ≠ 0).
 import { getOrderedSteps } from "./data.js";
 import { THAI_MONTHS } from "./format.js";
+import { downloadBlob } from "./csv.js";
 
 // SheetJS: admin.html loads it with a <script> tag; every other page lazy-loads it from cdnjs (only when a download is asked for).
 let xlsxPromise = null;
@@ -37,7 +38,9 @@ export function monthName(month) {
 
 /**
  * One request -> row objects in form order (page by page), then lines whose code is not in the form.
- * A line is listed when it carries any figure (op/pp/stock/used/received/issued). `priceOf(code, line)` -> baht.
+ * A line is listed when it carries any figure (op/pp/stock/used/received/issued). Price (2ak A5, same rule as the PDF / admin Excel):
+ * the line's price_print → price_snapshot (admin views) → `priceOf(code, line)` (the round / form price — PCU views carry no line price;
+ * since 2z a price change rewrites the lines and the round price together, so both give the same figure).
  * A "ไม่เบิก" request gives one note row. Returns [] for no request / draft-less empty requests.
  */
 export function requestRows(request, form, priceOf) {
@@ -55,7 +58,7 @@ export function requestRows(request, form, priceOf) {
     const rcv = numOrNull(l.rcv_qty);
     const stock = numOrNull(l.stock), used = numOrNull(l.used);
     if (!op && !pp && stock == null && used == null && rcv == null && issued == null) return;
-    const price = numOrNull(priceOf(code, l)) || 0;
+    const price = numOrNull(l.price_print ?? l.price_snapshot ?? priceOf(code, l)) || 0;
     out.push({
       code, name: name || code, unit: unit || "", price, stock, used, op, pp, issued, rcv,
       mismatch: l.mismatch === true ? "ไม่ตรง" : null, value: (op + pp) * price, note: null,
@@ -132,15 +135,7 @@ export function yearWorkbook(XLSX, entries, { withPcu = false } = {}) {
 /** Writes `wb` and starts the browser download. */
 export function saveWorkbook(XLSX, wb, filename) {
   const buf = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  downloadBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), filename);
 }
 
 export const safeName = (s) => String(s == null ? "" : s).replace(/[\\/:*?"<>|\s]+/g, "_");

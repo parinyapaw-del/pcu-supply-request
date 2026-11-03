@@ -104,11 +104,6 @@ const cmpCode = (ord) => (a, b) => {
   const x = ord.has(a) ? ord.get(a) : 1e9, y = ord.has(b) ? ord.get(b) : 1e9;
   return x !== y ? x - y : a < b ? -1 : a > b ? 1 : 0;
 };
-// top 3 codes by a value (> 0), ties in item order
-function top3(valOf, codes, ord) {
-  const cmp = cmpCode(ord);
-  return codes.filter((c) => valOf(c) > 0).sort((a, b) => valOf(b) - valOf(a) || cmp(a, b)).slice(0, 3);
-}
 // 2aa (Q12): the 3 smallest of the codes with a value > 0, ties in item order
 function bottom3(valOf, codes, ord) {
   const cmp = cmpCode(ord);
@@ -179,6 +174,7 @@ async function pcuCore(DB, c, pcu, staff) {
   // ---- monthly (one pass) ----
   const monthly = {}, cum = new Map(), withUsed = new Set(), withReq = new Set();
   const roundBaht = new Map(); // round → unrounded req baht (2s pattern)
+  const reqBaht = new Map(); // 2ak A4: code → unrounded req baht of the fy (→ req_baht_on_plan, as the network ranking)
   const spent = new Map(); // 2aa (Q17): code → Σ (received ? got : req) × price
   const stockLatest = new Map(); // 2aa (Q15): code → {round, stock, got} of the latest round whose line has a stock
   const lm = linkMap(form); // 2v: lines of a linked old code count under the code that replaces it
@@ -198,6 +194,7 @@ async function pcuCore(DB, c, pcu, staff) {
     if (u !== null && u !== undefined) withUsed.add(code);
     if (q > 0) {
       withReq.add(code); cum.set(code, (cum.get(code) || 0) + q); roundBaht.set(m, (roundBaht.get(m) || 0) + q * price);
+      reqBaht.set(code, (reqBaht.get(code) || 0) + q * price);
       spent.set(code, (spent.get(code) || 0) + (received ? got : q) * price);
     }
     if (st !== null && st !== undefined) { // got null = requested but not received yet (PCU view: unit not done) · 0 = nothing requested
@@ -216,11 +213,15 @@ async function pcuCore(DB, c, pcu, staff) {
   const plan = new Map(planRes.map(([code, q]) => [code, Number(q) || 0]));
   const hidden = new Set(hidRes.map((r) => r[0]));
   const items = {};
+  const planPrice = (code) => { const ent = entOf(code, null); return formPrice(form, code) ?? (ent ? Number(ent.item.price) || 0 : 0); }; // latest form price
   const put = (code, ent) => {
+    const pq = plan.get(code) || 0;
     items[code] = {
       name: ent ? ent.item.name : code, unit: (ent && ent.item.unit) || "",
-      unit_group: ent ? ent.step.dispense_unit : null, plan_qty: plan.get(code) || 0,
+      unit_group: ent ? ent.step.dispense_unit : DEFAULT_UNIT_BY_STEP(), plan_qty: pq, // 2ak A7: no page → "พัสดุ", as the network
+      plan_baht: pq > 0 ? r2(pq * planPrice(code)) : 0, // 2ak A4: plan × latest form price (the network ranking's rule)
     };
+    if (withUsed.has(code)) items[code].has_used = true; // 2ak A6: a used figure was entered (0 counts) on a counted line
   };
   for (const [code, ent] of form.index) {
     const has = !!monthly[code];
@@ -229,6 +230,17 @@ async function pcuCore(DB, c, pcu, staff) {
     if (!shown && items[code]) items[code].off = true; // 2aa: hidden / inactive, listed only for its data (never in "ยังไม่เคยเบิก")
   }
   for (const code of Object.keys(monthly)) if (!items[code]) put(code, entOf(code, null));
+
+  // ---- 2ak A4: % of plan per unit_group, built exactly like adminDashboard pcus[].units[u][2..3] (every plan row, hidden items too) ----
+  const unitOf = (code) => (items[code] && items[code].unit_group) || ((entOf(code, null) || {}).step || {}).dispense_unit || DEFAULT_UNIT_BY_STEP();
+  const planBahtU = {}, onPlanU = {};
+  for (const [code, pq] of plan) {
+    if (!(pq > 0)) continue;
+    const u = unitOf(code), pb = pq * planPrice(code);
+    if (pb) planBahtU[u] = (planBahtU[u] || 0) + pb;
+  }
+  for (const [code, b] of reqBaht) if ((plan.get(code) || 0) > 0) { const u = unitOf(code); onPlanU[u] = (onPlanU[u] || 0) + b; }
+  const r2Obj = (o) => Object.fromEntries(Object.entries(o).map(([u, v]) => [u, r2(v)]));
 
   // ---- flags (rule 2 "pace" only, Q25) ----
   const flags = [];
@@ -272,6 +284,7 @@ async function pcuCore(DB, c, pcu, staff) {
       fy, fys, rounds, elapsed, items, monthly, prev_fy,
       used_coverage: { items_with_used: withUsed.size, items_total: withReq.size },
       flags, stock_latest, limits, prev_items, spent: spentOut,
+      plan_baht: r2Obj(planBahtU), req_baht_on_plan: r2Obj(onPlanU), // 2ak A4: {unit_group: baht} — % ตามแผน = Σ on_plan / Σ plan_baht
     },
     form, lm, prevRes, pricer, cum, roundBaht,
   };
@@ -417,11 +430,6 @@ async function adminPcuView(DB, c, code) {
   for (const f of shareFlags(net.pi)) if (f.pcu === row.code) flags.push({ code: f.code, rule: f.rule, value: f.value, threshold: f.threshold });
   flags.sort((a, b) => cmp(a.code, b.code) || RULE_ORDER[a.rule] - RULE_ORDER[b.rule] || (a.round || "").localeCompare(b.round || ""));
 
-  // top 3 of the pcu (req qty / req baht of the fy)
-  const mine = net.pi.get(row.code) || new Map();
-  const bahtOf = (k) => (mine.get(k) ? mine.get(k)[1] : 0);
-  const reqCodes = [...cum.keys()];
-
   // pattern: this year = req baht of the elapsed rounds · previous year = actual_prev fy−1 × prices_prev over its 12 Excel months
   const pattern = patternOf(c.rounds.filter((m) => m <= c.cur).map((m) => roundBaht.get(m) || 0));
   let pattern_prev = null, endyear_prev = false;
@@ -444,7 +452,6 @@ async function adminPcuView(DB, c, code) {
   return {
     ...out, flags, elapsed: c.elapsed,
     pcu: { code: row.code, name: row.name },
-    top3: { qty: top3((k) => cum.get(k) || 0, reqCodes, ord), baht: top3(bahtOf, reqCodes, ord) },
     ...maxMinRound(roundBaht, c.rounds), over_plan: overPlan(planOf, (k) => cum.get(k) || 0, cmp),
     pattern, pattern_prev, pattern_note: c.elapsed < FEW_ROUNDS ? "ข้อมูลยังน้อย" : null, endyear_prev, info_new,
   };
@@ -485,7 +492,7 @@ async function adminNetwork(DB, c) {
   const put = (code, ent) => {
     items[code] = {
       name: ent ? ent.item.name : code, unit: (ent && ent.item.unit) || "",
-      unit_group: ent ? ent.step.dispense_unit : null, net_plan_qty: r2(netPlan.get(code) || 0),
+      unit_group: ent ? ent.step.dispense_unit : DEFAULT_UNIT_BY_STEP(), net_plan_qty: r2(netPlan.get(code) || 0), // 2ak A7: = unitOf
     };
   };
   for (const [code, ent] of form.index) if (dataCodes.has(code) || (ent.item.active !== false && ent.step.active !== false)) put(code, ent);
@@ -603,7 +610,6 @@ async function adminNetwork(DB, c) {
       monthly, items: netItemsOut,
       plan_baht: Object.fromEntries(Object.entries(planBaht).map(([u, v]) => [u, r2(v)])),
       req_baht_on_plan: Object.fromEntries(Object.entries(onPlan).map(([u, v]) => [u, r2(v)])),
-      top3: { qty: top3((k) => netItems.get(k)[0], netCodes, ord), baht: top3((k) => netItems.get(k)[1], netCodes, ord) },
       bottom3: { qty: bottom3((k) => netItems.get(k)[0], netCodes, ord), baht: bottom3((k) => netItems.get(k)[1], netCodes, ord) },
       // active items of the fy's latest form that no PCU requested this fy (Q12) · item order
       never: [...form.index].filter(([k, ent]) => ent.item.active !== false && ent.step.active !== false && !((netItems.get(k) || [0])[0] > 0)).map(([k]) => k),
