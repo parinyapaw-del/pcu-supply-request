@@ -475,6 +475,8 @@ async function main() {
     const ctx = await setupData();
     if (SERVE) {
       console.log(`ready: ${BASE}/ (send header X-Dev-Month: ${CAL}) — Ctrl-C to stop`);
+      // fixture lines carry updated_at in CAL time, ahead of the real clock — a browser edit to them comes back `stale` (2ak A9) unless the page clock is moved too
+      console.log(`note: fixture lines are stamped in ${CAL} time — edits from a browser on the real clock come back "stale"; shift the page's Date to ${CAL} to test edits`);
       await new Promise(() => {});
     }
     await capture(ctx);

@@ -174,9 +174,9 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
      status:"not_started"|"draft"|"submitted"|"issued", submitted_at|null, no_order:bool, has_req:bool} ],  //  ≤ 23 entries; "not_started" = no request row (replaces older_months; no lines) · 2af no_order · 2ai has_req = a line with op+pp > 0
   hidden: [item_code],
   never_prev: [item_code],                   // items of the form this PCU never withdrew in FY(fy_current-1) per actual_prev ([] if no history for this PCU)
-  limits: { code: [null, limit_year|null] },                 // fy_current · 2z (R10): slot 0 (limit_month) is always null for the PCU
+  limits: { code: [null, limit_year|null] },                 // fy_current · 2z (R10): slot 0 (limit_month) is always null for the PCU · 2ak E2: {} from fy 2570 (ceiling off, rows not read)
   plans:  { code: [plan_op, plan_pp] },                      // fy_current
-  unlocks:{ "2026-11": { code: "<reason>" } },               // for the 2 shown rounds (2z: no longer used by the UI)
+  unlocks:{ "2026-11": { code: "<reason>" } },               // for the 2 shown rounds (2z: no longer used by the UI) · 2ak E2: {} for rounds of fy ≥ 2570 (also pcuGetMonth)
   byMonth: { "2026-11": {                                    // for the 2 shown rounds (also returned by pcuGetMonth)
       request: RequestObj | null,
       used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Oct … Sep rounds, 2w), excluding that round
@@ -240,10 +240,12 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
 { fy: 2570,
   fys: [2570, …],              // fys with a submitted/issued non-trial request of this pcu that have a form version, + fy_current always; newest first
   rounds: ["2026-11", …],      // fyMonths(fy) minus the trial round (12, or 11 when the trial round falls inside fy)
-  items: { code: {name, unit, unit_group:"พัสดุ"|"จ่ายกลาง"|"LAB", plan_qty} },
+  items: { code: {name, unit, unit_group:"พัสดุ"|"จ่ายกลาง"|"LAB", plan_qty, plan_baht, has_used?} },
            // items of the latest form version of fy (form order); dropped: items hidden by this pcu (hidden_items), inactive items / items of
            // soft-deleted pages — unless the item has data in `monthly` (then kept; a code missing from the latest form is looked up in the bound
-           // versions). unit_group = step.dispense_unit · plan_qty = plans.plan_op + plan_pp of (fy, pcu), 0 when none
+           // versions). unit_group = step.dispense_unit (2ak A7: an item on no page → "พัสดุ", as the network) · plan_qty = plans.plan_op + plan_pp of (fy, pcu), 0 when none
+           // · 2ak A4 plan_baht = plan_qty × price in the fy's latest form (the network ranking's rule), 0 when no plan
+           // · 2ak A6 has_used: true when a counted line of the item has used not null (0 counts) — absent otherwise
   monthly: { code: { "2026-12": [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht] } },
            // only code × round entries that are not all zero · req = op+pp · got = issued_total when the line's dispense unit (bound form) has an
            // issue_status row and issued_total is not null (PCU view, Q78 — undone units never leak), else 0 · used = request_lines.used (null → 0)
@@ -253,6 +255,7 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // same round one year earlier = monthMinus(rounds[i], 12) (2w: round X ↔ Excel month X, as tab 4 / fyExcelMonths). qty = Σ op+pp,
            // baht = qty × prices_prev(fy−1) (fallback: price in the latest form of fy−1, else of fy) · null when this pcu has no actual_prev row in fy−1
   used_coverage: { items_with_used, items_total },   // codes with ≥ 1 counted line whose used is not null · codes with req > 0 in fy
+           // 2ak A6: the UI shows coverage = requested items with has_used / requested items (both sides of the ratio over the same set)
   flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
            // rule 2 only (Q25): cum_qty (Σ req of fy) > plan_qty × elapsed/12 × 1.2 · elapsed = rounds of `rounds` ≤ currentRound
            // · items with plan_qty 0 skipped · none when elapsed = 0 · ordered as `items`
@@ -266,6 +269,9 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
   limits: { code: limit_year },  // limits of (fy, pcu) with limit_year > 0 · a linked old code's value lands on the new code when that has none · 2ad: {} for fy ≥ 2570 (no ceiling card)
   prev_items: { code: qty },     // actual_prev of fy−1 of this pcu, whole year, Σ op+pp (> 0 only) under the linked code
   spent: { code: baht },         // Q17: Σ over requested lines (received ? got : req) × price (same price as `monthly`) · > 0 only, 2 decimals
+  // ---- 2ak A4 ----
+  plan_baht:        { unit_group: number },   // Σ items[].plan_baht per unit (all three keys)
+  req_baht_on_plan: { unit_group: number },   // Σ fy req baht of the items with plan > 0 · "% ของแผนปี" = Σ req_baht_on_plan / Σ plan_baht — always baht, as the network ranking
 }
 ```
 CPU: 7 parallel queries (+ price_history / the fy−1 form only when a snapshot / prices_prev price is missing) and one JS pass; one request per pcu × round,
@@ -374,8 +380,8 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   plans:  { pcu: { code: [plan_op, plan_pp] } },                       // fy_current
   plan_totals: { fy, op, pp, total },                                  // Σ plan × price (latest form of fy_current), 2 decimals
   stats:  { fy: <fy_current-1>, data: { pcu: { code: [median_m, p90_m, annual_qty] } } },   // basis for limits/reset
-  limits: { pcu: { code: {limit_month, limit_year, source, updated_by, updated_at, note} } },   // fy_current
-  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fyMonths(fy_current) (round months Oct … Sep, 2w)
+  limits: { pcu: { code: {limit_month, limit_year, source, updated_by, updated_at, note} } },   // fy_current · 2ak E2: {} from fy 2570 (rows stay in the DB → adminExportSeed)
+  unlocks: [ {pcu, item_code, month, reason, by, at} ],                // all rows with month in fyMonths(fy_current) (round months Oct … Sep, 2w) · 2ak E2: [] from fy 2570
   hidden: { pcu: [code] },
   prev: { "2569": { months:["2025-10",...,"2026-09"],   /* = fyExcelMonths(fy): Excel columns Oct … Sep, unchanged by 2j */ actual:{ pcu:{ code:{op:[12],pp:[12]} } }, plans:{ pcu:{code:[op,pp]} }, prices:{code:price} } },  // one entry per fy in actual_prev
   months: ["2026-10", ...],                                            // months having any request, newest first
@@ -546,6 +552,7 @@ plans:{rows, per_pcu:{pcu:{op,pp,total}}, network:{op,pp,total}}, limits:{in_fil
    `median_m` = median, `p90_m` = numpy-linear percentile 90 (sorted, rank `0.9·(n−1)`, interpolated), `annual_qty` = Σ, only `annual_qty > 0`, rounded to 2 decimals.
 3. `limits[seed.fy]` when the file has none for that fy: per (pcu,item) of `plans[seed.fy]` ∪ `stats[o]` (known pcus): `limit_year = plan_op+plan_pp` (0 → null); `limit_month = ceil(p90_m)` if `p90_m > 0`
    (source `stat<o−2500>`, e.g. `stat70`) else `ceil(limit_year/12×2)` (source `plan<fy−2500>`); a row is skipped when both are null (same rule as `adminResetLimit`). Rows are written like import rows (`updated_by:"import"`).
+   **2ak B5**: no default limits for a new fy ≥ 2570 (`LIMITS_OFF_FROM_FY`, the ceiling is retired) — only a file's own `limits[fy]` is written (`will_default` 0).
 4. Writes: all tables go through the idempotent importer first (`adminImportSeed` with `{...seed, actual_prev, prices_prev, stats, limits}`, without `form`; replace-per-fy rules of FORMAT.md; audit `import_seed`), then **one atomic D1 batch**:
    insert the form version as version 1 of `seed.fy` (guarded `WHERE NOT EXISTS` — two admins applying at once cannot both open the year → the loser gets `CONFLICT`), set `config.fy_current = seed.fy`
    and append the audit row `fy_open` — the last two only run if the insert took effect. An interrupted apply (before the commit) leaves `fy_current` and the form untouched and can simply be repeated.
@@ -569,7 +576,7 @@ price_backdate:{items, requests, lines, delta_baht, months:[first,last]|[]}, pla
    sent (`submitted`/`issued`) line of the fy whose price differs gets the new price in `price_snapshot` AND `price_print` (2z; `priceEffect` over the whole fy; audit `price_fy` per item). Added items get a first-round row.
 4. **Plans** of the fy: upsert the pairs whose `[plan_op, plan_pp]` changed or are new, delete pairs the file no longer lists (known pcus only).
 5. **Limits** of the fy: the file's `limits[fy]` when present, else the default rule of §5.4 step 3 per plan pair (`p90_m` from `stats[fy−1]` in the DB) — upserted only when different;
-   rows with `source:"admin"` are kept (`kept_admin`).
+   rows with `source:"admin"` are kept (`kept_admin`). 2ak B5: fy ≥ 2570 → the file's rows only, no default rule.
 6. Not touched: pcus (a new pcu in the file → warning, its plans skipped), config, `actual_prev` / `stats` / `prices_prev`, requests' lines (except the re-priced `price_snapshot`/`price_print`).
 7. Audit `form_override` (`detail` JSON `{id, fy, version_action, diff_counts, price_backdate, plans, limits, rebound}`). Re-applying the same file → `form_version_id:null`, nothing written but the audit row.
 
@@ -589,8 +596,8 @@ Common rules: **`submitted`/`issued` requests only**, never the trial round (`co
     items:   { code: V6 },                                     // fy-to-date per item (codes with a non-zero V6, item order)
     plan_baht:        { unit_group: number },                  // Σ plan_qty × price in the fy's latest form (non-trial pcus)
     req_baht_on_plan: { unit_group: number },                  // Σ req_baht of the (pcu,item) pairs with plan > 0
-    top3: { qty:[code…], baht:[code…] },                       // by fy-to-date req qty / req baht, all units (> 0 only; ties in item order)
-    bottom3: { qty:[code…], baht:[code…] },                    // 2aa (Q12): the 3 smallest, same rules (only items requested > 0)
+    bottom3: { qty:[code…], baht:[code…] },                    // 2aa (Q12): the 3 smallest by fy-to-date req qty / req baht, all units (only items requested > 0; ties in item order)
+                                                               // 2ak D2: top3 dropped (network + pcu view) — the UI ranks from network.items / monthly (calc_common.js)
     never: [code…]                                             // 2aa (Q12): active items of the fy's latest form (active page) no pcu requested (req 0) · form order
   },
   pcus: [ { code, name, req_baht, got_baht, plan_baht, pct_plan,          // pct_plan = Σ req_baht_on_plan / plan_baht (null when plan_baht = 0)
@@ -616,7 +623,7 @@ Common rules: **`submitted`/`issued` requests only**, never the trial round (`co
   (fallback: price in the latest form of fy−1, else of fy — as `prev_fy`), `null` without actual_prev · `endyear_prev` = (ก.ค.+ส.ค.+ก.ย.) / year ≥ 0.40 (`false` without actual_prev).
 
 **`adminDashboard{fy?, pcu}`** — one PCU (code trimmed + upper-cased; unknown or group `ทดลอง` → `NOT_FOUND`). Same shape as `pcuDashboard` (§4.2: `fy, fys, rounds, items, monthly, prev_fy,
-used_coverage, flags`; `fys`/`items` computed for that pcu exactly as there, incl. its hidden items) **but got = staff view**, plus `elapsed`, `pcu:{code,name}`, `top3:{qty,baht}` (that pcu),
+used_coverage, flags`; `fys`/`items` computed for that pcu exactly as there, incl. its hidden items) **but got = staff view**, plus `elapsed`, `pcu:{code,name}`,
 `pattern`, `pattern_prev`, `pattern_note`, `endyear_prev`, 2aa `max_round`, `min_round`, `over_plan` (same values as its network row) and `info_new:[code…]` (item order).
 The 2aa fields of §4.2 (`stock_latest`, `limits`, `prev_items`, `spent`, `items[].off`) are there too — computed with got = staff view. `flags` = every rule, as above without `pcu`, ordered item → rule → round;
 a `pace` flag also carries `cum_qty, plan_qty, elapsed` (the 2q fields). The share rule uses the same network totals as the network view.
