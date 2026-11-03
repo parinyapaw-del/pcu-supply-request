@@ -7,7 +7,7 @@ import { getOrderedSteps, getActiveItemRows, getItemRows, lineQty } from "../dat
 import * as sync from "../sync.js";
 import { esc, pcuCode, monthData, roundUsesCurrentFy, alertDialog, toast } from "./common.js";
 
-export { lineQty as lineTotal };
+export const lineTotal = lineQty;
 
 // 2ad (Q3=ก): used this fy (other sent rounds) + requested now > annual plan (plan_op + plan_pp of fy_current) → note. No plan / plan 0 /
 // nothing requested → null. Only meaningful on rounds of fy_current (the caller checks roundUsesCurrentFy).

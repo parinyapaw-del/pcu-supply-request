@@ -79,19 +79,17 @@ function withPrices(form, priceOf) {
   return { ...form, steps: form.steps.map((st) => ({ ...st, rows: (st.rows || []).map((r) => (r.type === "item" ? { ...r, price: Number(priceOf(r)) || 0 } : r)) })) };
 }
 
-export async function renderPrint(container, app, params) {
-  const asAdmin = params && params.get("as") === "admin";
-  const isPreview = asAdmin && params.get("preview") === "1";
+// 2ak D8: where the sheet comes from — the 2d form-editor preview, the admin reprint (adminGetRequest) or the PCU's own round.
+// → {month, pcu, form, hidden, request, requester} or null after writing the error into `container`.
+async function loadPrintSource(container, app, params, asAdmin, isPreview) {
   let month, pcu, form, hidden, request, requester = null;
-  let printOpts = normPrintOpts(null); // 2h: the 2d preview keeps these blank (no controls)
-
   if (isPreview) {
     // 2d form editor preview: the admin page stores the draft form in sessionStorage and opens this route.
     let stored = null;
     try { stored = JSON.parse(sessionStorage.getItem(PREVIEW_KEY) || "null"); } catch (e) { stored = null; }
     if (!stored || !stored.form || !Array.isArray(stored.form.steps)) {
       container.innerHTML = '<div class="notice notice-error">ไม่พบฟอร์มตัวอย่าง — เปิดจากปุ่ม "ตัวอย่างใบพิมพ์" ในหน้าผู้ดูแลระบบ</div>';
-      return;
+      return null;
     }
     form = stored.form;
     month = stored.month || (app.boot && app.boot.rounds ? app.boot.rounds[0].month : new Date().toISOString().slice(0, 7));
@@ -105,14 +103,14 @@ export async function renderPrint(container, app, params) {
     month = params.get("month");
     if (!adminToken) {
       container.innerHTML = '<div class="notice notice-error">ต้องเข้าสู่ระบบผู้ดูแล</div>';
-      return;
+      return null;
     }
     let data;
     try {
       data = await call("adminGetRequest", { pcu: pcuParam, month }, { token: adminToken });
     } catch (err) {
       container.innerHTML = `<div class="notice notice-error">โหลดใบเบิกไม่สำเร็จ: ${esc(err.message)}</div>`;
-      return;
+      return null;
     }
     pcu = data.pcu;
     request = data.request || blankRequestFor(pcuParam, month);
@@ -131,17 +129,12 @@ export async function renderPrint(container, app, params) {
     hidden = app.boot.hidden || [];
     requester = requesterOf(pcu, request); // 2x
   }
+  return { month, pcu, form, hidden, request, requester };
+}
 
-  const steps = printableSteps(form, request);
-  const thisRound = !asAdmin && !isPreview && app.boot ? roundOf(app, month) : null;
-  const trialRound = !!(thisRound && thisRound.trial) || (!asAdmin && !isPreview && isTrialMonth(app, month));
-  const sentReq = request.status === "submitted" || request.status === "issued"; // 2x R7: the admin may rename a sent request
-  const wrap = document.createElement("div");
-  wrap.className = "print-wrap";
-
-  const controls = document.createElement("div");
-  controls.className = "print-controls no-print";
-  controls.innerHTML = `
+// The controls above the pages (page checkboxes, header options, actions). 2ak D8: out of renderPrint, same markup.
+function controlsHtml({ steps, month, trialRound, asAdmin, isPreview, pcu, requester, sentReq }) {
+  return `
     <h2>ใบเบิก ${esc(roundTitle(month, trialRound))}${asAdmin ? ` — ${esc(pcu.print_name || pcu.name || "")}` : ""}</h2>
     <p class="muted" id="print-status"></p>
     <p class="muted">เลือกหน้าที่จะพิมพ์ (ค่าเริ่มต้น = ครบทุกหน้า)</p>
@@ -169,6 +162,68 @@ export async function renderPrint(container, app, params) {
       <button type="button" class="btn btn-primary" id="btn-do-print">พิมพ์</button>
       <button type="button" class="btn btn-secondary" id="btn-print-back">กลับ</button>
     </div>`;
+}
+
+// 2d form-editor preview: every page, no send / PDF / Excel. 2ak D8: out of renderPrint.
+function wirePreview(controls, pagesHost, steps, request, pcu, hidden, month, printOpts) {
+  steps.forEach((step, i) => {
+    const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
+    page.dataset.step = step.code;
+    pagesHost.appendChild(page);
+  });
+  fitWhenReady(pagesHost);
+  document.getElementById("print-status").textContent = `ตัวอย่างใบพิมพ์จากฟอร์มที่กำลังแก้ (ยังไม่บันทึก) — ${steps.length} หน้า`;
+  controls.querySelectorAll(".print-step-chk").forEach((chk) =>
+    chk.addEventListener("change", () => {
+      const page = pagesHost.querySelector(`.print-page[data-step="${chk.value}"]`);
+      if (page) page.classList.toggle("print-skip", !chk.checked);
+    })
+  );
+  const pdfBtn = document.getElementById("btn-do-pdf");
+  if (pdfBtn) pdfBtn.style.display = "none"; // no PDF for an unsaved draft form
+  document.getElementById("btn-do-xlsx").style.display = "none"; // nor Excel
+  document.getElementById("btn-do-print").addEventListener("click", browserPrintFallback); // no PDF for an unsaved form
+  document.getElementById("btn-print-back").addEventListener("click", () => window.close());
+}
+
+// 2h: the options last used for this PCU + round (a stale value is dropped) · 2x: phone = the remembered one (same key), else the pcu's
+// default (pcu.phone). 2ak D8: out of renderPrint.
+function restorePrintOpts(optsKey, month, pcu, requester) {
+  let printOpts = normPrintOpts(null);
+  let savedPhone;
+  try {
+    const saved = JSON.parse(localStorage.getItem(optsKey) || "null");
+    if (saved && typeof saved === "object") {
+      printOpts = normPrintOpts({
+        doc_date: typeof saved.doc_date === "string" && DATE_RE.test(saved.doc_date) ? saved.doc_date : null,
+        supply_month: saved.supply_month === month ? saved.supply_month : null,
+      });
+      if (typeof saved.phone === "string" && PHONE_RE.test(saved.phone)) savedPhone = saved.phone;
+    }
+  } catch (e) { /* storage unavailable or corrupt: start blank */ }
+  printOpts = normPrintOpts({ ...printOpts, phone: savedPhone !== undefined ? savedPhone : pcu.phone || null, requester_name: requester });
+  return printOpts;
+}
+
+export async function renderPrint(container, app, params) {
+  const asAdmin = params && params.get("as") === "admin";
+  const isPreview = asAdmin && params.get("preview") === "1";
+  const src = await loadPrintSource(container, app, params, asAdmin, isPreview);
+  if (!src) return;
+  const { month, pcu, form, hidden } = src;
+  let { request, requester } = src;
+  let printOpts = normPrintOpts(null); // 2h: the 2d preview keeps these blank (no controls)
+
+  const steps = printableSteps(form, request);
+  const thisRound = !asAdmin && !isPreview && app.boot ? roundOf(app, month) : null;
+  const trialRound = !!(thisRound && thisRound.trial) || (!asAdmin && !isPreview && isTrialMonth(app, month));
+  const sentReq = request.status === "submitted" || request.status === "issued"; // 2x R7: the admin may rename a sent request
+  const wrap = document.createElement("div");
+  wrap.className = "print-wrap";
+
+  const controls = document.createElement("div");
+  controls.className = "print-controls no-print";
+  controls.innerHTML = controlsHtml({ steps, month, trialRound, asAdmin, isPreview, pcu, requester, sentReq });
   wrap.appendChild(controls);
 
   const pagesHost = document.createElement("div");
@@ -181,24 +236,7 @@ export async function renderPrint(container, app, params) {
 
   const editable = !asAdmin && isEditable(app, month);
   if (isPreview) {
-    steps.forEach((step, i) => {
-      const page = buildPrintPage(step, request, pcu, hidden, month, i + 1, printOpts);
-      page.dataset.step = step.code;
-      pagesHost.appendChild(page);
-    });
-    fitWhenReady(pagesHost);
-    document.getElementById("print-status").textContent = `ตัวอย่างใบพิมพ์จากฟอร์มที่กำลังแก้ (ยังไม่บันทึก) — ${steps.length} หน้า`;
-    controls.querySelectorAll(".print-step-chk").forEach((chk) =>
-      chk.addEventListener("change", () => {
-        const page = pagesHost.querySelector(`.print-page[data-step="${chk.value}"]`);
-        if (page) page.classList.toggle("print-skip", !chk.checked);
-      })
-    );
-    const pdfBtn = document.getElementById("btn-do-pdf");
-    if (pdfBtn) pdfBtn.style.display = "none"; // no PDF for an unsaved draft form
-    document.getElementById("btn-do-xlsx").style.display = "none"; // nor Excel
-    document.getElementById("btn-do-print").addEventListener("click", browserPrintFallback); // no PDF for an unsaved form
-    document.getElementById("btn-print-back").addEventListener("click", () => window.close());
+    wirePreview(controls, pagesHost, steps, request, pcu, hidden, month, printOpts);
     return;
   }
 
@@ -236,18 +274,7 @@ export async function renderPrint(container, app, params) {
   const phoneInput = document.getElementById("print-phone");
   const phoneDefault = document.getElementById("print-phone-default");
   const optsKey = printOptsKey(pcu.code, month);
-  let savedPhone;
-  try {
-    const saved = JSON.parse(localStorage.getItem(optsKey) || "null");
-    if (saved && typeof saved === "object") {
-      printOpts = normPrintOpts({
-        doc_date: typeof saved.doc_date === "string" && DATE_RE.test(saved.doc_date) ? saved.doc_date : null,
-        supply_month: saved.supply_month === month ? saved.supply_month : null,
-      });
-      if (typeof saved.phone === "string" && PHONE_RE.test(saved.phone)) savedPhone = saved.phone;
-    }
-  } catch (e) { /* storage unavailable or corrupt: start blank */ }
-  printOpts = normPrintOpts({ ...printOpts, phone: savedPhone !== undefined ? savedPhone : pcu.phone || null, requester_name: requester });
+  printOpts = restorePrintOpts(optsKey, month, pcu, requester);
   docDateInput.value = printOpts.doc_date || "";
   supplySelect.value = printOpts.supply_month || "";
   phoneInput.value = printOpts.phone || "";
