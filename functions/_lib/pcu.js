@@ -1,11 +1,11 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
 import { err, assertQty, isStr, phoneParam } from "./http.js";
 import {
-  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
+  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, hiddenDiffStatements, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
   publicConfig,
 } from "./db.js";
 import {
-  PIN_LENGTH, PIN_LOCK_MIN, PIN_MAX_FAIL, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
+  PIN_LOCK_MIN, PIN_MAX_FAIL, PIN_RE, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
 } from "./auth.js";
 import { bangkokDate, currentMonth, currentRound, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
@@ -17,7 +17,6 @@ import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from 
 import { lockedCodes, pcuNotices } from "./notices.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
-const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
 
 // ---- public ------------------------------------------------------------------------------------------------------
 export async function pcuList(ctx) {
@@ -131,7 +130,8 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   const [form, hiddenRes, limRes, planRes, roundRows, [histReqRes, histRoundRes], actualRes, pricesRes, curView, prevView, noticeRes, reqFirst, live] = await Promise.all([
     latestForm(DB, fy),
     DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(code).all(),
-    DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
+    limitModeFor(cfgAll, fy) === "off" ? { results: [] } // 2ak E2: the retired ceiling is not read (limits: {} from fy 2570)
+      : DB.prepare(`SELECT item_code, limit_month, limit_year FROM limits WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
     DB.prepare(`SELECT item_code, plan_op, plan_pp FROM plans WHERE fy = ? AND pcu = ?`).bind(fy, code).all(),
     getRoundRows(DB, [nxt, cur, prev]),
     Promise.all([
@@ -634,17 +634,7 @@ export async function setHidden(ctx, p) {
   const form = await latestForm(DB, cfg.fy_current);
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];
-  // Full replacement in the contract, but write only the diff: the UI sends the whole list on every toggle, and
-  // DELETE-all + re-INSERT cost ~400 D1 rows written per click at ~100 hidden items (2026-10-26: 90k/day of the 100k free tier).
-  const { results: curRows } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcu.code).all();
-  const cur = new Set(curRows.map((r) => r.item_code));
-  const want = new Set(uniq);
-  const removed = [...cur].filter((c) => !want.has(c));
-  const added = uniq.filter((c) => !cur.has(c));
-  const stmts = removed.map((c) => DB.prepare(`DELETE FROM hidden_items WHERE pcu = ? AND item_code = ?`).bind(pcu.code, c));
-  const ts = nowIso();
-  stmts.push(...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], added.map((c) => [pcu.code, c, ts, pcu.code]),
-    { prefix: "INSERT OR IGNORE INTO" }));
+  const stmts = await hiddenDiffStatements(DB, pcu.code, uniq, pcu.code);
   stmts.push(auditStmt(DB, pcu.code, "pcu", "setHidden", pcu.code, "", `count=${uniq.length}`));
   await batchChunked(DB, stmts);
   return { hidden: uniq };

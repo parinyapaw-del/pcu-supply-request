@@ -2,6 +2,7 @@
 import { err, sha256Hex, jparse } from "./http.js";
 
 export const PIN_LENGTH = 5;
+export const PIN_RE = new RegExp(`^[0-9]{${PIN_LENGTH}}$`);
 export const PIN_MAX_FAIL = 5;
 export const PIN_LOCK_MIN = 5;
 export const PCU_TOKEN_DAYS = 7;

@@ -3,7 +3,7 @@
 // Contract: functions/API.md §5.3 · file format: seed/FORMAT.md. The write path is the idempotent importer (importer.js).
 // Both actions share ONE analysis (`analyse`) so the preview shows exactly what apply will do.
 import { err, isStr } from "./http.js";
-import { auditStmt, batchChunked, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, publicConfig, withLinkedRows } from "./db.js";
+import { LIMITS_OFF_FROM_FY, auditStmt, batchChunked, getConfigAll, insertStatements, latestForm, linkMap, linkedCode, publicConfig, withLinkedRows } from "./db.js";
 import { backdateStmts, loadPriceHistory, priceEffect, seedHistoryStmts } from "./price.js";
 import { assertLinks, canonSteps, diffSteps, rebindStmt } from "./form_editor.js";
 import { sha256Hex, stableStringify } from "./http.js";
@@ -284,10 +284,10 @@ async function analyse(DB, seed, fyCur, cfgAll, mode) {
       : Object.fromEntries(oldForm ? [...oldIdx].map(([c, { item }]) => [c, item.price]) : []);
     const statsEff = src.stats === "file" ? seed.stats[String(o)] : d.stats;
     if (!d.requests_counted && (src.actual_prev === "db" || src.stats === "db")) warnings.push(`ไม่พบใบเบิกที่ส่งแล้วของปีงบ ${o} — ข้อมูลเบิกจริง/สถิติของปีนั้นจะว่าง`);
-    // default limits of the new fy (only when the file has none)
+    // default limits of the new fy (only when the file has none) · 2ak B5: none from fy 2570 on (the ceiling is retired)
     const dflt = {};
     let nDefault = 0;
-    if (!limitsInFile) {
+    if (!limitsInFile && fy < LIMITS_OFF_FROM_FY) {
       const pairs = new Set();
       for (const [pcu, items] of Object.entries(planFile)) if (known.has(pcu)) for (const code of Object.keys(items || {})) pairs.add(pcu + "\u0000" + code);
       for (const [pcu, items] of Object.entries(statsEff || {})) if (known.has(pcu)) for (const code of Object.keys(items || {})) pairs.add(pcu + "\u0000" + code);
@@ -362,7 +362,7 @@ async function overridePlan(DB, o) {
     for (const [pcu, items] of Object.entries(limitsFile)) if (known.has(pcu) && isObj(items)) {
       for (const [code, v] of Object.entries(items)) if (Array.isArray(v)) want.push([pcu, code, v[0] ?? null, v[1] ?? null, v[2] || "file"]);
     }
-  } else {
+  } else if (fy < LIMITS_OFF_FROM_FY) { // 2ak B5: no default limits once the ceiling is retired
     for (const [pcu, items] of Object.entries(planFile)) if (known.has(pcu)) for (const [code, v] of Object.entries(items || {})) {
       const l = defaultLimit(num(v && v[0]), num(v && v[1]), p90.get(key(pcu, code)) || 0, fy);
       if (l.lm !== null || l.ly !== null) want.push([pcu, code, l.lm, l.ly, l.source]);

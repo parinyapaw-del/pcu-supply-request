@@ -72,6 +72,13 @@ async function mustOk(action, params, token, label) {
   if (!r.ok) { console.log(`FAIL ${label || action} (unexpected ${r.error && r.error.code}: ${r.error && r.error.message})`); fail++; throw new Error("fatal: " + action); }
   return r.data;
 }
+// 2ak E2: adminBootstrap no longer reads the retired ceiling (fy ≥ 2570 → limits {}); the stored rows are read back through the seed export
+async function storedLimits(token, fy = 2570) {
+  const ex = (await mustOk("adminExportSeed", { fy }, token)).seed;
+  const out = {};
+  for (const [pcu, items] of Object.entries(ex.limits[String(fy)] || {})) for (const [code, v] of Object.entries(items)) (out[pcu] ||= {})[code] = { limit_month: v[0], limit_year: v[1], source: v[2] };
+  return out;
+}
 async function get(url, headers = {}) {
   return fetch(BASE + url, { headers: { "x-dev-month": devMonth, ...headers } });
 }
@@ -251,7 +258,8 @@ async function main() {
   ok(boot.prev["2569"] && boot.prev["2569"].months.length === 12 && Object.keys(boot.prev["2569"].actual).length > 0, "adminBootstrap: prev[2569] actual/plans/prices present");
   ok(Object.keys(boot.prev["2569"].prices).length > 100, "adminBootstrap: prev prices");
   eq(boot.stats.fy, 2569, "adminBootstrap: stats basis fy = 2569");
-  ok(Object.keys(boot.limits).length > 0, "adminBootstrap: limits present");
+  eq([boot.limits, boot.unlocks], [{}, []], "2ak E2: adminBootstrap limits {} / unlocks [] for fy 2570 (retired ceiling not read)");
+  ok(Object.keys(await storedLimits(ADM)).length > 0, "…the imported limits rows are stored (seed export)");
   eq(boot.users_source, "env", "adminBootstrap: users from env while table empty");
   ok(boot.rounds.some((r) => r.month === CUR) && boot.rounds.some((r) => r.month === PREV), "adminBootstrap: rounds include current + previous round");
   eq([boot.current_month, boot.current_round], [CAL, ROUND], "adminBootstrap: current_month = calendar month, current_round = CAL+1 (2j)");
@@ -361,7 +369,7 @@ async function main() {
   eq(pb.form.steps.length, seed.form.steps.length, "form steps");
   ok(pb.form.steps.every((s) => s.dispense_unit) && pb.form.steps[0].rows.some((r) => r.type === "item" && r.active === true), "form carries dispense_unit + item.active");
   ok(Object.keys(pb.plans).length > 0 && Object.values(pb.plans)[0].length === 2, "bootstrap.plans {code:[op,pp]}");
-  ok(Object.values(pb.limits).every((v) => Array.isArray(v) && v.length === 2), "bootstrap.limits {code:[month,year]}");
+  eq([pb.limits, pb.unlocks[CUR], pb.unlocks[PREV]], [{}, {}, {}], "2ak E2: pcuBootstrap limits {} / unlocks {} for fy 2570 (keys kept)");
   ok(Array.isArray(pb.never_prev) && Array.isArray(pb.hidden), "never_prev / hidden arrays");
   ok(!("older_months" in pb), "older_months removed (2l: replaced by history)");
   eq([pb.next_round.month, pb.next_round.opens_on, pb.next_round.deadline_date, pb.next_round.deadline_source], [NEXT, "2026-12-01", "2026-12-31", "month_end"], "next_round = round 2027-01, opens 2026-12-01, due 2026-12-31 (month end)");
@@ -444,6 +452,9 @@ async function main() {
   eq((await mustOk("setHidden", { codes: [B.code, B.code, CSI.code] }, T4)).hidden, [B.code, CSI.code], "setHidden: dedup + full replacement");
   eq((await mustOk("pcuBootstrap", {}, T4)).hidden.sort(), [B.code, CSI.code].sort(), "bootstrap.hidden");
   eq((await mustOk("adminSetHidden", { pcu: "PCU04", codes: [B.code] }, ADM)).hidden, [B.code], "adminSetHidden");
+  eq((await mustOk("pcuBootstrap", {}, T4)).hidden, [B.code], "2ak B1: adminSetHidden writes the diff — CSI removed, B kept");
+  await mustOk("adminSetHidden", { pcu: "PCU04", codes: [CSI.code, B.code] }, ADM);
+  eq((await mustOk("pcuBootstrap", {}, T4)).hidden.sort(), [B.code, CSI.code].sort(), "2ak B1: adminSetHidden adds only the missing code");
   await mustOk("setHidden", { codes: [B.code, CSI.code] }, T4);
   expectErr(await api("adminSetConfig", { key: "stock_required", value: 2 }, ADM), "BAD_REQUEST", "stock_required must be 0/1");
   expectErr(await api("adminSetConfig", { key: "backup_pw_hash", value: "x" }, ADM), "BAD_REQUEST", "secret config keys are not settable");
@@ -473,7 +484,7 @@ async function main() {
   // 2z (R11): adminSetLimit without limit_month keeps the stored (hidden) value
   const keepLm = await mustOk("adminSetLimit", { pcu: "PCU03", code: A.code, limit_year: 20 }, ADM);
   eq([keepLm.limit.limit_month, keepLm.limit.limit_year], [100, 20], "2z: adminSetLimit without limit_month keeps the stored month (100)");
-  eq((await mustOk("pcuBootstrap", {}, T3)).limits[A.code], [null, 20], "2z (R10): pcuBootstrap.limits never carries the monthly ceiling ([null, limit_year])");
+  eq((await mustOk("pcuBootstrap", {}, T3)).limits, {}, "2ak E2: pcuBootstrap.limits {} for fy 2570 even with an admin limit");
   await mustOk("adminSetLimitMode", { mode: "off" }, ADM);
   const prevSubmit = await mustOk("saveLines", { month: PREV, lines: { [A.code]: { op: 10, pp: 5, updated_at: t(1) } }, send: true }, T3);
   eq(prevSubmit.over_limit, [], "mode off: over_limit empty and submit ok (previous month, 15 units)");
@@ -599,7 +610,7 @@ async function main() {
   eq([rs.limit.limit_month, rs.limit.limit_year, rs.limit.source], [exp.lm, exp.ly, exp.source], "adminResetLimit recomputes from plans/stats (FORMAT.md rule)");
   await mustOk("adminSetLimit", { pcu: none.pcu, code: none.code, limit_month: 3, limit_year: 9 }, ADM);
   eq((await mustOk("adminResetLimit", { pcu: none.pcu, code: none.code }, ADM)).limit, null, "adminResetLimit with no plan/stat removes the row");
-  eq(((await mustOk("adminBootstrap", {}, ADM)).limits[none.pcu] || {})[none.code], undefined, "…and adminBootstrap no longer lists it");
+  eq(((await storedLimits(ADM))[none.pcu] || {})[none.code], undefined, "…and the stored limits no longer list it");
 
   // 2z (R11): an old file with a limit_month column uploads fine — the column is skipped (never read, never an error, stored month kept)
   const L = [
@@ -617,7 +628,7 @@ async function main() {
     { pcu_code: "PCU06", item_code: B.code, limit_month: 5, limit_year: "abc" },
     { pcu_code: "", item_code: "", limit_month: 9, limit_year: "" },
   ];
-  const oldLm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  const oldLm = await storedLimits(ADM);
   const lmBefore = (pcu, code) => ((oldLm[pcu] || {})[code] || { limit_month: null }).limit_month;
   const dry = await mustOk("adminLimitsUpload", { rows: L, dry_run: true }, ADM);
   eq(dry.applied, false, "limits upload dry_run applies nothing");
@@ -625,24 +636,30 @@ async function main() {
   eq(errRows, [4, 5, 6, 7, 10, 11, 13], "errors: unknown pcu(4), unknown item(5), negative year(6), decimal year(7), duplicate pair ×2 (10,11), text year(13) — limit_month values (even 'abc', row 8) never error");
   ok(dry.warnings.some((w) => w.row === 9 && /item_name/.test(w.warning)) && !dry.warnings.some((w) => /limit_month/.test(w.warning || "")), "warnings: item_name mismatch only (no year<month warning since 2z)");
   ok(!dry.errors.some((e) => e.row === 12 || e.row === 14), "empty row (12) and a row with only limit_month (14) skipped silently");
-  ok(((await mustOk("adminBootstrap", {}, ADM)).limits.PCU01 || {})[A.code]?.limit_year !== 30, "dry run left the database untouched");
+  ok(((await storedLimits(ADM)).PCU01 || {})[A.code]?.limit_year !== 30, "dry run left the database untouched");
   const ap = await mustOk("adminLimitsUpload", { rows: L }, ADM);
   ok(ap.applied && ap.added + ap.updated >= 3, "limits upload (merge) applies the valid rows");
-  let lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
-  eq([lm.PCU01[A.code].limit_month, lm.PCU01[A.code].limit_year, lm.PCU01[A.code].source, lm.PCU01[A.code].note], [lmBefore("PCU01", A.code), 30, "admin", "ok"], "2z merge: year + note written, limit_month column ignored (stored month kept)");
+  let lm = await storedLimits(ADM);
+  eq([lm.PCU01[A.code].limit_month, lm.PCU01[A.code].limit_year, lm.PCU01[A.code].source], [lmBefore("PCU01", A.code), 30, "admin"], "2z merge: year written, limit_month column ignored (stored month kept)");
   eq([lm.PCU04[A.code].limit_year, lm.PCU04[A.code].limit_month], [2, lmBefore("PCU04", A.code)], "2z: a text limit_month ('abc') is skipped, the row is applied");
   eq(lm.PCU02[A.code].limit_year, 12, "merge: year updated");
+  const noteOnly = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: A.code, limit_year: 30, note: "new note" }] }, ADM);
+  eq([noteOnly.added + noteOnly.updated + noteOnly.deleted, noteOnly.applied], [0, true], "2ak B2 merge: a note-only change is written (not counted as updated)");
+  const sameUp = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: A.code, limit_year: 30, note: "new note" }] }, ADM);
+  eq(sameUp.applied, false, "2ak B2 merge: re-uploading the stored values (incl. the new note) writes nothing");
   const clr = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: A.code, limit_month: "CLEAR", limit_year: "" }] }, ADM);
-  lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  lm = await storedLimits(ADM);
   eq([clr.updated + clr.added + clr.deleted, lm.PCU01[A.code].limit_year], [0, 30], "2z merge: CLEAR in limit_month is ignored (nothing changes)");
   const clrY = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU02", item_code: A.code, limit_year: "CLEAR" }] }, ADM);
-  lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  lm = await storedLimits(ADM);
   eq([clrY.deleted, (lm.PCU02 || {})[A.code]], [1, undefined], "2z merge: CLEAR in limit_year removes the pair (no yearly ceiling = no ceiling)");
   const rep = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: B.code, limit_year: 4 }], mode: "replace" }, ADM);
-  lm = (await mustOk("adminBootstrap", {}, ADM)).limits;
+  lm = await storedLimits(ADM);
   eq(Object.keys(lm), ["PCU01"], "replace mode wipes every other pair of the fiscal year");
   eq(Object.keys(lm.PCU01), [B.code], "replace mode keeps only the uploaded rows");
   ok(rep.deleted > 0 && rep.added + rep.updated === 1, "replace: counts (deleted>0, exactly one row written)");
+  const rep2 = await mustOk("adminLimitsUpload", { rows: [{ pcu_code: "PCU01", item_code: B.code, limit_year: 4 }], mode: "replace" }, ADM);
+  eq([rep2.added, rep2.updated, rep2.deleted, rep2.applied], [0, 0, 0, false], "2ak B2 replace: the same file again writes nothing (no DELETE-all + re-INSERT)");
   expectErr(await api("adminLimitsUpload", { rows: "x" }, ADM), "BAD_REQUEST", "limits upload needs rows[]");
 
   // ------------------------------------------------------------------------------------------------------------------------
@@ -702,11 +719,11 @@ async function main() {
     const b = await mustOk("adminBootstrap", {}, ADM2);
     const n = (o) => Object.values(o).reduce((a, v) => a + Object.keys(v).length, 0);
     const prevN = Object.values(b.prev["2569"].actual).reduce((a, o) => a + Object.values(o).reduce((s, e) => s + e.op.filter((x, i) => x > 0 || e.pp[i] > 0).length, 0), 0);
-    return { pcus: b.pcus.length, plans: n(b.plans), limits: n(b.limits), stats: n(b.stats.data), versions: b.form_versions.length, actual: prevN, prices: Object.keys(b.prev["2569"].prices).length };
+    return { pcus: b.pcus.length, plans: n(b.plans), limits: n(await storedLimits(ADM2)), stats: n(b.stats.data), versions: b.form_versions.length, actual: prevN, prices: Object.keys(b.prev["2569"].prices).length };
   };
   await mustOk("adminImportSeed", { seed }, ADM2); // restores the seed limits wiped by the replace-mode upload above (admin rows stay)
   const before = await counts();
-  const keptLimit = (await mustOk("adminBootstrap", {}, ADM2)).limits.PCU01[B.code];
+  const keptLimit = (await storedLimits(ADM2)).PCU01[B.code];
   const seedPcu = Object.keys(seed.limits["2570"]).find((p) => Object.keys(seed.limits["2570"][p]).length);
   const seedCode = Object.keys(seed.limits["2570"][seedPcu])[0];
   await mustOk("adminSetLimit", { pcu: seedPcu, code: seedCode, limit_month: 777, limit_year: 888 }, ADM2);
@@ -717,9 +734,9 @@ async function main() {
   eq(imp2.imported.plans, imp.imported.plans, "re-import: same plans count");
   eq(imp2.imported.actual_rows, imp.imported.actual_rows, "re-import: same actual_prev rows");
   eq(await counts(), before, "re-import: every table has the same number of rows");
-  eq((await mustOk("adminBootstrap", {}, ADM2)).limits.PCU01[B.code], keptLimit, "re-import keeps the admin-edited limit");
+  eq((await storedLimits(ADM2)).PCU01[B.code], keptLimit, "re-import keeps the admin-edited limit");
   ok(imp2.imported.limits_kept_admin >= 1, "re-import reports limits_kept_admin");
-  const kept2 = (await mustOk("adminBootstrap", {}, ADM2)).limits[seedPcu][seedCode];
+  const kept2 = (await storedLimits(ADM2))[seedPcu][seedCode];
   eq([kept2.limit_month, kept2.limit_year, kept2.source], [777, 888, "admin"], "re-import does not overwrite an admin-edited limit that is also in the seed");
   ok((await api("pcuBootstrap", {}, l3)).ok, "re-import keeps PIN (old token still valid)");
   ok((await api("pcuLogin", { pcu: "PCU07", pin: "54321" })).ok, "re-import keeps the admin-set PIN");
@@ -831,6 +848,10 @@ async function main() {
   for (let i = 0; i < 4; i++) lk = await api("adminLoginBackup", { password: "wrong-password" });
   ok(!lk.ok && lk.error.code === "LOCKED" && lk.error.until, "5th wrong backup password → LOCKED (15 min)");
   expectErr(await api("adminLoginBackup", { password: "correct-horse-2" }), "LOCKED", "correct password still locked");
+  ok((await api("adminSetBackupPassword", { password: "correct-horse-3" }, ADM2)).ok, "2ak C1: new backup password (clears the lock)");
+  const par = await Promise.all(Array.from({ length: 8 }, () => api("adminLoginBackup", { password: "wrong-password" })));
+  ok(par.every((r) => !r.ok) && par.some((r) => r.error.code === "LOCKED"), "2ak C1: 8 parallel wrong passwords → at least one LOCKED (atomic count)");
+  expectErr(await api("adminLoginBackup", { password: "correct-horse-3" }), "LOCKED", "2ak C1: …and the correct password is locked out");
 
   // ------------------------------------------------------------------------------------------------------------------------
   section("backup to R2 (cron endpoint + adminBackupNow)");
@@ -1284,7 +1305,7 @@ async function main() {
   {
     expectErr(await api("adminClearTrial", { confirm: "yes" }, ADM2), "BAD_REQUEST", "clear trial needs the confirmation word");
     const hiddenBefore = (await mustOk("adminBootstrap", {}, ADM2)).hidden;
-    const limitsBefore = Object.keys((await mustOk("adminBootstrap", {}, ADM2)).limits).length;
+    const limitsBefore = Object.keys(await storedLimits(ADM2)).length;
     const nCurAll = (await mustOk("adminRequests", { month: CUR }, ADM2)).requests.length;
     const nPdfAll = (await mustOk("adminPdfFiles", {}, ADM2)).total_files;
     const c = await mustOk("adminClearTrial", { confirm: "ล้างข้อมูล" }, ADM2);
@@ -1297,7 +1318,7 @@ async function main() {
     const ab = await mustOk("adminBootstrap", {}, ADM2);
     eq(ab.months, [], "adminBootstrap.months empty");
     eq(ab.hidden, hiddenBefore, "hidden items survive");
-    eq(Object.keys(ab.limits).length, limitsBefore, "limits survive");
+    eq(Object.keys(await storedLimits(ADM2)).length, limitsBefore, "limits survive");
     ok(ab.users.length === 2 && ab.form_versions.length === 1 && Object.keys(ab.plans).length > 0, "users, form versions and plans survive");
     ok(ab.rounds.some((x) => x.month === CUR && x.note), "rounds survive");
     const again = await mustOk("pcuBootstrap", {}, T1);
@@ -2296,15 +2317,7 @@ async function main() {
       return { op: Math.round(op * 100) / 100, pp: Math.round(pp * 100) / 100, total: Math.round((op + pp) * 100) / 100 };
     };
     const expPlanPcu = Object.fromEntries(Object.entries(plans71).map(([pcu, m]) => [pcu, sumBaht(m)]));
-    const expLimits = {}; // pcu -> code -> [lm, ly, source]
-    const pairs = new Set([...Object.entries(plans71).flatMap(([p, m]) => Object.keys(m).map((c) => p + "|" + c)), ...Object.keys(expStats)]);
-    let nLim = 0;
-    for (const k of pairs) {
-      const [pcu, code] = k.split("|");
-      const d = defaultLimitRule(plans71[pcu] && plans71[pcu][code], expStats[k], NEW);
-      if (d.lm === null && d.ly === null) continue;
-      (expLimits[pcu] ||= {})[code] = [d.lm, d.ly, d.source]; nLim++;
-    }
+    const nLim = 0; // 2ak B5: no default limits from fy 2570 on (the ceiling is retired)
     const expPriceChanged = byCode(oldItems.filter((i) => i.code !== REM.code).map((i) => ({ code: i.code, old: i.price, new: Math.round(i.price * 1.1 * 100) / 100 })).filter((x) => x.old !== x.new));
     const oldActive = oldItems.filter((i) => i.active !== false).length;
 
@@ -2338,8 +2351,7 @@ async function main() {
     const netExp = Object.values(expPlanPcu).reduce((a, e) => a + e.total, 0);
     ok(near(S.plans.network.total, netExp, 0.1) && near(S.plans.network.op + S.plans.network.pp, S.plans.network.total, 0.011), "preview: network total = Σ per pcu, op + pp = total");
     eq(S.plans.rows, Object.values(plans71).reduce((a, m) => a + Object.keys(m).length, 0), "preview: plans.rows");
-    ok(S.limits.will_default > 0 && S.limits.in_file === 0, "preview: limits.will_default > 0 (the file has no limits)");
-    eq(S.limits.will_default, nLim, "preview: will_default = pairs of plans ∪ stats minus the skipped ones");
+    eq([S.limits.will_default, S.limits.in_file], [nLim, 0], "2ak B5: preview rollover to fy 2571 — no default limits (the file has none, the ceiling is retired)");
     eq(S.config.will_set, ["fy_current"], "preview: config.will_set = fy_current only (the other keys already have values)");
     eq([S.rollover.from_fy, S.rollover.requests_counted, S.rollover.actual_months], [OLD, nReq, [...reqMonths].sort()], "preview: rollover from_fy / requests_counted / actual_months (Excel column labels = the round months, 2w)");
     eq(S.rollover.source, { actual_prev: "db", prices_prev: "db", stats: "db" }, "preview: old-fy numbers come from the DB");
@@ -2404,7 +2416,7 @@ async function main() {
     eq(ap.rollover.actual_rows, Object.keys(reqCells).length, "apply: rollover.actual_rows = cells with qty in FY2570");
     eq(ap.rollover.stats_rows, Object.keys(expStats).length, "apply: rollover.stats_rows");
     eq(ap.rollover.prices_rows, Object.keys(oldPrice).length, "apply: rollover.prices_rows = items of the old form");
-    eq(ap.rollover.limits_rows, nLim, "apply: rollover.limits_rows = default limits generated");
+    eq(ap.rollover.limits_rows, nLim, "apply: rollover.limits_rows = 0 (2ak B5: no default limits)");
     const ph71 = (await mustOk("adminFormGet", { id: ap.rollover.form_version_id }, ADM2)).price_history; // 2p
     const nf71 = itemsOfSteps((await mustOk("adminFormGet", { id: ap.rollover.form_version_id }, ADM2)).form.steps);
     eq(ph71.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), nf71.map((i) => [i.code, fyRoundMonths(NEW)[0], i.price].join("|")).sort(),
@@ -2449,18 +2461,7 @@ async function main() {
     ok(Object.entries(expStats).every(([k, e]) => e.every((x, i) => near(gotStats[k] && gotStats[k][i], x, 0.0051))), "stats: median / p90 / annual equal the independent computation for every pair");
 
     // limits[2571]
-    eq(boot3.limits.PCU11[A.code] && [boot3.limits.PCU11[A.code].limit_month, boot3.limits.PCU11[A.code].limit_year, boot3.limits.PCU11[A.code].source], [6, 8, "stat70"], "limits PCU11/A: ceil(p90 5.8) = 6, year 6+2 = 8, source stat70");
-    const lc = boot3.limits.PCU11[CSI.code];
-    eq([lc.limit_month, lc.limit_year, lc.source], [2, 12, "plan71"], "limits PCU11/CS item: plan only → ceil(12/12×2) = 2, year 12, source plan71");
-    const ln = boot3.limits.PCU11[NEWC];
-    eq([ln.limit_month, ln.limit_year, ln.source], [1, 5, "plan71"], "limits PCU11/new item: plan [4,1] → year 5, month ceil(5/12×2) = 1");
-    ok(!(boot3.limits.PCU12 && boot3.limits.PCU12[LABI.code]), "limits PCU12/LAB item: no plan and p90 0 → no row (skipped)");
-    const l12 = boot3.limits.PCU12[A.code];
-    eq([l12.limit_month, l12.limit_year, l12.source], [8, null, "stat70"], "limits PCU12/A: p90 7.2, no plan → [8, null, stat70]");
-    const gotLim = {};
-    for (const [pcu, items] of Object.entries(boot3.limits)) for (const [code, v] of Object.entries(items)) (gotLim[pcu] ||= {})[code] = [v.limit_month, v.limit_year, v.source];
-    eq(sortedObj(gotLim), sortedObj(expLimits), "limits[2571]: every row equals the rule (plans ∪ stats) — nothing more, nothing less");
-    ok(Object.values(boot3.limits).every((o) => Object.values(o).every((v) => v.updated_by === "import")), "limits[2571]: written as import rows (admin edits would stay)");
+    eq([boot3.limits, await storedLimits(ADM2, NEW)], [{}, {}], "2ak B5/E2: no limits rows for fy 2571, adminBootstrap.limits {}");
 
     // the new year in the PCU app
     const pbNew = await api("pcuBootstrap", {}, T11, { month: "2027-10" });
@@ -2474,7 +2475,7 @@ async function main() {
       ok(["2026-10", "2027-08"].every((m) => ["submitted", "issued"].includes(hm[m].status) && hm[m].submitted_at) && hm["2027-01"].status === "not_started", "history (PCU11): rounds it sent → submitted + submitted_at, others not_started");
       eq([pbNew.data.next_round.month, pbNew.data.next_round.opens_on, pbNew.data.next_round.fy], ["2027-12", "2027-11-01", NEW], "X-Dev-Month 2027-10: next_round 2027-12 opens 2027-11-01");
     }
-    eq([pbNew.data.limits[A.code], pbNew.data.plans[A.code]], [[null, 8], [6, 2]], "pcuBootstrap (2027-10): limits / plans of PCU11 are 2571's (2z: limit_month never sent to the PCU)");
+    eq([pbNew.data.limits, pbNew.data.plans[A.code]], [{}, [6, 2]], "pcuBootstrap (2027-10): plans of PCU11 are 2571's · limits {} (2ak E2)");
     const stepsNew = pbNew.data.form.steps;
     ok(!itemsOfSteps(stepsNew).some((i) => i.code === REM.code && i.active !== false) && itemsOfSteps(stepsNew).some((i) => i.code === NEWC), "PCU form for 2027-10: new item present, dropped item not active");
     // current round 2026-12 is still FY2570, but drafts follow fy_current's latest form · PCU07 sent the shown round 2026-11 before the rollover
@@ -3060,7 +3061,7 @@ async function main() {
     ok(O.requests_rebound >= 1, "2t preview: requests to re-bind ≥ 1");
     ok(O.price_backdate.items === 1 && O.price_backdate.lines >= 1 && O.price_backdate.requests >= 1, "2t preview: 1 price change back-dated over the whole fy (≥ 1 sent line)");
     eq([O.plans.upsert, O.plans.delete], [2, 1], "2t preview: plans upsert 2 (changed + new) · delete 1");
-    ok(O.limits.upsert >= 1 && O.limits.source === "default", "2t preview: default limits for the new plan pair");
+    eq([O.limits.upsert, O.limits.source], [0, "default"], "2t preview: no default limits for fy 2570 (2ak B5)");
     ok(pv.warnings.some((x) => /ปิดแล้ว/.test(x)), "2t preview: warns that the dropped item is kept closed");
 
     // ---- guards ----
@@ -3085,7 +3086,7 @@ async function main() {
     eq(hist, [[first, newA]], "2t: price_history of the changed item = one row at the fy's first round");
     const ex = (await mustOk("adminExportSeed", {}, ADM2)).seed;
     eq([ex.plans[String(FY)].PCU04[A.code], ex.plans[String(FY)].PCU04[NC], ex.plans[String(FY)][delPcu] && ex.plans[String(FY)][delPcu][delCode]], [[100, 0], [12, 0], undefined], "2t: plans upserted / deleted");
-    ok(ex.limits[String(FY)].PCU04 && ex.limits[String(FY)].PCU04[NC], "2t: limits row for the new plan pair");
+    ok(!(ex.limits[String(FY)].PCU04 && ex.limits[String(FY)].PCU04[NC]), "2t: no limits row for the new plan pair (2ak B5)");
     const aud = (await mustOk("adminAuditLog", { limit: 30 }, ADM2)).entries.find((e) => e.action === "form_override");
     const ad = aud ? JSON.parse(aud.detail) : {};
     ok(aud && ad.id === ap.form_version_id && ad.rebound === O.requests_rebound && ad.plans.upsert === 2, "2t: audit form_override");
@@ -3404,7 +3405,7 @@ async function main() {
     const dev = (n) => "device-" + String(n).padStart(4, "0") + "-test";
     const send = (p, t) => api("feedbackSend", { category: "other", body: "ทดสอบ", ...p }, t);
     const list = async (p = {}) => mustOk("adminFeedbackList", { limit: 1000, ...p }, ADM2);
-    const auditN = async () => (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.length;
+    const auditN = async () => (await mustOk("adminAuditLog", { limit: 1 }, ADM2)).entries[0].id; // newest audit id (the list is capped at 500)
 
     // ---- validation ----
     expectErr(await send({ category: "bogus", device: dev(1) }), "BAD_REQUEST", "feedbackSend bad category");

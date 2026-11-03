@@ -292,6 +292,21 @@ export function insertStatements(DB, table, cols, rows, opts = {}) {
   return stmts;
 }
 
+// hidden_items is a full replacement in the contract, but only the diff is written: the UI sends the whole list on every toggle,
+// and DELETE-all + re-INSERT cost ~400 D1 rows written per click at ~100 hidden items (2026-10-26: 90k/day of the 100k free tier).
+export async function hiddenDiffStatements(DB, pcuCode, codes, by) {
+  const { results: curRows } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcuCode).all();
+  const cur = new Set(curRows.map((r) => r.item_code));
+  const want = new Set(codes);
+  const removed = [...cur].filter((c) => !want.has(c));
+  const added = codes.filter((c) => !cur.has(c));
+  const stmts = removed.map((c) => DB.prepare(`DELETE FROM hidden_items WHERE pcu = ? AND item_code = ?`).bind(pcuCode, c));
+  const ts = nowIso();
+  stmts.push(...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], added.map((c) => [pcuCode, c, ts, by]),
+    { prefix: "INSERT OR IGNORE INTO" }));
+  return stmts;
+}
+
 // ---- config ------------------------------------------------------------------------------------------------
 export const SECRET_CONFIG_KEYS = new Set(["backup_pw_hash", "backup_pw_salt", "backup_version", "backup_fail", "backup_locked_until"]);
 

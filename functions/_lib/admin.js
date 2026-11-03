@@ -1,11 +1,11 @@
 // admin.js — admin / dispenser actions (functions/API.md §5). ctx.who = {email, role, units, backup}.
 import { err, assertLimitValue, isStr, jparse, phoneParam } from "./http.js";
 import {
-  SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, insertStatements,
-  formForFy, latestForm, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
+  SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, hiddenDiffStatements, insertStatements,
+  formForFy, latestForm, limitModeFor, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
 } from "./db.js";
 import {
-  BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, DEFAULT_PIN, PCU_GROUPS, PIN_LENGTH, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
+  BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, DEFAULT_PIN, PCU_GROUPS, PIN_LENGTH, PIN_RE, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
   verifyGoogleIdToken,
 } from "./auth.js";
 import {
@@ -63,27 +63,29 @@ export async function adminLoginBackup(ctx, p) {
   const cfg = await getConfigAll(DB);
   if (!cfg.backup_pw_hash || !cfg.backup_pw_salt) throw err("NOT_FOUND", "ยังไม่ได้ตั้งรหัสผ่านสำรอง");
   const now = Date.now();
-  let fail = Number(cfg.backup_fail) || 0;
   if (cfg.backup_locked_until) {
     const until = Date.parse(cfg.backup_locked_until);
     if (!Number.isNaN(until) && until > now) throw err("LOCKED", "รหัสผ่านสำรองถูกล็อกชั่วคราว", { until: cfg.backup_locked_until });
-    fail = 0;
+    await DB.batch([configStmt(DB, "backup_fail", 0), configStmt(DB, "backup_locked_until", "")]); // lock expired → fresh attempt window
   }
   const attempt = await hashSecret(password, cfg.backup_pw_salt);
   if (constantTimeEq(attempt, cfg.backup_pw_hash)) {
     const stmts = [auditStmt(DB, "backup", "admin", "adminLoginBackup", "", "", "ok")];
-    if (fail || cfg.backup_locked_until) stmts.push(configStmt(DB, "backup_fail", 0), configStmt(DB, "backup_locked_until", ""));
+    if (Number(cfg.backup_fail) && !cfg.backup_locked_until) stmts.push(configStmt(DB, "backup_fail", 0));
     await DB.batch(stmts);
     const tok = await makeStaffToken(env, "admin", "backup", Number(cfg.backup_version) || 0);
     return { token: tok.token, exp: tok.exp, role: "admin" };
   }
-  fail += 1;
+  // 2ak C1: atomic increment (like recordPinFailure) so concurrent wrong attempts cannot dodge the lock
+  const upd = await DB.prepare(`INSERT INTO config (key,value) VALUES ('backup_fail','1')
+      ON CONFLICT(key) DO UPDATE SET value = CAST(COALESCE(CAST(value AS INTEGER),0) + 1 AS TEXT) RETURNING value`).first();
+  const fail = Number(upd && upd.value) || 1;
   if (fail >= BACKUP_MAX_FAIL) {
     const until = new Date(now + BACKUP_LOCK_MIN * 60000).toISOString();
-    await DB.batch([configStmt(DB, "backup_fail", fail), configStmt(DB, "backup_locked_until", until), auditStmt(DB, "backup", "admin", "adminLoginBackup", "", "", "locked")]);
+    await DB.batch([configStmt(DB, "backup_locked_until", until), auditStmt(DB, "backup", "admin", "adminLoginBackup", "", "", "locked")]);
     throw err("LOCKED", "ใส่รหัสผ่านผิดครบ 5 ครั้ง ถูกล็อกชั่วคราว", { until });
   }
-  await DB.batch([configStmt(DB, "backup_fail", fail), auditStmt(DB, "backup", "admin", "adminLoginBackup", "", "", `bad_password fail=${fail}`)]);
+  await DB.batch([auditStmt(DB, "backup", "admin", "adminLoginBackup", "", "", `bad_password fail=${fail}`)]);
   throw err("BAD_PASSWORD", "รหัสผ่านไม่ถูกต้อง", { remaining: BACKUP_MAX_FAIL - fail });
 }
 
@@ -200,11 +202,13 @@ export async function adminBootstrap(ctx) {
   out.prices = await roundPriceOverrides(priceHistories(DB), form, [...new Set([...months12, ...monthSet])].sort(), monthFy);
   if (!isAdmin) return out;
 
+  const limitsOff = limitModeFor(cfgAll, fy) === "off";
   const [planRes, statRes, limRes, unlockRes, hidRes, prevFyRes, usersEff, fbNew] = await Promise.all([
     DB.prepare(`SELECT pcu, item_code, plan_op, plan_pp FROM plans WHERE fy = ?`).bind(fy).raw(),
     DB.prepare(`SELECT pcu, item_code, median_m, p90_m, annual_qty FROM stats WHERE fy = ?`).bind(fy - 1).raw(),
-    DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, source, updated_by, updated_at, note FROM limits WHERE fy = ?`).bind(fy).raw(),
-    DB.prepare(`SELECT pcu, item_code, month, reason, by, at FROM limit_unlocks WHERE month >= ? AND month <= ?`).bind(months12[0], months12[11]).all(),
+    // 2ak E2: the retired ceiling (fy ≥ 2570) is not read — limits {} / unlocks [] (keys kept; the rows stay, adminExportSeed still has them)
+    limitsOff ? [] : DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, source, updated_by, updated_at, note FROM limits WHERE fy = ?`).bind(fy).raw(),
+    limitsOff ? { results: [] } : DB.prepare(`SELECT pcu, item_code, month, reason, by, at FROM limit_unlocks WHERE month >= ? AND month <= ?`).bind(months12[0], months12[11]).all(),
     DB.prepare(`SELECT pcu, item_code FROM hidden_items`).raw(),
     DB.prepare(`SELECT DISTINCT fy FROM actual_prev ORDER BY fy`).all(),
     effectiveUsers(env, DB),
@@ -596,7 +600,7 @@ export async function adminLimitsUpload(ctx, p) {
   const form = await latestForm(DB, fy);
   const { results: pcuRows } = await DB.prepare(`SELECT code FROM pcus`).all();
   const pcuSet = new Set(pcuRows.map((r) => r.code));
-  const { results: curRows } = await DB.prepare(`SELECT pcu, item_code, limit_month, limit_year FROM limits WHERE fy = ?`).bind(fy).all();
+  const { results: curRows } = await DB.prepare(`SELECT pcu, item_code, limit_month, limit_year, note FROM limits WHERE fy = ?`).bind(fy).all();
   const cur = new Map(curRows.map((r) => [r.pcu + "|" + r.item_code, r]));
 
   const errors = [], warnings = [], valid = [];
@@ -640,7 +644,7 @@ export async function adminLimitsUpload(ctx, p) {
   const changes = [];
   let added = 0, updated = 0, deleted = 0;
   const final = new Map(); // key -> {pcu, code, lm, ly, note}  (rows to write)
-  const removeKeys = [];   // existing pairs to delete (merge: CLEAR-ed pairs)
+  const removeKeys = [];   // existing pairs to delete (merge: CLEAR-ed pairs · replace: pairs not in the file)
   const nowTs = nowIso();
   for (const v of todo) {
     const key = v.pcu + "|" + v.code;
@@ -660,29 +664,29 @@ export async function adminLimitsUpload(ctx, p) {
     for (const [key, old] of cur) {
       if (final.has(key)) continue;
       deleted++;
+      removeKeys.push([old.pcu, old.item_code]);
       changes.push({ pcu: old.pcu, item_code: old.item_code, old: [old.limit_month ?? null, old.limit_year ?? null], new: null });
     }
   }
 
+  // 2ak B2: write only what changes — rows whose pair or note differ are upserted, pairs that go away are deleted one by one
+  // (replace used to DELETE the whole fiscal year and re-INSERT every row, rewriting untouched source='system' rows too).
+  // A note-only change is written (merge: a blank note keeps the stored one) but is not counted in added/updated.
+  const sameNote = (f, old) => (mode === "merge" && f.note === null) || f.note === (old.note ?? null);
+  const writeRows = [...final.values()].filter((f) => {
+    const old = cur.get(f.pcu + "|" + f.code);
+    return !old || (old.limit_month ?? null) !== f.lm || (old.limit_year ?? null) !== f.ly || !sameNote(f, old);
+  });
   const dry = p.dry_run === true;
-  const dirty = added + updated + deleted > 0;
+  const dirty = writeRows.length + removeKeys.length > 0;
   if (!dry && dirty) {
     const cols = ["fy", "pcu", "item_code", "limit_month", "limit_year", "source", "updated_by", "updated_at", "note"];
     const toRow = (f) => [fy, f.pcu, f.code, f.lm, f.ly, "admin", who.email, nowTs, f.note];
-    const stmts = [];
-    if (mode === "replace") {
-      stmts.push(DB.prepare(`DELETE FROM limits WHERE fy = ?`).bind(fy));
-      stmts.push(...insertStatements(DB, "limits", cols, [...final.values()].map(toRow)));
-    } else {
-      for (const [pcu, code] of removeKeys) stmts.push(DB.prepare(`DELETE FROM limits WHERE fy = ? AND pcu = ? AND item_code = ?`).bind(fy, pcu, code));
-      const changedRows = [...final.values()].filter((f) => {
-        const old = cur.get(f.pcu + "|" + f.code);
-        return !old || (old.limit_month ?? null) !== f.lm || (old.limit_year ?? null) !== f.ly;
-      });
-      stmts.push(...insertStatements(DB, "limits", cols, changedRows.map(toRow), {
-        suffix: "ON CONFLICT(fy,pcu,item_code) DO UPDATE SET limit_month=excluded.limit_month, limit_year=excluded.limit_year, source='admin', updated_by=excluded.updated_by, updated_at=excluded.updated_at, note=COALESCE(excluded.note, limits.note)",
-      }));
-    }
+    const stmts = removeKeys.map(([pcu, code]) => DB.prepare(`DELETE FROM limits WHERE fy = ? AND pcu = ? AND item_code = ?`).bind(fy, pcu, code));
+    const noteSql = mode === "replace" ? "excluded.note" : "COALESCE(excluded.note, limits.note)";
+    stmts.push(...insertStatements(DB, "limits", cols, writeRows.map(toRow), {
+      suffix: `ON CONFLICT(fy,pcu,item_code) DO UPDATE SET limit_month=excluded.limit_month, limit_year=excluded.limit_year, source='admin', updated_by=excluded.updated_by, updated_at=excluded.updated_at, note=${noteSql}`,
+    }));
     stmts.push(auditStmt(DB, who.email, who.role, "adminLimitsUpload", "", "", `mode=${mode} fy=${fy} added=${added} updated=${updated} deleted=${deleted} errors=${errors.length}`));
     await batchChunked(DB, stmts);
   }
@@ -830,7 +834,7 @@ export async function adminSetPin(ctx, p) {
   const { DB, who } = ctx;
   await assertPcu(DB, p.pcu);
   const pin = String(p.pin ?? "");
-  if (!new RegExp(`^[0-9]{${PIN_LENGTH}}$`).test(pin)) throw err("BAD_REQUEST", "PIN ต้องเป็นเลข 5 หลัก");
+  if (!PIN_RE.test(pin)) throw err("BAD_REQUEST", `PIN ต้องเป็นเลข ${PIN_LENGTH} หลัก`);
   const salt = newSalt();
   await DB.batch([
     DB.prepare(`UPDATE pcus SET pin_hash = ?, pin_salt = ?, pin_version = COALESCE(pin_version,1) + 1, pin_fail = 0, pin_locked_until = NULL, pin_custom = 1 WHERE code = ?`)
@@ -857,10 +861,8 @@ export async function adminSetHidden(ctx, p) {
   const form = await latestForm(DB, ctxFy(await getConfigAll(DB)));
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];
-  const ts = nowIso();
   await batchChunked(DB, [
-    DB.prepare(`DELETE FROM hidden_items WHERE pcu = ?`).bind(p.pcu),
-    ...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], uniq.map((c) => [p.pcu, c, ts, who.email])),
+    ...(await hiddenDiffStatements(DB, p.pcu, uniq, who.email)),
     auditStmt(DB, who.email, who.role, "adminSetHidden", p.pcu, "", `count=${uniq.length}`),
   ]);
   return { hidden: uniq };

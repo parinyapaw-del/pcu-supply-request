@@ -1,5 +1,5 @@
 // views.js — shared read-side builders: RequestObj, RoundInfo, per-month PCU view, issue summaries, limit checks.
-import { formForFy, loadForm, priceMap } from "./db.js";
+import { LIMITS_OFF_FROM_FY, formForFy, loadForm, priceMap } from "./db.js";
 import { computeDeadline, fyMonths, monthFy, prevMonth } from "./time.js";
 import { UNITS } from "./auth.js";
 import { baselineFor } from "./stock.js";
@@ -228,7 +228,8 @@ export async function pcuMonthView(DB, pcu, month, fallbackFy) {
     getRequestRow(DB, pcu, month),
     usedFyFor(DB, pcu, month),
     prevLinesFor(DB, pcu, month),
-    DB.prepare(`SELECT item_code, reason FROM limit_unlocks WHERE pcu = ? AND month = ?`).bind(pcu, month).all(),
+    monthFy(month) >= LIMITS_OFF_FROM_FY ? { results: [] } // 2ak E2: no ceiling → no unlocks to read (key kept, {})
+      : DB.prepare(`SELECT item_code, reason FROM limit_unlocks WHERE pcu = ? AND month = ?`).bind(pcu, month).all(),
   ]);
   let request = null, issue = null;
   if (reqRow) {
