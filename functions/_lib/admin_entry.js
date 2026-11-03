@@ -6,7 +6,7 @@
 import { err, assertQty } from "./http.js";
 import { auditStmt, batchChunked, formForFy, getConfigAll, loadForm, publicConfig } from "./db.js";
 import { currentRound, fyMonths, isMonth, monthFy, nowIso } from "./time.js";
-import { REQUESTER_ON_SEND_SQL, getLines, getRequestRow, requestId, requestObj } from "./views.js";
+import { getLines, getRequestRow, priceStampStmts, requestId, requestObj, sendRequestStmt } from "./views.js";
 import { baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor } from "./price.js";
 import { splitIssued } from "./issue.js";
@@ -101,18 +101,9 @@ export async function adminSaveLines(ctx, p) {
   if (send || (wasSent && qtyChanged)) {
     const lines = await getLines(DB, id);
     const hist = await loadPriceHistory(DB, fy);
-    const fin = [];
-    for (const l of lines) {
-      const price = priceFor(hist, latest.index.has(l.item_code) ? latest : bound, l.item_code, month);
-      if (price === (l.price_snapshot ?? null) && price === (l.price_print ?? null)) continue;
-      fin.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE request_id = ? AND item_code = ?`).bind(price, price, id, l.item_code));
-    }
+    const fin = priceStampStmts(DB, id, lines, (c) => priceFor(hist, latest.index.has(c) ? latest : bound, c, month));
     if (send) {
-      fin.push(DB.prepare(
-        `UPDATE requests SET status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'submitted' END, form_version_id = ?, submitted_at = ?, updated_at = ?,
-                first_submitted_at = COALESCE(first_submitted_at, ?), submit_count = COALESCE(submit_count,0) + 1,
-                requester_name = ${REQUESTER_ON_SEND_SQL} WHERE id = ?`
-      ).bind(latest.id, now, now, now, pcu, pcu, pcu, id)); // 2x: requester name frozen at the first send
+      fin.push(sendRequestStmt(DB, id, latest.id, now, pcu)); // 2x: requester name frozen at the first send
     } else {
       fin.push(DB.prepare(`UPDATE requests SET submitted_at = ?, form_version_id = ? WHERE id = ?`).bind(now, latest.id, id)); // still sent, no "edited after submit"
     }

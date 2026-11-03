@@ -10,7 +10,7 @@ import {
 import { bangkokDate, currentMonth, currentRound, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
   getLines, getRequestRow, getRoundRows, issueSummary, lineQtyLocked, overLimitItems, pcuMonthView, requestObj, requestId, requestedQty, roundInfo, REQ_COLS,
-  REQUESTER_ON_SEND_SQL, firstRequester,
+  firstRequester, priceStampStmts, sendRequestStmt,
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
 import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
@@ -268,31 +268,15 @@ export async function pcuGetMonth(ctx, p) {
 // ---- saveLines (autosave + submit) ------------------------------------------------------------------------------------------
 const MAX_LINES = 400;
 
+// 2ak D8: saveLines = parseLines → (load + merge with the stored lines + compute the stock outputs) → checkQtyRules → writeLines → sendRequest.
 export async function saveLines(ctx, p) {
   const { DB, pcu } = ctx;
   const month = p.month;
   if (!isMonth(month)) throw err("BAD_REQUEST", "เดือน/รอบไม่ถูกต้อง");
   const cal = currentMonth(), cur = nextMonth(cal); // 2j: writable = currentRound (cur) and prevRound (cal)
   if (month > cur) throw err("BAD_REQUEST", "ยังไม่ถึงรอบเดือนนี้");
-  const linesIn = p.lines && typeof p.lines === "object" && !Array.isArray(p.lines) ? p.lines : {};
-  const codes = Object.keys(linesIn);
-  if (codes.length > MAX_LINES) throw err("BAD_REQUEST", "จำนวนบรรทัดมากเกินไป");
   const now = nowIso();
-
-  // pure validation first. 2o: used / adj / adj_reason / calc_from are optional — a key that is not sent keeps the stored value.
-  const parsed = codes.map((code) => {
-    const l = linesIn[code] && typeof linesIn[code] === "object" ? linesIn[code] : {};
-    let ua = l.updated_at;
-    if (typeof ua === "number" && Number.isFinite(ua)) ua = new Date(ua).toISOString();
-    if (!isStr(ua) || !ua) ua = now;
-    return {
-      code, stock: assertQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua,
-      used: has(l, "used") ? assertQty(l.used) : undefined,
-      adj: has(l, "adj") ? assertAdj(l.adj) : undefined,
-      adj_reason: has(l, "adj_reason") ? assertAdjReason(l.adj_reason) : undefined,
-      calc_from: has(l, "calc_from") ? assertCalcFrom(l.calc_from) : undefined,
-    };
-  });
+  const parsed = parseLines(p, now);
 
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
@@ -324,13 +308,52 @@ export async function saveLines(ctx, p) {
   const base = parsed.some((l) => l.calc_from) ? await baselineFor(DB, pcu.code, month) : {};
   for (const l of parsed) Object.assign(l, computeLine(base[l.code], l));
 
-  // 2ad: per line, not per page (the 2c page lock is gone) — the requested quantity of a line with a recorded issue stays as it is
-  // (stock / used / adj still change), and a permanently cancelled item (active:false in the latest form) takes no new quantity.
-  // Every offending line is listed with its stored op/pp so the client can put them back in one go (sync.js).
-  // 2af: a "ไม่เบิก" month takes no requested quantity (stock / used still change) until the PCU cancels it (pcuNoOrderCancel).
-  // 2ai: an item the admin locked from this round on takes no new / higher requested quantity (lowering it, e.g. to 0, is fine).
-  const qtyLocked = [], cancelled = [], noOrder = [], itemLocked = [];
   const locks = parsed.length ? await lockedCodes(DB, pcu.code, month) : new Set();
+  checkQtyRules(parsed, existing, reqRow, latest, locks);
+
+  const { qtyChanged, recalc, stale } = await writeLines(DB, { id, pcu: pcu.code, month, now, reqRow, parsed, existing, p });
+  // 2o: the next rounds' calc lines use this round as baseline (only once it is sent) — recalc them (no updated_at bump, no audit)
+  const wasSent = !!reqRow && reqRow.status !== "draft";
+  if (qtyChanged && wasSent) await recalcStockChain(DB, pcu.code, month);
+
+  let submitted = false, overLimit = [];
+  if (p.send === true || p.send === 1 || p.send === "1") {
+    overLimit = await sendRequest(DB, { id, pcu: pcu.code, month, now, fy, cfg, cfgAll, latest, bound });
+    submitted = true;
+    if (!wasSent) await recalcStockChain(DB, pcu.code, month); // first send: this round just became a baseline
+  }
+
+  const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu.code, month), getLines(DB, id)]);
+  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc, stale };
+}
+
+// Pure validation of p.lines. 2o: used / adj / adj_reason / calc_from are optional — a key that is not sent keeps the stored value (undefined here).
+function parseLines(p, now) {
+  const linesIn = p.lines && typeof p.lines === "object" && !Array.isArray(p.lines) ? p.lines : {};
+  const codes = Object.keys(linesIn);
+  if (codes.length > MAX_LINES) throw err("BAD_REQUEST", "จำนวนบรรทัดมากเกินไป");
+  return codes.map((code) => {
+    const l = linesIn[code] && typeof linesIn[code] === "object" ? linesIn[code] : {};
+    let ua = l.updated_at;
+    if (typeof ua === "number" && Number.isFinite(ua)) ua = new Date(ua).toISOString();
+    if (!isStr(ua) || !ua) ua = now;
+    return {
+      code, stock: assertQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua,
+      used: has(l, "used") ? assertQty(l.used) : undefined,
+      adj: has(l, "adj") ? assertAdj(l.adj) : undefined,
+      adj_reason: has(l, "adj_reason") ? assertAdjReason(l.adj_reason) : undefined,
+      calc_from: has(l, "calc_from") ? assertCalcFrom(l.calc_from) : undefined,
+    };
+  });
+}
+
+// 2ad: per line, not per page (the 2c page lock is gone) — the requested quantity of a line with a recorded issue stays as it is
+// (stock / used / adj still change), and a permanently cancelled item (active:false in the latest form) takes no new quantity.
+// Every offending line is listed with its stored op/pp so the client can put them back in one go (sync.js).
+// 2af: a "ไม่เบิก" month takes no requested quantity (stock / used still change) until the PCU cancels it (pcuNoOrderCancel).
+// 2ai: an item the admin locked from this round on takes no new / higher requested quantity (lowering it, e.g. to 0, is fine).
+function checkQtyRules(parsed, existing, reqRow, latest, locks) {
+  const qtyLocked = [], cancelled = [], noOrder = [], itemLocked = [];
   for (const l of parsed) {
     const e = existing.get(l.code);
     const sameQty = (e ? e.op ?? null : null) === l.op && (e ? e.pp ?? null : null) === l.pp;
@@ -349,13 +372,15 @@ export async function saveLines(ctx, p) {
   if (cancelled.length) throw err("ITEM_CANCELLED", "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้", { items: cancelled });
   if (itemLocked.length) throw err("ITEM_LOCKED", "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin", { items: itemLocked });
   if (noOrder.length) throw err("NO_ORDER", "เดือนนี้แจ้ง \"ไม่เบิก\" ไว้ — กดยกเลิก \"ไม่เบิก\" ก่อนจึงกรอกยอดขอได้ (คงเหลือกรอกได้ตามปกติ)", { items: noOrder });
+}
 
-  // ---- write lines (per-line last-write-wins in SQL) ----
+// Writes the lines (per-line last-write-wins in SQL) and the request meta. → {changed, qtyChanged, recalc, stale}
+async function writeLines(DB, { id, pcu, month, now, reqRow, parsed, existing, p }) {
   const stmts = [];
   if (!reqRow) {
     stmts.push(DB.prepare(
       `INSERT OR IGNORE INTO requests (id,pcu,month,status,created_at,updated_at,submit_count) VALUES (?,?,?, 'draft', ?, ?, 0)`
-    ).bind(id, pcu.code, month, now, now));
+    ).bind(id, pcu, month, now, now));
   }
   const nLineStart = stmts.length;
   for (const l of parsed) {
@@ -396,52 +421,35 @@ export async function saveLines(ctx, p) {
   }
   if (changed > 0) { metaSets.push("updated_at = ?"); metaVals.push(now); }
   if (metaSets.length) await DB.prepare(`UPDATE requests SET ${metaSets.join(", ")} WHERE id = ?`).bind(...metaVals, id).run();
-  // 2o: the next rounds' calc lines use this round as baseline (only once it is sent) — recalc them (no updated_at bump, no audit)
-  const wasSent = !!reqRow && reqRow.status !== "draft";
-  if (qtyChanged && wasSent) await recalcStockChain(DB, pcu.code, month);
+  return { changed, qtyChanged, recalc, stale };
+}
 
-  // ---- send: validate + stamp the submission ----
-  let submitted = false, overLimit = [];
-  if (p.send === true || p.send === 1 || p.send === "1") {
-    const lines = await getLines(DB, id);
-    if (cfg.stock_required === 1) {
-      const { results: hid } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcu.code).all();
-      const hidden = new Set(hid.map((r) => r.item_code));
-      const have = new Map(lines.map((l) => [l.item_code, l]));
-      const missing = [];
-      for (const [c, { item }] of latest.index) {
-        if (item.active === false || hidden.has(c)) continue;
-        const l = have.get(c);
-        if (!l || l.stock === null || l.stock === undefined) missing.push(c);
-      }
-      if (missing.length) throw err("INCOMPLETE", "กรอกคงเหลือให้ครบทุกรายการก่อนส่ง", { missing });
+// send: validate (stock completeness when required) + stamp the fy's prices + the submission (+ audit). → over_limit list
+async function sendRequest(DB, { id, pcu, month, now, fy, cfg, cfgAll, latest, bound }) {
+  const lines = await getLines(DB, id);
+  if (cfg.stock_required === 1) {
+    const { results: hid } = await DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcu).all();
+    const hidden = new Set(hid.map((r) => r.item_code));
+    const have = new Map(lines.map((l) => [l.item_code, l]));
+    const missing = [];
+    for (const [c, { item }] of latest.index) {
+      if (item.active === false || hidden.has(c)) continue;
+      const l = have.get(c);
+      if (!l || l.stock === null || l.stock === undefined) missing.push(c);
     }
-    // 2z (Q10): over the yearly ceiling is information only — never blocks the send · 2ad: off from fy 2570 (limitModeFor)
-    if (limitModeFor(cfgAll, fy) !== "off") overLimit = await overLimitItems(DB, pcu.code, month, lines);
-    // 2z: the price of the fy (its latest form) — both the calculation price (price_snapshot) and the printed price (price_print); a later
-    // price change rewrites both on every sent line of the fy (adminFormSave)
-    const hist = await loadPriceHistory(DB, fy);
-    const fin = [];
-    for (const l of lines) {
-      const c = l.item_code;
-      const price = priceFor(hist, latest.index.has(c) ? latest : bound, c, month);
-      if (price === (l.price_snapshot ?? null) && price === (l.price_print ?? null)) continue; // 2ak B3: unchanged → no write (as admin_entry)
-      fin.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE request_id = ? AND item_code = ?`).bind(price, price, id, c));
-    }
-    fin.push(DB.prepare(
-      `UPDATE requests SET status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'submitted' END, form_version_id = ?, submitted_at = ?, updated_at = ?,
-              first_submitted_at = COALESCE(first_submitted_at, ?), submit_count = COALESCE(submit_count,0) + 1,
-              requester_name = ${REQUESTER_ON_SEND_SQL} WHERE id = ?`
-    ).bind(latest.id, now, now, now, pcu.code, pcu.code, pcu.code, id)); // 2x: requester name frozen at the first send
-    const n = lines.filter((l) => (l.op || 0) + (l.pp || 0) > 0).length;
-    fin.push(auditStmt(DB, pcu.code, "pcu", "submit", pcu.code, month, `items=${n} form_version=${latest.id}`));
-    await batchChunked(DB, fin);
-    submitted = true;
-    if (!wasSent) await recalcStockChain(DB, pcu.code, month); // first send: this round just became a baseline
+    if (missing.length) throw err("INCOMPLETE", "กรอกคงเหลือให้ครบทุกรายการก่อนส่ง", { missing });
   }
-
-  const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu.code, month), getLines(DB, id)]);
-  return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc, stale };
+  // 2z (Q10): over the yearly ceiling is information only — never blocks the send · 2ad: off from fy 2570 (limitModeFor)
+  const overLimit = limitModeFor(cfgAll, fy) !== "off" ? await overLimitItems(DB, pcu, month, lines) : [];
+  // 2z: the price of the fy (its latest form) — both the calculation price (price_snapshot) and the printed price (price_print); a later
+  // price change rewrites both on every sent line of the fy (adminFormSave)
+  const hist = await loadPriceHistory(DB, fy);
+  const fin = priceStampStmts(DB, id, lines, (c) => priceFor(hist, latest.index.has(c) ? latest : bound, c, month));
+  fin.push(sendRequestStmt(DB, id, latest.id, now, pcu)); // 2x: requester name frozen at the first send
+  const n = lines.filter((l) => (l.op || 0) + (l.pp || 0) > 0).length;
+  fin.push(auditStmt(DB, pcu, "pcu", "submit", pcu, month, `items=${n} form_version=${latest.id}`));
+  await batchChunked(DB, fin);
+  return overLimit;
 }
 
 // ---- 2af: เดือนนี้ไม่เบิก ----------------------------------------------------------------------------------------------------------

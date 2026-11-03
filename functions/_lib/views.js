@@ -89,6 +89,26 @@ export const REQUESTER_ON_SEND_SQL =
   `COALESCE(requester_name, CASE WHEN first_submitted_at IS NULL THEN (SELECT requester_name FROM pcus WHERE code = ?)
      ELSE COALESCE((SELECT name FROM requester_log WHERE pcu = ? ORDER BY set_at ASC LIMIT 1), (SELECT requester_name FROM pcus WHERE code = ?)) END)`;
 
+// 2ak D8: the send, shared by the PCU (saveLines) and the admin (adminSaveLines) — one UPDATE of the request row
+// (status submitted unless issued, the form version it was sent with, submitted_at / first_submitted_at, submit_count + 1, 2x requester).
+export function sendRequestStmt(DB, id, formId, now, pcu) {
+  return DB.prepare(
+    `UPDATE requests SET status = CASE WHEN status = 'issued' THEN 'issued' ELSE 'submitted' END, form_version_id = ?, submitted_at = ?, updated_at = ?,
+            first_submitted_at = COALESCE(first_submitted_at, ?), submit_count = COALESCE(submit_count,0) + 1,
+            requester_name = ${REQUESTER_ON_SEND_SQL} WHERE id = ?`
+  ).bind(formId, now, now, now, pcu, pcu, pcu, id);
+}
+// 2z: price_snapshot = price_print = the fy's price (`priceOf(code)`) on every line of a sent request — only lines whose price differs (2ak B3).
+export function priceStampStmts(DB, id, lines, priceOf) {
+  const out = [];
+  for (const l of lines) {
+    const price = priceOf(l.item_code);
+    if (price === (l.price_snapshot ?? null) && price === (l.price_print ?? null)) continue;
+    out.push(DB.prepare(`UPDATE request_lines SET price_snapshot = ?, price_print = ? WHERE request_id = ? AND item_code = ?`).bind(price, price, id, l.item_code));
+  }
+  return out;
+}
+
 export async function getRequestRow(DB, pcu, month) {
   return DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcu, month).first();
 }
