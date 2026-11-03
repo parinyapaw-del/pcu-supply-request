@@ -121,10 +121,6 @@ export async function getRoundRows(DB, months) {
   for (const r of results) map.set(r.month, r);
   return map;
 }
-export async function getRound(DB, month, deadlineDay, trialMonth) {
-  const row = await DB.prepare(`SELECT * FROM rounds WHERE month = ?`).bind(month).first();
-  return roundInfo(month, row, deadlineDay, trialMonth);
-}
 
 // ---- PCU month view -------------------------------------------------------------------------------------------------
 // Σ(op+pp) of this PCU's submitted/issued requests in the same fiscal year as `month`, excluding `month` itself.

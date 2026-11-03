@@ -316,7 +316,6 @@ button, input, select {
 .limit-line { font-size: 0.82rem; }
 .limit-danger { color: var(--danger); font-weight: 700; }
 .limit-info { color: var(--muted); }
-.limit-note { color: var(--note); } /* 2z: over the yearly ceiling = information (blue), never red */
 .limit-unlocked { color: var(--success); font-weight: 700; }
 /* 2ad: over the annual plan = light yellow (never blocks) · grey notes: cancelled item / requested quantity kept (issue recorded) */
 .limit-plan { color: var(--warn); }
@@ -343,7 +342,6 @@ button, input, select {
 .num-input.calc-field { background: var(--calc-bg); border-color: var(--accent); }
 .num-input.input-error { border-color: var(--danger); background: var(--danger-bg); }
 .num-input.input-warn { border-color: var(--warn); background: var(--warn-bg); }
-.num-input.input-note { border-color: var(--note); background: var(--note-bg); }
 
 .row-highlight { animation: flash-row 1s ease-in-out 2; }
 @keyframes flash-row { 0%,100% { background: transparent; } 50% { background: var(--danger-bg); } }

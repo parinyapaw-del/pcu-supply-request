@@ -82,7 +82,7 @@ export function renderTab11(container, ctx) {
     });
     const fyHint = el("span", { class: "muted small", id: "t11-fy-hint" });
     const fyHintText = () => (w.fy === fyCur() + 1 ? `เปิดปีงบใหม่ (ปีงบปัจจุบัน ${fyCur()} จะย้ายไปแท็บ "ปีก่อน")`
-      : w.fy === fyCur() ? "ปีงบเดียวกับปัจจุบัน — นำเข้าแทนที่: ฟอร์ม/ราคา/แผน/เพดานของปีงบนี้เปลี่ยนตามไฟล์ ใบเบิกทั้งปีงบแสดงคำตามฟอร์มใหม่"
+      : w.fy === fyCur() ? "ปีงบเดียวกับปัจจุบัน — นำเข้าแทนที่: ฟอร์ม/ราคา/แผนของปีงบนี้เปลี่ยนตามไฟล์ ใบเบิกทั้งปีงบแสดงคำตามฟอร์มใหม่"
         : `ระบบเปิดได้เฉพาะปีงบ ${fyCur() + 1}`);
     fyHint.textContent = fyHintText();
     card.appendChild(el("div", { class: "admin-toolbar" }, [el("label", { for: "t11-fy" }, "ปีงบของไฟล์ (พ.ศ.)"), fyIn, fyHint]));
@@ -498,7 +498,7 @@ export function renderTab11(container, ctx) {
         `• ฟอร์มใหม่ ${s.form.active_items} รายการ (${s.form.steps} หน้า) · ใหม่ ${s.form.items_new.length} · ปิด ${s.form.items_closed.length} · ราคาเปลี่ยน ${s.form.price_changed.length}\n` +
         `• แผนรวมเครือข่าย ${fmt(s.plans.network.total)} บาท\n` +
         `• ปีงบ ${pv.fy_current} ย้ายไปแท็บ "ปีก่อน" (ยอดเบิกจริงจากใบเบิกในระบบ) · ยอดปีเริ่มนับใหม่\n` +
-        `• เพดานตั้งต้น ${s.limits.in_file ? s.limits.in_file + " แถวจากไฟล์" : s.limits.will_default + " แถว (คำนวณอัตโนมัติ)"}\n\nย้อนกลับไม่ได้ — แนะนำให้ Export backup ที่แท็บระบบก่อน`,
+        (s.limits.in_file ? `• เพดาน ${s.limits.in_file} แถวจากไฟล์ (เก็บไว้เท่านั้น — เลิกใช้เพดานตั้งแต่ปีงบ 2570)\n` : "") + `\nย้อนกลับไม่ได้ — แนะนำให้ Export backup ที่แท็บระบบก่อน`,
         { title: `เปิดปีงบ ${pv.fy}`, okText: "ดำเนินการต่อ", danger: true });
       if (!ok) return;
       const phrase = `เปิดปีงบ ${pv.fy}`;
@@ -512,7 +512,7 @@ export function renderTab11(container, ctx) {
         const r = await ctx.adminCall("adminImportApply", { seed: w.seed, confirm: typed.confirm });
         toast(`เปิดปีงบ ${r.fy_current} แล้ว`);
         msg.className = "admin-ok-text";
-        msg.textContent = `เปิดปีงบ ${r.fy_current} แล้ว · ฟอร์ม version ใหม่ #${r.rollover ? r.rollover.form_version_id : "?"} · เบิกจริงปีก่อน ${r.rollover ? r.rollover.actual_rows : 0} แถว · สถิติ ${r.rollover ? r.rollover.stats_rows : 0} · เพดาน ${r.rollover ? r.rollover.limits_rows : 0}`;
+        msg.textContent = `เปิดปีงบ ${r.fy_current} แล้ว · ฟอร์ม version ใหม่ #${r.rollover ? r.rollover.form_version_id : "?"} · เบิกจริงปีก่อน ${r.rollover ? r.rollover.actual_rows : 0} แถว · สถิติ ${r.rollover ? r.rollover.stats_rows : 0}${r.rollover && r.rollover.limits_rows ? ` · เพดาน ${r.rollover.limits_rows}` : ""}`;
         await ctx.refreshBootstrap();
         ctx.markStale(ALL_TABS);
         const btn = document.querySelector('.admin-tabbar button[data-tab="tab4"]');
@@ -534,7 +534,7 @@ export function renderTab11(container, ctx) {
           : `• แบบฟอร์ม version ใหม่ — ใบเบิกทุกใบของปีงบ ${pv.fy} (${o.requests_rebound} ใบ รวมใบที่ส่งแล้ว) จะแสดงชื่อรายการ/หน้า/หัวเรื่องตามไฟล์ใหม่\n`) +
         (pb.items ? `• ราคาเปลี่ยน ${pb.items} รายการ มีผลทั้งปีงบ — ปรับราคาใบที่ส่งแล้ว ${pb.requests} ใบ ${pb.lines} บรรทัด (${pb.delta_baht >= 0 ? "+" : ""}${fmt(pb.delta_baht)} บาท) · ราคาในใบพิมพ์ที่ส่งไปแล้วไม่เปลี่ยน\n` : "") +
         `• แผน: แก้/เพิ่ม ${o.plans.upsert} คู่ · ลบ ${o.plans.delete} คู่\n` +
-        `• เพดาน: ตั้งใหม่ ${o.limits.upsert} คู่${o.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${o.limits.kept_admin} คู่` : ""}\n\nแนะนำให้ Export backup ที่แท็บระบบก่อน`,
+        (o.limits.upsert ? `• เพดาน (เก็บไว้เท่านั้น): ตั้งใหม่ ${o.limits.upsert} คู่${o.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${o.limits.kept_admin} คู่` : ""}\n` : "") + `\nแนะนำให้ Export backup ที่แท็บระบบก่อน`,
         { title: `แทนที่ปีงบ ${pv.fy}`, okText: "ดำเนินการต่อ", danger: true });
       if (!ok) return;
       const phrase = `แทนที่ปีงบ ${pv.fy}`;
@@ -550,7 +550,7 @@ export function renderTab11(container, ctx) {
         toast(`แทนที่ปีงบ ${r.fy} แล้ว`);
         msg.className = "admin-ok-text";
         msg.textContent = `แทนที่ปีงบ ${r.fy} แล้ว · ${r.form_version_id ? `ฟอร์ม version #${r.form_version_id} · ใบเบิกใช้ฟอร์มใหม่ ${ro.requests_rebound} ใบ` : "ฟอร์มเหมือนเดิม"}`
-          + ` · ราคาย้อนหลัง ${ro.price_backdate.lines} บรรทัด · แผน ${ro.plans.upsert + ro.plans.delete} คู่ · เพดาน ${ro.limits.upsert} คู่`;
+          + ` · ราคาย้อนหลัง ${ro.price_backdate.lines} บรรทัด · แผน ${ro.plans.upsert + ro.plans.delete} คู่${ro.limits.upsert ? ` · เพดาน ${ro.limits.upsert} คู่` : ""}`;
         await ctx.refreshBootstrap();
         ctx.markStale(ALL_TABS);
         ctx.markStale(["tab11"]);
@@ -613,13 +613,13 @@ export function renderTab11(container, ctx) {
           ${ov.version_action === "same" ? "" : `<li>ใบเบิกของปีงบ ${pv.fy} ทุกใบ (${ov.requests_rebound} ใบ รวมใบที่ส่งแล้ว) จะแสดงคำ/หน้า/หัวเรื่องตามฟอร์มใหม่ ทั้ง admin ผู้จ่าย รพ.สต. ใบพิมพ์ และ Excel</li>`}
           <li>ราคา: ${pb.items ? `เปลี่ยน ${pb.items} รายการ มีผลทั้งปีงบ — ปรับใบที่ส่งแล้ว ${pb.requests} ใบ ${pb.lines} บรรทัด (${pb.delta_baht >= 0 ? "+" : ""}${fmt(pb.delta_baht)} บาท) · ราคาในใบพิมพ์ที่ส่งไปแล้วไม่เปลี่ยน` : "ไม่เปลี่ยน"}</li>
           <li>แผน: แก้/เพิ่ม ${ov.plans.upsert} คู่ · ลบ ${ov.plans.delete} คู่</li>
-          <li>เพดาน: ${ov.limits.source === "file" ? "ตามไฟล์" : "คำนวณอัตโนมัติ"} ตั้งใหม่ ${ov.limits.upsert} คู่${ov.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${ov.limits.kept_admin} คู่` : ""}</li></ul>`;
+          ${ov.limits.upsert ? `<li>เพดาน (เก็บไว้เท่านั้น): ตามไฟล์ ตั้งใหม่ ${ov.limits.upsert} คู่${ov.limits.kept_admin ? ` · คงค่าที่ admin แก้เอง ${ov.limits.kept_admin} คู่` : ""}</li>` : ""}</ul>`;
       }
-      // limits / config / rollover
+      // config / rollover (2ak E5: the ceiling is retired from fy 2570 — a limits block of the file is only stored, never computed)
       const lim = s.limits || {};
       const ro = s.rollover;
-      html += `<h4>เพดาน · ค่าตั้งต้น · ข้อมูลปีก่อน</h4><ul class="t11-sum" id="t11-sum-other">
-        <li>เพดานปีงบ ${pv.fy}: ${lim.in_file ? `${lim.in_file} แถวจากไฟล์` : `คำนวณอัตโนมัติ ${lim.will_default || 0} แถว (ต่อปี = แผน OP+PP · ต่อเดือน = P90 รายเดือนปีก่อน หรือ แผน/12×2)`}</li>
+      html += `<h4>ค่าตั้งต้น · ข้อมูลปีก่อน</h4><ul class="t11-sum" id="t11-sum-other">
+        ${lim.in_file ? `<li>เพดานปีงบ ${pv.fy}: ${lim.in_file} แถวจากไฟล์ (เก็บไว้เท่านั้น — เลิกใช้เพดานตั้งแต่ปีงบ 2570)</li>` : ""}
         <li>ค่าตั้งต้นที่จะตั้ง: ${escapeHtml(((s.config && s.config.will_set) || []).join(", ") || "–")}</li>
         ${ro ? `<li>ปีงบ ${ro.from_fy} → แท็บ "ปีก่อน": ${monthRange(ro.actual_months)} · จากใบเบิกที่ส่งแล้ว ${ro.requests_counted || 0} ใบ${ro.source ? ` <span class="muted small">(เบิกจริง: ${srcLabel(ro.source.actual_prev)} · ราคา: ${srcLabel(ro.source.prices_prev)} · สถิติ: ${srcLabel(ro.source.stats)})</span>` : ""}</li>` : ""}
         <li>รพ.สต.: ในระบบ ${(s.pcus && s.pcus.known || []).length}${s.pcus && s.pcus.new && s.pcus.new.length ? ` · ใหม่ ${s.pcus.new.join(", ")}` : ""}${s.pcus && s.pcus.missing_in_file && s.pcus.missing_in_file.length ? ` · ไม่อยู่ในไฟล์ ${s.pcus.missing_in_file.join(", ")}` : ""}</li></ul>`;

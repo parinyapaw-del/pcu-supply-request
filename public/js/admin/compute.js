@@ -2,7 +2,6 @@
 // No DOM, no API calls. The form arrives in adminBootstrap.form (functions/API.md §5.1).
 
 export const DISPENSE_UNITS = ["พัสดุ", "จ่ายกลาง", "LAB"];
-export const DISPENSE_FALLBACK = { P: "พัสดุ", CS: "จ่ายกลาง", LAB: "LAB" };
 
 function unitFromStepCode(code) {
   if (/^P\d/.test(code)) return "พัสดุ";

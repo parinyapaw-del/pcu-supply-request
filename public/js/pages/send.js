@@ -1,12 +1,10 @@
 // "Send" flow shared by the summary page (บันทึก / พิมพ์) and the print page (พิมพ์):
-// completeness check (stock only when config.stock_required=1) -> saveLines{send:true}. 2z (Q10): the yearly ceiling never blocks nor asks —
-// items over it are only mentioned in the toast after sending (the fill/summary pages show the info note). 2ad: no ceiling from fy 2570
-// (config.limit_mode "off"); over the annual plan is a light-yellow note (row + summary + toast), never a block.
+// completeness check (stock only when config.stock_required=1) -> saveLines{send:true}. 2ad: no ceiling from fy 2570 (its client code is
+// gone, 2ak E1); over the annual plan is a light-yellow note (row + summary + toast), never a block.
 // phase 2 spec §4.3 — there is no withdraw; re-sending overwrites.
 import { ApiError } from "../api.js";
 import { getOrderedSteps, getActiveItemRows, getItemRows } from "../data.js";
 import * as sync from "../sync.js";
-import { limitStatus } from "../limits.js";
 import { esc, pcuCode, monthData, roundUsesCurrentFy, alertDialog, toast } from "./common.js";
 
 export function lineTotal(line) {
@@ -27,15 +25,13 @@ export function planStatus(app, month, item, total) {
   return { over, planTotal, used, message: `ยอดรวมปีนี้จะเกินแผน ${over.toLocaleString("en-US")} ${item.unit || "หน่วย"} — ส่งได้ตามปกติ` };
 }
 
-// What would block (missing stock) / be noted (over the yearly ceiling · 2ad over the annual plan) if the request were sent now.
+// What would block (missing stock) / be noted (2ad: over the annual plan) if the request were sent now.
 export function collectIssues(app, month) {
   const code = pcuCode(app);
   const cfg = app.boot.config;
   const hidden = new Set(app.boot.hidden || []);
-  const data = monthData(app, month);
-  const useLimits = roundUsesCurrentFy(app, month);
+  const usePlan = roundUsesCurrentFy(app, month);
   const missing = [];
-  const overs = [];
   const planOvers = [];
   getOrderedSteps(app.boot.form).forEach((step) => {
     getActiveItemRows(step).forEach((item) => {
@@ -46,14 +42,12 @@ export function collectIssues(app, month) {
     // the server checks every line with qty > 0 (hidden or inactive items included)
     getItemRows(step).forEach((item) => {
       const total = lineTotal(sync.getLine(code, month, item.code));
-      if (!useLimits || total <= 0) return;
-      const st = limitStatus({ mode: cfg.limit_mode, limits: app.boot.limits, usedFy: data.used_fy, code: item.code, total });
-      if (st) overs.push({ code: item.code, name: item.name, stepCode: step.code, status: st });
+      if (!usePlan || total <= 0) return;
       const plan = planStatus(app, month, item, total);
       if (plan) planOvers.push({ code: item.code, name: item.name, stepCode: step.code, plan });
     });
   });
-  return { missing, overs, planOvers };
+  return { missing, planOvers };
 }
 
 function gotoItem(month, stepCode, code, field) {
@@ -73,7 +67,7 @@ export const sendUi = { missing: new Set(), month: null };
 /** @returns {Promise<boolean>} true when the request was sent (status "submitted"). */
 export async function trySend(app, month) {
   const code = pcuCode(app);
-  const { missing, overs, planOvers } = collectIssues(app, month);
+  const { missing, planOvers } = collectIssues(app, month);
 
   if (missing.length) {
     sendUi.month = month;
@@ -86,7 +80,6 @@ export async function trySend(app, month) {
   try {
     await sync.sendRequest(code, month);
     const notes = [];
-    if (overs.length) notes.push(`${overs.length} รายการเกินเพดานรายปี (แจ้งเพื่อประมาณการปีถัดไป)`);
     if (planOvers.length) notes.push(`${planOvers.length} รายการยอดรวมปีนี้จะเกินแผน (ส่งได้ตามปกติ)`);
     toast(["บันทึกและส่งใบเบิกแล้ว", ...notes].join(" · "));
     return true;
@@ -113,16 +106,4 @@ export async function trySend(app, month) {
     }
     return false;
   }
-}
-
-function itemName(app, code) {
-  for (const step of app.boot.form.steps) {
-    const r = step.rows.find((x) => x.type === "item" && x.code === code);
-    if (r) return r.name;
-  }
-  return code;
-}
-
-export function overListHtml(list) {
-  return `<ul class="dlg-list">${list.map((o) => `<li><strong>${esc(o.name)}</strong> (${esc(o.code)})<br>${o.status.messages.map(esc).join("<br>")}</li>`).join("")}</ul>`;
 }

@@ -207,11 +207,6 @@ export function getLine(pcu, month, code) {
   return session.request.lines[code] || { stock: null, op: null, pp: null };
 }
 
-// value: integer or null (empty).
-export function setLine(pcu, month, code, field, value) {
-  setLineFields(pcu, month, code, { [field]: value });
-}
-
 // Sets several fields of one line atomically (2o: e.g. used + the computed stock + calc_from in one edit).
 // patch: { stock?, op?, pp?, used?, adj?, adj_reason?, calc_from? } — integers / null / enum strings.
 export function setLineFields(pcu, month, code, patch) {
@@ -455,8 +450,8 @@ export async function flush(pcu, month) {
 
 /**
  * Send = saveLines{send:true} (what บันทึก / พิมพ์ do). Flushes autosave first, then sends. Throws ApiError:
- * INCOMPLETE{missing} · OVER_LIMIT{items} · CONFLICT · NETWORK (also thrown when the flush could not reach the server).
- * @returns {Promise<{submitted:boolean, over_limit:Array, request:object}>}
+ * INCOMPLETE{missing} · CONFLICT · NETWORK (also thrown when the flush could not reach the server).
+ * @returns {Promise<{submitted:boolean, over_limit:Array, request:object}>}   (over_limit: always [] from fy 2570)
  */
 export async function sendRequest(pcu, month) {
   await flush(pcu, month);

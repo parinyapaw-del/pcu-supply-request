@@ -16,9 +16,6 @@ export function esc(str) {
 const BKK_DATETIME = new Intl.DateTimeFormat("th-TH", {
   day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Bangkok",
 });
-const BKK_PARTS = new Intl.DateTimeFormat("en-GB", {
-  day: "numeric", month: "numeric", year: "numeric", timeZone: "Asia/Bangkok",
-});
 
 // "6 ต.ค. 15:30" (Asia/Bangkok) from an ISO string.
 export function formatThaiDateTime(iso) {
@@ -34,14 +31,6 @@ export function formatThaiShortDate(iso) {
   const d = new Date(iso);
   if (!iso || isNaN(d.getTime())) return "";
   return BKK_SHORT_DATE.format(d);
-}
-
-// Calendar parts of an ISO instant in Asia/Bangkok -> { day, monthName, beYear }.
-export function bangkokDateParts(iso) {
-  const d = new Date(iso);
-  const parts = BKK_PARTS.formatToParts(d);
-  const get = (t) => Number(parts.find((p) => p.type === t).value);
-  return { day: get("day"), monthName: THAI_MONTHS[get("month") - 1], beYear: get("year") + 543 };
 }
 
 // "2026-10-31" -> "31 ตุลาคม 2569"

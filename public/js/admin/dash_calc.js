@@ -137,22 +137,6 @@ export function overPlanItems(data, op) {
   return ((op && op.codes) || []).map((code) => ({ code, name: (items[code] || {}).name || code, unit: (items[code] || {}).unit || "" }));
 }
 
-/** Top `n` by qty / baht for a single PCU, from its pcuDashboard-shaped payload (monthly[code][round] V6), unit filtered. */
-export function topItemsPcu(data, unit, n = 3) {
-  const items = data.items || {};
-  const rows = [];
-  Object.keys(data.monthly || {}).forEach((code) => {
-    const it = items[code] || {};
-    if (unit !== "all" && it.unit_group !== unit) return;
-    let qty = 0;
-    let baht = 0;
-    Object.values(data.monthly[code] || {}).forEach((v) => { qty += num(v[0]); baht += num(v[1]); });
-    rows.push({ code, name: it.name || code, unit: it.unit || "", group: it.unit_group || "", qty, baht });
-  });
-  const by = (key) => rows.filter((r) => r[key] > 0).sort((a, b) => b[key] - a[key] || a.code.localeCompare(b.code)).slice(0, n);
-  return { qty: by("qty"), baht: by("baht") };
-}
-
 /** Per-unit_group totals over the whole network (ignores the unit filter), from network.items. */
 export function groupBreakdown(data, mode) {
   const idx = IDX[mode] || IDX.qty;

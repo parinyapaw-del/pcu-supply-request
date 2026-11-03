@@ -32,12 +32,6 @@ export function fiscalYearStartMonthKey(fy) {
   return partsToMonthKey(ceYear, 10);
 }
 
-// CE month key of the last ROUND month (September) of a given Thai fiscal year (FY2570 -> "2027-09").
-export function fiscalYearEndMonthKey(fy) {
-  const ceYear = fy - 543;
-  return partsToMonthKey(ceYear, 9);
-}
-
 export function formatMonthKeyThai(monthKey) {
   const { year, month } = monthKeyToParts(monthKey);
   return `${THAI_MONTHS[month - 1]} ${beYear(year)}`;
@@ -59,21 +53,6 @@ export function prevMonthKey(monthKey) {
   return month === 1 ? partsToMonthKey(year - 1, 12) : partsToMonthKey(year, month - 1);
 }
 
-// All month keys strictly before `monthKey`, within the same fiscal year, in
-// chronological order (oldest first). For a fiscal year's start month this is [].
-export function monthsInFiscalYearBefore(monthKey) {
-  const fy = fiscalYearOf(monthKey);
-  const start = fiscalYearStartMonthKey(fy);
-  const out = [];
-  let cur = start;
-  while (cur !== monthKey) {
-    out.push(cur);
-    cur = nextMonthKey(cur);
-    if (out.length > 12) break; // safety guard, should never trigger
-  }
-  return out;
-}
-
 export function compareMonthKey(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -86,15 +65,6 @@ export function formatInt(n) {
 export function formatMoney(n) {
   const v = Number(n) || 0;
   return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-// Format a JS Date for the printed "วันที่ D / เดือนไทย / พ.ศ." line.
-export function formatThaiDateParts(date) {
-  return {
-    day: date.getDate(),
-    monthName: THAI_MONTHS[date.getMonth()],
-    beYear: beYear(date.getFullYear()),
-  };
 }
 
 export function nowTimeHHMM(date = new Date()) {

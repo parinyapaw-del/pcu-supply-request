@@ -116,7 +116,7 @@ function nextFyWarning() {
   const b = state.bootstrap, F = fyCurrent();
   const cal = b.current_month || "";
   const nextFy = F + 1, startCe = nextFy - 1 - 543; // first round of F+1 = <startCe>-10, keyed from <startCe>-09-01
-  if (fiscalYearOf(roundMonth()) > F) return `รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} เปิดกรอกแล้ว แต่ยังไม่ได้เปิดปีงบ ${nextFy} — ตอนนี้ใช้แบบฟอร์ม/ราคา/เพดานของปีงบ ${F} ไปก่อน · เปิดปีงบ ${nextFy} ที่แท็บ "นำเข้า"`;
+  if (fiscalYearOf(roundMonth()) > F) return `รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} เปิดกรอกแล้ว แต่ยังไม่ได้เปิดปีงบ ${nextFy} — ตอนนี้ใช้แบบฟอร์ม/ราคาของปีงบ ${F} ไปก่อน · เปิดปีงบ ${nextFy} ที่แท็บ "นำเข้า"`;
   if (cal === `${startCe}-08`) return `ต้องเปิดปีงบ ${nextFy} ก่อน 1 ก.ย. ${nextFy - 1} (รอบ ขอเบิก ต.ค. ${String(nextFy - 1).slice(-2)} = รอบแรกของปีงบ ${nextFy} เริ่มกรอก 1 ก.ย.) — แท็บ "นำเข้า"`;
   return "";
 }

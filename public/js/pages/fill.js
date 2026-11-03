@@ -7,7 +7,6 @@ import { call, getPcuToken } from "../api.js";
 import * as sync from "../sync.js";
 import * as store from "../store.js";
 import { formatInt, formatMoney, formatMonthKeyThai, nowTimeHHMM } from "../format.js";
-import { limitStatus } from "../limits.js";
 import {
   esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
@@ -130,7 +129,6 @@ export async function renderFill(container, app, stepCode, params) {
 
   const curStep = stepCode === "summary" ? null : steps.find((s) => s.code === stepCode);
   const stepIssued = isStepIssued(app, month, curStep);
-  const stepEditable = editable; // 2ad: no page lock any more — only the requested quantity of issued lines (qtyLocked)
 
   const wrap = document.createElement("div");
   wrap.className = "fill-page";
@@ -142,7 +140,7 @@ export async function renderFill(container, app, stepCode, params) {
   if (stepCode === "summary") {
     content.appendChild(renderSummary(app, month, steps));
   } else {
-    content.appendChild(renderStepForm(app, month, curStep, stepEditable));
+    content.appendChild(renderStepForm(app, month, curStep, editable));
   }
   wrap.appendChild(content);
   wrap.appendChild(renderNav(app, month, stepCode, codes));
@@ -162,7 +160,7 @@ export async function renderFill(container, app, stepCode, params) {
 
   if (stepCode !== "summary") {
     const step = curStep;
-    wireStepEvents(app, month, step, stepEditable);
+    wireStepEvents(app, month, step, editable);
     markMissing(step, content, app, month);
     if (params && params.get("focus")) focusItem(params.get("focus"), params.get("field") || "stock");
     else if (params && params.get("item")) {
@@ -965,25 +963,15 @@ function refreshStepTotals(app, month, step) {
   el.innerHTML = `<strong>รวมขั้นตอนนี้</strong> — OP ${formatInt(t.op)} · PP ${formatInt(t.pp)} · รวม ${formatInt(t.qty)} · เป็นเงิน ${formatMoney(t.money)} บาท`;
 }
 
-// Ceiling feedback for one item — only when the yearly ceiling is exceeded (Q90) · 2z (Q10): an info note (blue), never red, never blocks.
-// 2ad: the ceiling is off from fy 2570 (config.limit_mode "off" → nothing) · over the annual plan = light-yellow row + note, never blocks.
+// Over the annual plan = light-yellow row + note, never blocks (2ad · the yearly ceiling is retired from fy 2570, 2ak E1).
 function refreshRowLimit(app, month, item) {
   const line = sync.getLine(pcuCode(app), month, item.code);
-  const cur = roundUsesCurrentFy(app, month);
-  const st = cur
-    ? limitStatus({ mode: app.boot.config.limit_mode, limits: app.boot.limits, usedFy: monthData(app, month).used_fy, code: item.code, total: lineTotal(line) })
-    : null;
-  const plan = cur ? planStatus(app, month, item, lineTotal(line)) : null;
-  document.querySelectorAll(`[data-code="${item.code}"] input.num-input`).forEach((inp) => {
-    if (inp.dataset.field !== "op" && inp.dataset.field !== "pp") return; // stock/used/adj have their own states (refreshRowCalc)
-    inp.classList.toggle("input-note", !!st);
-  });
+  const plan = roundUsesCurrentFy(app, month) ? planStatus(app, month, item, lineTotal(line)) : null;
   document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
     if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-plan-over", !!plan);
   });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
-    box.innerHTML = (st ? st.messages.map((m) => `<div class="limit-line limit-note">${esc(m)}</div>`).join("") : "")
-      + (plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "");
+    box.innerHTML = plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "";
   });
 }
 
@@ -1184,7 +1172,7 @@ function renderSummary(app, month, steps) {
     return { code: step.code, title: stepLabel(step), t, issued: isStepIssued(app, month, step) };
   });
   const lockedSteps = stepRows.filter((s) => s.issued);
-  const { missing, overs, planOvers } = collectIssues(app, month);
+  const { missing, planOvers } = collectIssues(app, month);
 
   box.innerHTML = `
     <h2>สรุปยอด${editable ? "ก่อนส่ง" : ""}</h2>
@@ -1204,14 +1192,6 @@ function renderSummary(app, month, steps) {
     <div class="summary-section" id="missing-box">
       <h3>รายการที่ยังไม่กรอกคงเหลือ (${missing.length})</h3>
       ${missing.length === 0 ? '<p class="muted">กรอกครบทุกรายการแล้ว</p>' : `<ul class="jump-list">${missing.map((m) => `<li><a href="#" data-jump="${esc(m.stepCode)}" data-code="${esc(m.code)}">${esc(m.name)} (${esc(m.code)})</a></li>`).join("")}</ul>`}
-    </div>` : ""}
-
-    ${app.boot.config.limit_mode !== "off" && overs.length ? `
-    <div class="summary-section" id="over-box">
-      <h3>รายการที่เกินเพดานรายปี (${overs.length})</h3>
-      <p class="limit-note small">แจ้งเพื่อใช้ประมาณการปีถัดไปให้แม่นยำขึ้น — ส่งใบเบิกได้ตามปกติ</p>
-      <ul class="jump-list">${overs.map((o) => `<li><a href="#" data-jump="${esc(o.stepCode)}" data-code="${esc(o.code)}" data-field="op">${esc(o.name)} (${esc(o.code)})</a>
-        <div class="limit-note small">ยอดขอสะสมปีงบนี้ ${o.status.info.yearUsed} · เพดานรายปี ${o.status.info.limit_year}</div></li>`).join("")}</ul>
     </div>` : ""}
 
     ${planOvers.length ? `

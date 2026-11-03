@@ -122,7 +122,6 @@ const REMOVED = {
   adminReturn: "ใช้ adminNote (โน้ตขอให้แก้) แทน adminReturn",
   adminSetMode: "ใช้ adminSetLimitMode (off/warn) แทน adminSetMode",
 };
-const isReserved = () => false; // nothing reserved since 2e
 const has = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
 
 // dev-only helpers (DEV_FAKE_GOOGLE=1)
@@ -185,7 +184,6 @@ export async function onRequestPost({ request, env }) {
     const body = await readJson(request);
     const action = typeof body.action === "string" ? body.action : "";
     if (!action) throw err("BAD_REQUEST", "ต้องระบุ action");
-    if (isReserved(action)) throw err("NOT_IMPLEMENTED", "ยังไม่เปิดใช้งานฟังก์ชันนี้");
     if (has(REMOVED, action)) throw err("BAD_REQUEST", REMOVED[action]);
 
     const known = has(PUBLIC, action) || has(PCU, action) || has(STAFF, action) || has(ADMIN, action) || /^dev(Reset|RerunMigration|PutBackup|ListBackups|ListFiles|PrintToken|SetRequestMonth|Requester|DeleteRequest|ZeroLine)$/.test(action);

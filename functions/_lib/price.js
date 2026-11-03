@@ -39,13 +39,6 @@ export function priceFor(hist, form, code, round) {
   return formPrice(form, code);
 }
 
-// {code: price} of every item of `form` in `round`.
-export function pricesForRound(hist, form, round) {
-  const out = {};
-  if (form) for (const code of form.index.keys()) out[code] = priceFor(hist, form, code, round);
-  return out;
-}
-
 // bootstrap `prices` (API.md §4.1 / §5.1): { round: {code: price} } — only the codes whose round price differs from the price in `form`
 // (or in any of `alsoForms[round]`, the forms the client may show for that round). Every round in `rounds` is a key ({} = nothing differs).
 export async function roundPriceOverrides(H, form, rounds, monthFy, alsoForms = {}) {

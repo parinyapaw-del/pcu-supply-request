@@ -50,10 +50,6 @@ export function safeKeys() {
   return Array.from(memoryFallback.keys());
 }
 
-export function isStorageBroken() {
-  return storageBroken;
-}
-
 export function getJSON(key, fallback) {
   const raw = safeGet(key);
   if (raw == null) return fallback;
