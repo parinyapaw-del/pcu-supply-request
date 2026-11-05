@@ -84,6 +84,9 @@ export function fmtPct(n, digits = 0) {
 export function openModal(titleText, bodyNode, { onClose, wide } = {}) {
   const backdrop = el("div", { class: "admin-modal-backdrop" });
   const modal = el("div", { class: "admin-modal" + (wide ? " wide" : ""), role: "dialog", "aria-modal": "true" });
+  // 2al A: a click outside the box no longer closes it (typed values were lost) — only × (no save), Esc, or the dialog's own buttons.
+  const xBtn = el("button", { type: "button", class: "admin-modal-x", "aria-label": "ปิด", title: "ปิด (ไม่บันทึก)" }, "×");
+  modal.appendChild(xBtn);
   modal.appendChild(el("h2", {}, titleText));
   modal.appendChild(bodyNode);
   backdrop.appendChild(modal);
@@ -95,7 +98,7 @@ export function openModal(titleText, bodyNode, { onClose, wide } = {}) {
   }
   function onKey(ev) { if (ev.key === "Escape") close(); }
   document.addEventListener("keydown", onKey);
-  backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+  xBtn.addEventListener("click", close);
   return { close, modal };
 }
 

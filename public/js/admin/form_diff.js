@@ -26,6 +26,12 @@ export function deepCopy(obj) {
 
 // Canonical shape used for comparison / saving / preview: order = array order, page_no = running number
 // among active steps, seq = running number of item rows inside a step (all items), strings trimmed, price 2 decimals.
+// 2al: the closed qty column of an item ("op" | "pp", at most one) — same canon as the server (form_editor.js canonCols)
+export function colsOf(r) {
+  const c = r && Array.isArray(r.closed_cols) ? ["op", "pp"].filter((k) => r.closed_cols.includes(k)) : [];
+  return c.length === 1 ? c : [];
+}
+
 export function normalizeForm(form) {
   let pageNo = 0;
   const steps = (form.steps || []).map((s, i) => {
@@ -37,9 +43,13 @@ export function normalizeForm(form) {
       seq += 1;
       const price = typeof r.price === "number" ? r.price : (str(r.price).trim() === "" ? NaN : Number(r.price));
       const links = linksOf(r);
+      const cols = colsOf(r);
+      // 2al: cancel_reason (closed items only) and closed_cols travel with the item — before 2al the editor dropped cancel_reason on save
+      const reason = r.active === false ? str(r.cancel_reason).trim() : "";
       return {
         type: "item", code: str(r.code).trim(), seq, name: str(r.name).trim(), unit: str(r.unit).trim(),
-        price: isFinite(price) ? round2(price) : price, active: r.active !== false, ...(links.length ? { links } : {})
+        price: isFinite(price) ? round2(price) : price, active: r.active !== false, ...(links.length ? { links } : {}),
+        ...(reason ? { cancel_reason: reason } : {}), ...(cols.length ? { closed_cols: cols } : {})
       };
     });
     return {
@@ -55,7 +65,7 @@ export function normalizeForm(form) {
 export function formSignature(form) {
   const n = normalizeForm(form);
   return JSON.stringify(n.steps.map((s) => [s.code, s.sheet, s.title, s.subject, s.to, s.dispense_unit, s.active,
-    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active, (r.links || []).join(",")]))]));
+    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active, (r.links || []).join(","), r.cancel_reason || "", (r.closed_cols || []).join(",")]))]));
 }
 
 function stepLabel(s, idx) {
@@ -156,7 +166,7 @@ export function diffForms(oldForm, newForm) {
   const a = indexForm(oldForm), b = indexForm(newForm);
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: []
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: []
   };
   Object.values(b.steps).forEach((s) => {
     const o = a.steps[s.code];
@@ -178,6 +188,8 @@ export function diffForms(oldForm, newForm) {
   Object.values(b.items).forEach((it) => {
     const was = linksOf(a.items[it.code]), now = linksOf(it);
     if (was.join(",") !== now.join(",")) d.linked.push({ code: it.code, old: was, new: now });
+    const cw = colsOf(a.items[it.code]), cn = colsOf(it);
+    if (cw.join(",") !== cn.join(",")) d.cols_changed.push({ code: it.code, old: cw, new: cn });
   });
   return d;
 }
@@ -203,6 +215,7 @@ export function summaryThai(d) {
   if (d.unit_changed.length) parts.push(`แก้หน่วย ${d.unit_changed.length} รายการ`);
   if (d.moved.length) parts.push(`ย้ายหน้า ${d.moved.length} รายการ`);
   if ((d.linked || []).length) parts.push(`เชื่อมรหัสเดิม ${d.linked.length} รายการ`);
+  if ((d.cols_changed || []).length) parts.push(`ปิด/เปิดช่อง OP-PP ${d.cols_changed.length} รายการ`);
   if (d.items_closed.length) parts.push(`ปิด ${d.items_closed.length} รายการ`);
   if (d.items_reopened.length) parts.push(`เปิดอีกครั้ง ${d.items_reopened.length} รายการ`);
   return parts.length ? parts.join(" · ") : "ไม่มีการเปลี่ยนแปลง";
@@ -222,6 +235,7 @@ export function diffDetailsThai(d, nameOf = () => "") {
     ["แก้หน่วย", d.unit_changed.map(nm)],
     ["ย้ายหน้า", d.moved.map((x) => `${nm(x.code)}: หน้า ${x.from} → หน้า ${x.to}`)],
     ["เชื่อมรหัสเดิม", (d.linked || []).map((x) => `${nm(x.code)}: ${x.new.length ? "← " + x.new.join(", ") : "ยกเลิกการเชื่อม"}${x.old.length ? ` (เดิม ← ${x.old.join(", ")})` : ""}`)],
+    ["ปิด/เปิดช่อง OP-PP", (d.cols_changed || []).map((x) => `${nm(x.code)}: ${x.new.length ? "ปิดช่อง " + x.new[0].toUpperCase() : "เปิดทุกช่อง"}${x.old.length ? ` (เดิมปิด ${x.old[0].toUpperCase()})` : ""}`)],
     ["รายการที่ปิด", d.items_closed.map(nm)],
     ["รายการที่เปิดอีกครั้ง", d.items_reopened.map(nm)]
   ];

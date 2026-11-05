@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `COL_CLOSED{items}` (2al, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - **Rounds (brief 2j).** A round is keyed by the month the supplies are *for* ("ขอเบิกเดือน X"); it is filled and submitted during the month
@@ -101,6 +101,10 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
     `adminSaveLines` is never locked).
     **2ak A2**: the PCU fill page follows this rule — OP/PP of a locked item stay open when a quantity is stored (to lower it); typing above the stored
     value is clamped back with a notice (`sync.getServerQty`); a field with nothing stored is read-only. `ITEM_LOCKED` stays the backstop.
+  - **2al**: the item's closed qty column (latest form item `closed_cols: ["op"]|["pp"]`, §5.2) raised above the stored value →
+    `COL_CLOSED{items:[{code,col,op,pp}]}` "รายการนี้ปิดช่อง OP/PP ไว้ ขอเบิกในช่องนั้นไม่ได้ (ลดยอดเดิมได้)" (lowering / same value / the other column / stock
+    allowed; nothing stored before is changed). `adminSaveLines` is not limited (like item locks). The fill page greys the column (title
+    "ช่อง PP ปิด — รายการนี้เบิกเป็น PP ไม่ได้"), keeps a stored figure open to lower only, and the client re-sends like `ITEM_LOCKED`.
   - **2af**: request with `no_order = 1` and a line's `op+pp` changed to > 0 → `NO_ORDER{items:[{code,op,pp}]}` "เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กดยกเลิก … ก่อน"
     (stock / used stay editable; `send:true` on such a request keeps `no_order`).
   - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`, also for `NO_ORDER`).
@@ -428,6 +432,10 @@ lines keep their prices. `forms` then only lists versions of another fy (e.g. re
 - 2ad `cancel_reason` (string ≤ 200, else `BAD_REQUEST`): why a closed item was cancelled for good — kept only on an item with `active:false` and a non-empty
   reason (dropped on reopen; absent otherwise, so existing items keep their hash). The admin UI requires it when closing ("ยกเลิกรายการถาวร"); the API does not.
   The PCU form shows closed items greyed with "ยกเลิกรายการ: <reason>"; `saveLines` refuses a new quantity on them (`ITEM_CANCELLED`, §4).
+- 2al `closed_cols` (array, optional): `["op"]` or `["pp"]` = the PCU can't request this item in that column (raise-only rule, `COL_CLOSED` §4);
+  kept only when non-empty (absent otherwise, so existing items keep their hash); both columns / unknown value / not an array / duplicate → `BAD_REQUEST`
+  ("ปิดทั้งช่อง OP และ PP ไม่ได้ — … ยกเลิกรายการถาวร แทน"). Old lines, plans, stats, actual_prev are never touched. Carried by `pcuBootstrap.form`, `adminExportSeed`
+  and imports (same check in `import_fy.js`). Print / PDF / Excel unchanged. Admin UI: buttons "OP เปิด/ปิด" "PP เปิด/ปิด" on each open item (tab แบบฟอร์ม).
 - 2v `links` = old codes this item replaces (same thing under a new code; stored sorted/unique, omitted when empty): each `^[A-Z0-9]+-\d{2,3}$`, ≤ 10,
   not the item itself, not an **open** item of the form (close the old code first), one old code linked from one item only (`BAD_REQUEST` otherwise).
   Effect (read-time, no D1 rows copied): stats fy−1 of the old code serve the new one when it has none (`adminBootstrap.stats`, `adminResetLimit`, same-fy import
@@ -445,7 +453,7 @@ lines keep their prices. `forms` then only lists versions of another fy (e.g. re
   the seed numbers items globally (P2 continues after P1), so an unedited form keeps its numbers · defaults `active:true`, `dispense_unit`.
 - "Same" = the normalised `{fy, steps}` equals the base's (note ignored; the base is normalised the same way) → `{saved:false, same:true, form:<base>, versions}`, no row.
 - `diff` (vs. the base): `{steps_added:[code], steps_closed:[code], steps_reopened:[code], items_added:[code], items_closed:[code], items_reopened:[code],
-  price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}], linked:[{code,old:[code],new:[code]}]}`; stored in `audit_log` as `form_save`
+  price_changed:[{code,old,new}], renamed:[{code,old,new}], unit_changed:[code], moved:[{code,from,to}], linked:[{code,old:[code],new:[code]}], cols_changed:[{code,old:[col],new:[col]}] (2al)}`; stored in `audit_log` as `form_save`
   (`detail` = JSON `{id, note, diff}`; a very large diff is reduced to `{id, note, diff_counts, truncated:true}` to stay valid JSON inside the 2000-char cap).
 - `versions` = every row of `form_versions` newest first `[{id,fy,created_at,created_by,note}]` (same list as `adminBootstrap.form_versions`).
 - Nothing else changes (lines, plans, limits untouched) — except prices (2p, below) and the re-bind of the fy's requests (2t, above). New items have no plan/limit until an admin sets one.

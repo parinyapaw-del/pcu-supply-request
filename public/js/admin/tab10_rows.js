@@ -87,9 +87,29 @@ export function rowsPart(core) {
           touch(); drawAll();
           toast(`ย้าย ${r.code} ไปท้ายหน้า ${target.code} แล้ว`);
         });
+        // 2al: close the OP or the PP column of this item (item.closed_cols) — the PCU can't request in it; old figures stay
+        const colBtns = active ? el("div", { class: "t10-cols small" }, ["op", "pp"].map((c) => {
+          const closed = Array.isArray(r.closed_cols) && r.closed_cols.includes(c);
+          const label = c.toUpperCase();
+          const b = el("button", {
+            type: "button", class: "btn btn-sm t10-col-btn " + (closed ? "btn-danger" : "btn-secondary"), "data-act": "col-" + c, "aria-pressed": closed ? "true" : "false",
+            title: closed ? `ช่อง ${label} ปิดอยู่ — กดเพื่อเปิดให้ รพ.สต. ขอเบิกเป็น ${label} ได้` : `กดเพื่อปิดช่อง ${label} (รายการนี้เบิกเป็น ${label} ไม่ได้)`
+          }, closed ? `${label} ปิด` : `${label} เปิด`);
+          b.addEventListener("click", () => {
+            const other = c === "op" ? "pp" : "op";
+            if (!closed && Array.isArray(r.closed_cols) && r.closed_cols.includes(other)) {
+              toast(`ปิดทั้ง OP และ PP ไม่ได้ — ถ้าไม่ใช้รายการนี้แล้วให้กด "ยกเลิกรายการถาวร"`, "err");
+              return;
+            }
+            if (closed) delete r.closed_cols; else r.closed_cols = [c];
+            touch(); drawAll();
+          });
+          return b;
+        })) : null;
         const statusCell = el("td", { class: "t10-status-cell" }, [
           el("span", { class: "badge " + (active ? "badge-success" : "badge-muted") }, active ? "เปิด" : "ยกเลิกแล้ว"), " ", toggle,
-          !active && r.cancel_reason ? el("div", { class: "muted small t10-cancel-reason" }, "เหตุผล: " + r.cancel_reason) : null
+          !active && r.cancel_reason ? el("div", { class: "muted small t10-cancel-reason" }, "เหตุผล: " + r.cancel_reason) : null,
+          colBtns
         ]);
         const moveCell = el("td", { class: "left" }, [move]);
         if (!baseCodes.has(r.code)) {

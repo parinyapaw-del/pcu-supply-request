@@ -35,6 +35,15 @@ function canonCancel(r) {
   return t ? { cancel_reason: t.slice(0, 200) } : {};
 }
 
+// 2al: `closed_cols` = the qty column(s) this item can't be requested in ("op" or "pp" — never both: that is cancelling the item).
+// Only when non-empty, so an item without it keeps the exact shape (and hash) it had before 2al. Old data in that column is untouched.
+export const QTY_COLS = ["op", "pp"];
+function canonCols(r) {
+  if (!Array.isArray(r.closed_cols)) return {};
+  const c = QTY_COLS.filter((k) => r.closed_cols.includes(k));
+  return c.length === 1 ? { closed_cols: c } : {};
+}
+
 export function canonSteps(stepsIn) {
   const steps = (Array.isArray(stepsIn) ? stepsIn : []).map((s, i) => ({
     code: text(s.code),
@@ -48,7 +57,7 @@ export function canonSteps(stepsIn) {
     active: s.active !== false,
     rows: (Array.isArray(s.rows) ? s.rows : []).map((r) => (r.type === "section"
       ? { type: "section", title: text(r.title) }
-      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false, ...canonLinks(r), ...canonCancel(r) })),
+      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false, ...canonLinks(r), ...canonCancel(r), ...canonCols(r) })),
   }));
   let page = 0, seq = 0;
   for (const s of steps) if (s.active) s.page_no = ++page;
@@ -124,6 +133,11 @@ function validateInput(formIn) {
       if (r.active !== undefined && typeof r.active !== "boolean") throw err("BAD_REQUEST", `รายการ ${ic}: active ต้องเป็น true/false`);
       if (r.cancel_reason !== undefined && r.cancel_reason !== null && !isStr(r.cancel_reason)) throw err("BAD_REQUEST", `รายการ ${ic}: เหตุผลยกเลิกต้องเป็นข้อความ`);
       if (text(r.cancel_reason).length > 200) throw err("BAD_REQUEST", `รายการ ${ic}: เหตุผลยกเลิกยาวเกิน 200 ตัวอักษร`);
+      if (r.closed_cols !== undefined && r.closed_cols !== null) {
+        const cc = r.closed_cols;
+        if (!Array.isArray(cc) || cc.some((k) => !QTY_COLS.includes(k)) || new Set(cc).size !== cc.length) throw err("BAD_REQUEST", `รายการ ${ic}: closed_cols ต้องเป็น ["op"] หรือ ["pp"]`);
+        if (cc.length > 1) throw err("BAD_REQUEST", `รายการ ${ic}: ปิดทั้งช่อง OP และ PP ไม่ได้ — ถ้าไม่ใช้รายการนี้แล้วให้ "ยกเลิกรายการถาวร" แทน`);
+      }
       if (r.active !== false) activeItems++;
     }
     if (activeItems > MAX_ACTIVE_ITEMS) throw err("BAD_REQUEST", `${label}: มีรายการที่เปิดใช้ได้ไม่เกิน ${MAX_ACTIVE_ITEMS} รายการ (ตอนนี้ ${activeItems}) — ปิดรายการหรือย้ายไปหน้าอื่น`);
@@ -165,7 +179,7 @@ function indexOf(steps) {
 export function diffSteps(baseSteps, newSteps) {
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [],
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: [],
   };
   const bs = new Map(baseSteps.map((s) => [s.code, s]));
   for (const s of newSteps) {
@@ -190,6 +204,9 @@ export function diffSteps(baseSteps, newSteps) {
     const o = bi.get(code);
     const was = (o && o.item.links) || [], now = item.links || [];
     if (was.join(",") !== now.join(",")) d.linked.push({ code, old: was, new: now });
+    // 2al: closed qty column set / cleared (an added item counts too when it starts with one)
+    const cw = (o && o.item.closed_cols) || [], cn = item.closed_cols || [];
+    if (cw.join(",") !== cn.join(",")) d.cols_changed.push({ code, old: cw, new: cn });
   }
   return d;
 }

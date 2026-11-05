@@ -336,6 +336,7 @@ button, input, select {
 .lock-notice .announce-text { white-space: normal; }
 .lock-notice ul { margin: 4px 0 4px 1.2em; padding: 0; }
 .row-note-lock { color: #8a5a00; }
+.row-note-col { color: var(--muted, #666); }
 .announce-hide { flex: none; font-size: 0.85rem; }
 
 .num-input { width: 72px; min-height: 40px; text-align: right; border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; background: var(--surface); color: var(--text); }

@@ -70,6 +70,10 @@ function assertFormRules(steps) {
       if (txt(r.name).length > 200) throw bad(`รายการ ${ic}: ชื่อยาวเกิน 200 ตัวอักษร`);
       if (txt(r.unit).length > 30) throw bad(`รายการ ${ic}: หน่วยยาวเกิน 30 ตัวอักษร`);
       if (typeof r.price !== "number" || !Number.isFinite(r.price) || r.price < 0 || r.price > 1e9) throw bad(`รายการ ${ic}: ราคาต้องเป็นตัวเลข ≥ 0`);
+      if (r.closed_cols !== undefined && r.closed_cols !== null) { // 2al
+        const cc = r.closed_cols;
+        if (!Array.isArray(cc) || cc.length > 1 || cc.some((k) => k !== "op" && k !== "pp")) throw bad(`รายการ ${ic}: closed_cols ต้องเป็น ["op"] หรือ ["pp"] (ปิดทั้ง 2 ช่องไม่ได้)`);
+      }
       if (r.active !== false) activeItems++;
     }
     if (activeItems > MAX_ACTIVE_ITEMS) throw bad(`${label}: มีรายการที่เปิดใช้ได้ไม่เกิน ${MAX_ACTIVE_ITEMS} รายการ (ตอนนี้ ${activeItems}) — ปิดรายการหรือย้ายไปหน้าอื่น`);

@@ -94,8 +94,24 @@ function itemLock(app, month, code) {
 // 2ak A2: an admin item lock only stops raising (server ITEM_LOCKED, API.md §4) — a field with a stored quantity stays open to be lowered
 // (lockedCap clamps the input); one with nothing stored stays read-only.
 const lockedCap = (app, month, code, field) => Number(sync.getServerQty(pcuCode(app), month, code)[field]) || 0;
+// 2al: the admin closed this qty column of the item (latest form `closed_cols`) — same raise-only rule as a lock (server COL_CLOSED):
+// read-only when nothing is stored, else it can only be lowered. Old figures stay as they were.
+function colClosed(app, code, field) {
+  const f = app.boot.form;
+  if (!f) return false;
+  if (!f._closedCols) {
+    f._closedCols = new Map();
+    for (const st of f.steps || []) for (const r of st.rows || []) if (r.type === "item" && Array.isArray(r.closed_cols)) f._closedCols.set(r.code, r.closed_cols);
+  }
+  const c = f._closedCols.get(code);
+  return !!c && c.includes(field);
+}
+const COL_LABEL = { op: "OP", pp: "PP" };
+const colClosedTitle = (field) => `ช่อง ${COL_LABEL[field]} ปิด — รายการนี้เบิกเป็น ${COL_LABEL[field]} ไม่ได้`;
 const qtyEditableOf = (app, month, code, editable, field) => editable && !qtyLocked(app, month, code) && !isNoOrder(app, month)
-  && (!itemLock(app, month, code) || lockedCap(app, month, code, field) > 0);
+  && ((!itemLock(app, month, code) && !colClosed(app, code, field)) || lockedCap(app, month, code, field) > 0);
+const qtyInputHtml = (app, month, item, line, editable, field) =>
+  inputHtml(field, line[field], qtyEditableOf(app, month, item.code, editable, field), colClosed(app, item.code, field) ? colClosedTitle(field) : "");
 const lockText = (l) => `ล็อกรายการตั้งแต่รอบขอเบิก ${formatMonthKeyThai(l.from_month)}${l.note ? ` (${l.note})` : ""} — ถ้าต้องการเบิก ติดต่อ admin`;
 // 2af: a "ไม่เบิก" month takes no requested quantity (OP/PP read-only, คงเหลือ / ใช้ไป still editable) until it is cancelled
 const isNoOrder = (app, month) => !!(requestOf(app, month) || {}).no_order;
@@ -341,6 +357,7 @@ function renderNav(app, month, stepCode, codes) {
     if (st.qtyRefused) {
       toast(st.qtyRefusedCode === "ITEM_CANCELLED" ? "รายการนี้ยกเลิกถาวรแล้ว — ยอดขอคงไว้ตามเดิม"
         : st.qtyRefusedCode === "ITEM_LOCKED" ? "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin"
+        : st.qtyRefusedCode === "COL_CLOSED" ? "รายการนี้ปิดช่อง OP/PP ไว้ — ขอเบิกในช่องนั้นไม่ได้ (ยอดขอคงไว้ตามเดิม)"
         : st.qtyRefusedCode === "NO_ORDER" ? 'เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กด "ยกเลิก ไม่เบิก" ก่อนจึงกรอกยอดขอได้'
         : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
@@ -844,6 +861,11 @@ function rowNoteHtml(app, month, item, editable) {
   if (item.active === false) return `<div class="row-note">${esc(cancelText(app, item))}</div>`;
   if (editable && qtyLocked(app, month, item.code)) return `<div class="row-note">${esc(QTY_LOCKED_TEXT)}</div>`;
   const lk = itemLock(app, month, item.code);
+  const cc = ["op", "pp"].filter((f) => colClosed(app, item.code, f));
+  if (cc.length && !lk) {
+    const lower = editable && cc.some((f) => lockedCap(app, month, item.code, f) > 0) ? " · มียอดเดิมในช่องนี้ ลดได้แต่เพิ่มไม่ได้" : "";
+    return `<div class="row-note row-note-col" data-col-closed="${esc(cc.join(","))}">${esc(colClosedTitle(cc[0]) + lower)}</div>`;
+  }
   if (lk) {
     const lower = editable && (lockedCap(app, month, item.code, "op") > 0 || lockedCap(app, month, item.code, "pp") > 0) ? " · ลดยอดขอที่กรอกไว้ได้" : "";
     return `<div class="row-note row-note-lock" data-item-lock>🔒 ${esc(lockText(lk) + lower)}</div>`;
@@ -882,8 +904,8 @@ function buildItemTr(app, month, item, editable) {
     <td class="col-price">${formatMoney(priceOf(app, month, item))}</td>
     ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
     <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
-    <td class="col-num">${inputHtml("op", line.op, qtyEditableOf(app, month, item.code, editable, "op"))}</td>
-    <td class="col-num">${inputHtml("pp", line.pp, qtyEditableOf(app, month, item.code, editable, "pp"))}</td>
+    <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "op")}</td>
+    <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "pp")}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
     <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
     <td class="col-action">${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}</td>`;
@@ -930,8 +952,8 @@ function buildItemCard(app, month, item, editable) {
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
       ${modeB ? `<label>ใช้ไป${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</label>` : ""}
       <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
-      <label>OP${inputHtml("op", line.op, qtyEditableOf(app, month, item.code, editable, "op"))}</label>
-      <label>PP${inputHtml("pp", line.pp, qtyEditableOf(app, month, item.code, editable, "pp"))}</label>
+      <label>OP${qtyInputHtml(app, month, item, line, editable, "op")}</label>
+      <label>PP${qtyInputHtml(app, month, item, line, editable, "pp")}</label>
     </div>
     <div class="item-card-total">รวม <span class="row-total">${formatInt(total)}</span> · เป็นเงิน <span class="row-money">${formatMoney(total * priceOf(app, month, item))}</span></div>
     <div class="limit-msg" data-limit-for="${esc(item.code)}"></div>`;
@@ -987,6 +1009,11 @@ function wireStepEvents(app, month, step, editable) {
         value = lockedCap(app, month, code, field);
         input.value = String(value);
         toast("รายการนี้ถูกล็อก — ลดยอดขอได้ แต่เพิ่มเกินยอดเดิมไม่ได้ (ถ้าต้องการเบิก ติดต่อ admin)");
+      } else if ((field === "op" || field === "pp") && value !== null && colClosed(app, code, field) && value > lockedCap(app, month, code, field)) {
+        value = lockedCap(app, month, code, field); // 2al
+        input.value = value ? String(value) : "";
+        if (!value) value = null;
+        toast(`${colClosedTitle(field)} — ลดยอดเดิมได้ แต่เพิ่มไม่ได้`);
       }
 
       const cur = sync.getLine(pcuCode(app), month, code);

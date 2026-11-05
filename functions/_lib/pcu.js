@@ -327,6 +327,16 @@ export async function saveLines(ctx, p) {
   return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc, stale };
 }
 
+// 2al: the item's closed qty column (form item `closed_cols`, "op" | "pp") takes no new / higher quantity — lowering a stored one is fine
+// (same raise-only rule as an item lock), so earlier data stays as it was. → the raised column or null. Shared with adminSaveLines.
+export const COL_CLOSED_MSG = "รายการนี้ปิดช่อง OP/PP ไว้ ขอเบิกในช่องนั้นไม่ได้ (ลดยอดเดิมได้)";
+export function colRaised(ent, l, e) {
+  const cols = ent && Array.isArray(ent.item.closed_cols) ? ent.item.closed_cols : null;
+  if (!cols) return null;
+  for (const c of cols) if ((l[c] || 0) > (e ? e[c] || 0 : 0)) return c;
+  return null;
+}
+
 // Pure validation of p.lines. 2o: used / adj / adj_reason / calc_from are optional — a key that is not sent keeps the stored value (undefined here).
 function parseLines(p, now) {
   const linesIn = p.lines && typeof p.lines === "object" && !Array.isArray(p.lines) ? p.lines : {};
@@ -353,7 +363,7 @@ function parseLines(p, now) {
 // 2af: a "ไม่เบิก" month takes no requested quantity (stock / used still change) until the PCU cancels it (pcuNoOrderCancel).
 // 2ai: an item the admin locked from this round on takes no new / higher requested quantity (lowering it, e.g. to 0, is fine).
 function checkQtyRules(parsed, existing, reqRow, latest, locks) {
-  const qtyLocked = [], cancelled = [], noOrder = [], itemLocked = [];
+  const qtyLocked = [], cancelled = [], noOrder = [], itemLocked = [], colClosed = [];
   for (const l of parsed) {
     const e = existing.get(l.code);
     const sameQty = (e ? e.op ?? null : null) === l.op && (e ? e.pp ?? null : null) === l.pp;
@@ -364,13 +374,17 @@ function checkQtyRules(parsed, existing, reqRow, latest, locks) {
     if (ent && ent.item.active === false && (l.op || 0) + (l.pp || 0) > 0) { cancelled.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null }); continue; }
     if (locks.has(l.code) && ((l.op || 0) > (e ? e.op || 0 : 0) || (l.pp || 0) > (e ? e.pp || 0 : 0))) {
       itemLocked.push({ code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null });
+      continue;
     }
+    const cc = colRaised(ent, l, e);
+    if (cc) colClosed.push({ code: l.code, col: cc, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null });
   }
   if (qtyLocked.length) {
     throw err("LINE_LOCKED", "รายการนี้บันทึกจ่ายหรือแจ้งได้รับแล้ว ยอดขอคงไว้ตามเดิม (แก้คงเหลือ/ใช้ไปได้)", { items: qtyLocked });
   }
   if (cancelled.length) throw err("ITEM_CANCELLED", "รายการนี้ยกเลิกถาวรแล้ว ขอเพิ่มไม่ได้", { items: cancelled });
   if (itemLocked.length) throw err("ITEM_LOCKED", "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin", { items: itemLocked });
+  if (colClosed.length) throw err("COL_CLOSED", COL_CLOSED_MSG, { items: colClosed });
   if (noOrder.length) throw err("NO_ORDER", "เดือนนี้แจ้ง \"ไม่เบิก\" ไว้ — กดยกเลิก \"ไม่เบิก\" ก่อนจึงกรอกยอดขอได้ (คงเหลือกรอกได้ตามปกติ)", { items: noOrder });
 }
 

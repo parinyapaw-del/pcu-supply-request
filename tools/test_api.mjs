@@ -4083,6 +4083,61 @@ async function main() {
 
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2al: closed OP / PP column per item (form item closed_cols) — raise-only, old data kept · import / export");
+  {
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+    const F0 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
+    const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const P = (await mustOk("adminBootstrap", {}, ADM2)).pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-29T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (lines, extra = {}) => api("saveLines", { month: CUR, lines: L(lines), ...extra }, TP);
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const withItems = (base, patch) => { const steps = cl(base.steps); steps.forEach((s) => s.rows.forEach((r) => { if (r.type === "item" && r.code in patch) { Object.assign(r, patch[r.code]); if (patch[r.code].closed_cols === undefined) delete r.closed_cols; } })); return steps; };
+    const row = (f, c) => f.steps.flatMap((s) => s.rows).find((r) => r.code === c);
+
+    // data typed before the column is closed stays as it was (Save: "old months are kept for analysis")
+    ok((await sv({ [X.code]: { op: 2, pp: 4 } })).ok, "setup: X op 2 / pp 4 before closing PP");
+
+    // ---- validation ----
+    for (const [v, why] of [[["pp", "op"], "both columns"], [["xx"], "unknown column"], ["pp", "not an array"], [["pp", "pp"], "duplicate"]]) {
+      expectErr(await api("adminFormSave", { base_version_id: F0.id, form: { steps: withItems(F0, { [X.code]: { closed_cols: v } }) } }, ADM2), "BAD_REQUEST", `closed_cols ${why} → BAD_REQUEST`);
+    }
+    const fs1 = await mustOk("adminFormSave", { base_version_id: F0.id, note: "2al close pp", form: { steps: withItems(F0, { [X.code]: { closed_cols: ["pp"] } }) } }, ADM2);
+    ok(fs1.saved, "closed_cols [pp] on X saved as a new version");
+    eq(fs1.diff.cols_changed, [{ code: X.code, old: [], new: ["pp"] }], "diff.cols_changed lists X");
+    eq("closed_cols" in row(fs1.form, Y.code), false, "items without a closed column carry no closed_cols key (hash unchanged)");
+    eq(row((await mustOk("pcuBootstrap", {}, TP)).form, X.code).closed_cols, ["pp"], "pcuBootstrap.form carries closed_cols");
+    eq((await api("adminFormSave", { base_version_id: fs1.form.id, form: { steps: cl(fs1.form.steps) } }, ADM2)).data.same, true, "re-saving the same form → same:true");
+
+    // ---- raise-only rule ----
+    eq((await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.lines[X.code].pp, 4, "closing the column did not touch the stored pp 4");
+    const r1 = await sv({ [X.code]: { op: 2, pp: 5 } });
+    expectErr(r1, "COL_CLOSED", "X pp 4 → 5 refused");
+    eq(r1.error && r1.error.items, [{ code: X.code, col: "pp", op: 2, pp: 4 }], "COL_CLOSED.items = [{code, col, stored op, stored pp}]");
+    ok((await sv({ [X.code]: { op: 9, pp: 4 } })).ok, "X op (open column) 2 → 9 ok with pp unchanged");
+    ok((await sv({ [X.code]: { op: 9, pp: 1 } })).ok, "X pp 4 → 1 (lowering) ok");
+    ok((await sv({ [X.code]: { op: 9, pp: null } })).ok, "X pp → empty ok");
+    expectErr(await sv({ [X.code]: { op: 9, pp: 1 } }), "COL_CLOSED", "X pp empty → 1 refused");
+    ok((await sv({ [Y.code]: { op: 1, pp: 3 } })).ok, "Y (no closed column) pp ok");
+    ok((await sv({}, { send: true })).ok, "send works");
+    const a1 = await mustOk("adminSaveLines", { pcu: P, month: CUR, lines: { [X.code]: { pp: 2 } } }, ADM2);
+    ok(a1 && (await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).request.lines[X.code].pp === 2, "adminSaveLines is not limited by a closed column (paper sheets; same as item locks)");
+
+    // ---- export / import keep it; reopen drops it ----
+    const seed = (await mustOk("adminExportSeed", {}, ADM2)).seed;
+    eq(row(seed.form, X.code).closed_cols, ["pp"], "adminExportSeed carries closed_cols");
+    const fs2 = await mustOk("adminFormSave", { base_version_id: fs1.form.id, note: "2al reopen", form: { steps: withItems(fs1.form, { [X.code]: { closed_cols: undefined } }) } }, ADM2);
+    eq([fs2.diff.cols_changed, "closed_cols" in row(fs2.form, X.code)], [[{ code: X.code, old: ["pp"], new: [] }], false], "reopening the column drops closed_cols");
+    ok((await sv({ [X.code]: { op: 9, pp: 7 } })).ok, "reopened: pp raise ok again");
+    await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+  }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);
 }
