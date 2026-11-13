@@ -50,7 +50,11 @@ export function renderTab6(container, ctx) {
   if (ctx.isCurrentFy()) card.appendChild(row1);
 
   const row2 = el("div", { class: "admin-toolbar" });
-  const picker = el("input", { type: "month", id: "t6-month", value: pick });
+  // 2am: <select> of the year's rounds (Thai labels) instead of the native month input
+  const picker = el("select", { class: "select-input", id: "t6-month" });
+  const pickMonths = ctx.fyMonths();
+  if (pick && !pickMonths.includes(pick)) pickMonths.unshift(pick);
+  pickMonths.forEach((m) => picker.appendChild(el("option", { value: m, selected: m === pick }, ctx.monthLabel(m))));
   const btnPick = el("button", { type: "button", class: "btn btn-secondary", id: "t6-month-pick" }, "ดาวน์โหลดเดือนที่เลือก");
   btnPick.addEventListener("click", () => {
     if (!/^\d{4}-\d{2}$/.test(picker.value)) { toast("เลือกเดือนให้ถูกต้อง", "err"); return; }

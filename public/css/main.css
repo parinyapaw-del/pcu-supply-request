@@ -754,3 +754,15 @@ body.has-fb-fab { padding-bottom: 72px; } /* the end of every page can scroll cl
 .rcv-flag[hidden] { display: none; }
 .rcv-note { width: 100%; box-sizing: border-box; margin-top: 6px; padding: 6px 8px; font-size: 0.95rem; }
 .rcv-actions { position: sticky; bottom: 0; background: var(--bg, #fff); padding: 8px 0; align-items: center; }
+
+/* 2am: card-inline issue notice, compact next-round line, pill names */
+.card-notice { margin: 8px 0 0; color: var(--success); font-weight: 600; }
+.badge-new { margin-left: 4px; }
+.round-card-preview { padding: 8px 14px; }
+.round-card-preview .deadline-line { margin: 4px 0 0; }
+.round-card-preview h3 { font-size: 1rem; }
+.pill-name { display: none; }
+@media (min-width: 640px) {
+  .progress-pill:not(.pill-summary) { width: auto; min-width: 28px; border-radius: 14px; padding: 2px 10px; flex-direction: column; line-height: 1.2; height: auto; min-height: 28px; }
+  .pill-name { display: block; font-size: 0.7rem; font-weight: 400; }
+}

@@ -18,7 +18,7 @@ import { fyExcelMonths, monthMinus } from "../functions/_lib/time.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..");
-const PORT = 8791;
+const PORT = Number(process.env.CAPTURE_PORT) || 8791; // CAPTURE_PORT when :8791 is taken by another project
 const BASE = `http://localhost:${PORT}`;
 const STATE = path.join(REPO, ".wrangler", "capture-state");
 const OUT_DIR = path.join(REPO, "public", "help", "img");
@@ -219,11 +219,11 @@ const SHOTS = (c) => [
   // ---- รพ.สต. (/help) ----
   { img: "login_1.png", role: "guest", url: "index.html#/login", clip: { from: "h2::เข้าสู่ระบบ", to: "#login-help" },
     marks: { pcu: "#pcu-select", pin: "#pin-input", go: "#btn-login", help: "#login-help" } },
-  { img: "login_2.png", role: "pcu", url: "index.html#/home", clip: { from: "#app-header", to: "h2::สวัสดี" },
+  { img: "login_2.png", role: "pcu", url: "index.html#/home", clip: { from: "#app-header", to: ".notice-bar-warn" }, // 2am: the greeting is above the notices now
     marks: { pinbtn: ".notice-bar a::เปลี่ยน PIN", logout: "#btn-logout" } },
   { img: "login_3.png", role: "pcu", url: "index.html#/pin", clip: { from: "h2::เปลี่ยน PIN", to: "#link-cancel-pin" },
     marks: { old: "#pin-old", nw: "#pin-new", confirm: "#pin-confirm", go: "#btn-change-pin" } },
-  { img: "fill_1.png", role: "pcu", url: "index.html#/home", clip: { from: "h2::สวัสดี", to: "h3::ธันวาคม 2569" },
+  { img: "fill_1.png", role: "pcu", url: "index.html#/home", clip: { from: ".fy-line", to: ".round-card-preview" }, // 2am: next round = a line after the open cards
     marks: { card: `button[data-fill="${c.OPEN}"]`, next: ".round-card-preview .badge, .round-card-preview .round-status" } },
   { img: "fill_2.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: "#app-header", to: `input[data-field="op"]`, pad: 60 },
     marks: { pills: ".progress-pill.active", search: "#item-search", stock: `input[data-field="stock"]`, op: `input[data-field="op"]` } },
@@ -283,7 +283,7 @@ const SHOTS = (c) => [
     marks: { undo: `button[data-act="issue-done"][data-unit="LAB"]` } },
   { img: "d-notices_1.png", role: "disp", url: "admin.html#notices", clip: { from: "#t15-flags", to: "#t15-flag-list", pad: 8 },
     marks: { list: "#t15-flag-tbl", search: "#t15-search" } },
-  { img: "d-excel_1.png", role: "disp", url: "admin.html#excel", clip: { x: 0, y: 0, w: 1280, h: 420 },
+  { img: "d-excel_1.png", role: "disp", url: "admin.html#excel", clip: { x: 0, y: 0, w: 1280, h: 500 },
     marks: { now: "#t6-month-now", pick: "#t6-month-pick", fy: "#t6-fy" } },
   { img: "d-excel_2.png", role: "disp", url: "admin.html#status", actions: [{ select: ["#t1-month", "2026-12"] }],
     marks: { month: "#t1-month", open: `a[data-act="open"]`, pdf: `button[data-act="pdf"]` } },

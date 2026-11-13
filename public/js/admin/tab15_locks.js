@@ -85,7 +85,7 @@ export function mountLockCard(container, ctx) {
       { key: "from_month", label: "ล็อกตั้งแต่รอบขอเบิก", type: "select", value: cur ? cur.from_month : shiftMonth(base, 1),
         options: months.map((m) => ({ value: m, label: `${formatMonthKeyThai(m)}${m === base ? " (รอบที่เปิดกรอกตอนนี้)" : ""}` })) },
       { key: "note", label: "หมายเหตุถึง รพ.สต. (ถ้ามี)", maxlength: 200, value: cur ? cur.note || "" : "", placeholder: "เช่น ใช้รายการ … แทน" },
-    ], { okText: "บันทึกล็อก", intro: "รพ.สต. ที่กรอกยอดขอไว้แล้วในรอบนั้น ยอดเดิมยังอยู่ (ลดได้ เพิ่มไม่ได้) — admin แก้ให้ได้ในคีย์/แก้ใบ" });
+    ], { okText: "บันทึกล็อก", intro: "รพ.สต. ที่กรอกยอดขอไว้แล้วในรอบนั้น ยอดเดิมยังอยู่ (ลดได้ เพิ่มไม่ได้) — admin แก้ให้ได้ที่ปุ่ม \"คีย์แทน\" (สถานะรอบ)" });
     if (!v) return;
     try {
       await ctx.adminCall("adminItemLockSet", { code, from_month: v.from_month, note: v.note || null });

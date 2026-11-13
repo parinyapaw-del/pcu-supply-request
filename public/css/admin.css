@@ -63,6 +63,19 @@
 }
 .admin-tabbar button.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
 
+/* ---- 2am: two-level menu — group bar (big, solid) + sub-tab row (light, underline) ---- */
+.admin-groupbar { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.admin-groupbar button {
+  flex: 0 0 auto; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--text); cursor: pointer; font-weight: 700; font-size: 0.95rem; white-space: nowrap;
+}
+.admin-groupbar button.active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+.admin-groupbar + .admin-tabbar { margin-top: 8px; padding-bottom: 0; border-bottom: 1px solid var(--line); gap: 2px; }
+.admin-groupbar + .admin-tabbar button { border: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; background: transparent; font-weight: 600; padding: 8px 12px; }
+.admin-groupbar + .admin-tabbar button.active { background: var(--muted-bg); color: var(--text); border-bottom-color: var(--accent); }
+.admin-tabbar[hidden], .admin-tabbar button[hidden] { display: none !important; }
+.admin-groupbar:not(:has(+ .admin-tabbar:not([hidden]))) { margin-bottom: 16px; }
+
 .admin-panel-body { min-height: 200px; }
 .admin-panel-body.loading { opacity: 0.6; }
 
@@ -243,6 +256,7 @@
 @media (max-width: 600px) {
   .admin-shell { padding: 0 12px 32px; }
   .admin-tabbar { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+  .admin-groupbar button { padding: 9px 12px; font-size: 0.9rem; }
   .round-row { gap: 12px; }
   .admin-toolbar { gap: 8px; }
   .admin-toolbar .select-input { max-width: 100%; }
@@ -255,7 +269,7 @@
 
 /* print (ใบจัดของ) */
 @media print {
-  .admin-tabbar, .admin-header, .app-footer, .admin-toolbar, .no-print, .admin-toast, .exp-btn { display: none !important; }
+  .admin-tabbar, .admin-groupbar, .admin-header, .app-footer, .admin-toolbar, .no-print, .admin-toast, .exp-btn { display: none !important; }
   .admin-panel:not(.active) { display: none !important; }
   .print-title { display: block; margin: 0 0 8px; font-size: 1.1rem; }
   .admin-card { border: none; padding: 0; }

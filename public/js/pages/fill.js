@@ -80,7 +80,7 @@ function applyIssueRefresh(app, month, d) {
 
 // 2ad: the requested quantity of a line whose issue is recorded — or (2af) whose receipt the PCU reported — stays as it is
 // (server: views.lineQtyLocked → line.qty_locked); คงเหลือ / ใช้ไป / ปรับยอด and every other line stay editable until the round closes.
-const QTY_LOCKED_TEXT = "รายการนี้บันทึกจ่ายหรือแจ้งได้รับแล้ว ยอดขอคงไว้ตามเดิม";
+const QTY_LOCKED_TEXT = "ได้ของแล้ว — ยอดขอคงเดิม (คงเหลือยังแก้ได้)";
 function qtyLocked(app, month, code) {
   return !!sync.getLine(pcuCode(app), month, code).qty_locked;
 }
@@ -301,7 +301,14 @@ function renderProgressBar(app, month, stepCode, steps, codes) {
     const locked = !isSummary && issued.has(unitOfStep(steps[i]));
     const dot = document.createElement("a");
     dot.className = "progress-pill" + (isSummary ? " pill-summary" : "") + (code === stepCode ? " active" : i < idx ? " done" : "") + (locked ? " pill-issued" : "");
-    dot.textContent = isSummary ? "สรุป" : String(i + 1);
+    if (isSummary) dot.textContent = "สรุป";
+    else {
+      dot.append(String(i + 1));
+      const nm = document.createElement("span");
+      nm.className = "pill-name";
+      nm.textContent = steps[i].sheet || steps[i].code;
+      dot.appendChild(nm);
+    }
     dot.title = isSummary ? "สรุป" : stepLabel(steps[i]) + (locked ? " (บันทึกจ่ายของแล้ว)" : "");
     dot.href = `#/fill/${code}?month=${month}`;
     dot.addEventListener("click", (ev) => {

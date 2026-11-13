@@ -43,12 +43,24 @@ const TABS = [
   { id: "tab10", hash: "form", label: "แบบฟอร์ม", render: renderTab10 },
   { id: "tab11", hash: "import", label: "นำเข้า / เปิดปีงบใหม่", render: renderTab11 },
   { id: "tab6", hash: "excel", label: "Excel", render: renderTab6, staff: true },
-  { id: "tab7", hash: "pcu", label: "รพ.สต. (PIN / รายการที่ซ่อน)", render: renderTab7 },
+  { id: "tab7", hash: "pcu", label: "รพ.สต. / PIN", render: renderTab7 },
   { id: "tab8", hash: "users", label: "ผู้ใช้", render: renderTab8 },
   { id: "tab9", hash: "system", label: "ระบบ", render: renderTab9 },
   { id: "tab13", hash: "feedback", label: "Feedback", render: renderTab13 }, // admin only (2ab) — badge = bootstrap.feedback_new
   { id: "tab14", hash: "manual", label: "คู่มือ", render: renderTab14, staff: true } // 2ac — dispenser part for everyone, admin part for admin
 ];
+
+// 2am: two-level menu — group bar (.admin-groupbar) + sub-tab row (.admin-tabbar, only the active group's buttons). Tab order = this order.
+const GROUPS = [
+  { id: "g1", label: "งานประจำรอบ", tabs: ["tab1", "tab2", "tab2b", "tab16", "tab6"] },
+  { id: "g2", label: "รายงาน", tabs: ["tab12", "tab3", "tab4"] },
+  { id: "g3", label: "รายการ / ประกาศ", tabs: ["tab15", "tab10", "tab5", "tab7"] },
+  { id: "g4", label: "ตั้งค่าระบบ", tabs: ["tab11", "tab8", "tab9"] },
+  { id: "g5", label: "Feedback / คู่มือ", tabs: ["tab13", "tab14"] }
+];
+const groupTabIdx = (t) => { const g = GROUPS.find((x) => x.tabs.includes(t.id)); return g ? g.tabs.indexOf(t.id) : 99; };
+const groupOfTab = (tid) => (GROUPS.find((g) => g.tabs.includes(tid)) || {}).id || null;
+const lastTabOfGroup = {}; // groupId -> last opened tab id
 
 // 2ac: ❓ → the manual section of the open tab (#manual?s=<id>); a dispenser has only the dispenser part
 const HELP_OF_TAB = {
@@ -242,7 +254,8 @@ function activate(id) {
     try { panels[activeTabId].lifecycle.onHide(); } catch (e) { console.error(e); }
   }
   Object.entries(panels).forEach(([tid, pp]) => pp.section.classList.toggle("active", tid === id));
-  document.querySelectorAll(".admin-tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === id));
+  document.querySelectorAll(".admin-tabbar button").forEach((b) => { const on = b.dataset.tab === id; b.classList.toggle("active", on); b.setAttribute("aria-selected", on ? "true" : "false"); });
+  syncGroups(id);
   if (!p.rendered) {
     p.section.innerHTML = "";
     const tabDef = TABS.find((t) => t.id === id);
@@ -264,15 +277,33 @@ function activate(id) {
   if (btn && btn.scrollIntoView) btn.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
+// 2am: highlight the group of the open tab and show only that group's sub-tab buttons (a one-tab group hides the row)
+function syncGroups(id) {
+  const gid = groupOfTab(id);
+  if (gid) lastTabOfGroup[gid] = id;
+  document.querySelectorAll(".admin-groupbar button").forEach((b) => {
+    const on = b.dataset.group === gid;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
+  const bar = document.querySelector(".admin-tabbar");
+  if (!bar) return;
+  const inGroup = [...bar.querySelectorAll("button")].filter((b) => groupOfTab(b.dataset.tab) === gid);
+  bar.querySelectorAll("button").forEach((b) => { b.hidden = groupOfTab(b.dataset.tab) !== gid; });
+  bar.hidden = inGroup.length < 2;
+}
+
 // 2ab: number of "new" feedback on the Feedback tab button (admin only); tab13 calls this after each change
 function setFeedbackBadge(n) {
   if (state.bootstrap) state.bootstrap.feedback_new = n;
-  const btn = document.querySelector('.admin-tabbar button[data-tab="tab13"]');
-  if (!btn) return;
-  let b = btn.querySelector(".tab-badge");
-  if (!n) { if (b) b.remove(); return; }
-  if (!b) { b = el("span", { class: "tab-badge", "aria-label": "ใหม่" }); btn.appendChild(b); }
-  b.textContent = String(n);
+  // 2am: badge on the tab button and on its group button
+  [document.querySelector('.admin-tabbar button[data-tab="tab13"]'), document.querySelector(`.admin-groupbar button[data-group="${groupOfTab("tab13")}"]`)].forEach((btn) => {
+    if (!btn) return;
+    let b = btn.querySelector(".tab-badge");
+    if (!n) { if (b) b.remove(); return; }
+    if (!b) { b = el("span", { class: "tab-badge", "aria-label": "ใหม่" }); btn.appendChild(b); }
+    b.textContent = String(n);
+  });
 }
 
 function roleLabel(me) {
@@ -304,6 +335,21 @@ function renderShell() {
   if (fyWarn) shell.appendChild(el("div", { class: "notice notice-trial admin-fy-open-warn", id: "admin-fy-open-warn", role: "status" }, fyWarn));
 
   const tabs = visibleTabs();
+  // 2am: group bar above the sub-tab row; groups without a visible tab are not shown
+  const groupbar = el("div", { class: "admin-groupbar", role: "tablist", "aria-label": "หมวดเมนู" });
+  GROUPS.forEach((g) => {
+    const mine = tabs.filter((t) => g.tabs.includes(t.id));
+    if (!mine.length) return;
+    const gb = el("button", { type: "button", "data-group": g.id, role: "tab" }, g.label);
+    gb.addEventListener("click", () => {
+      const want = lastTabOfGroup[g.id];
+      const target = mine.find((t) => t.id === want) || mine[0];
+      activate(target.id);
+    });
+    groupbar.appendChild(gb);
+  });
+  shell.appendChild(groupbar);
+  tabs.sort((a, c) => GROUPS.findIndex((g) => g.tabs.includes(a.id)) - GROUPS.findIndex((g) => g.tabs.includes(c.id)) || groupTabIdx(a) - groupTabIdx(c));
   const tabbar = el("div", { class: "admin-tabbar", role: "tablist" });
   tabs.forEach((t) => {
     const btn = el("button", { type: "button", "data-tab": t.id, role: "tab" }, t.label);

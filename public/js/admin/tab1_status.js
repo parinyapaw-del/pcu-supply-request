@@ -235,15 +235,15 @@ export function renderTab1(container, ctx) {
         ? `<div class="note-line" data-note="${pcu.code}">โน้ต: ${escapeHtml(req.admin_note)} <span class="muted small">(${escapeHtml(formatBangkokDateTime(req.admin_note_at))})</span></div>` : "";
       const canOpen = req && (req.status !== "draft" || (req.progress && req.progress.lines > 0));
       const actions = [
-        canOpen ? `<a class="btn btn-secondary btn-sm" href="${printUrl}" target="_blank" rel="noopener" data-act="open" data-pcu="${pcu.code}">เปิดใบ</a>` : `<span class="muted small">–</span>`
+        canOpen ? `<a class="btn btn-secondary btn-sm" href="${printUrl}" target="_blank" rel="noopener" data-act="open" data-pcu="${pcu.code}" title="เปิดใบเบิกฉบับพิมพ์ (แท็บใหม่)">ดูใบ</a>` : `<span class="muted small">–</span>`
       ];
       if (req && (req.status === "submitted" || req.status === "issued") && !req.no_order) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="pdf" data-pcu="${pcu.code}" title="ดาวน์โหลดใบเบิกเป็น PDF">PDF</button>`);
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="issue" data-pcu="${pcu.code}" title="บันทึกจ่ายจริงของใบนี้">จ่าย</button>`);
       }
-      if (isAdmin && canEnter) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="entry" data-pcu="${pcu.code}" title="admin คีย์/แก้ใบแทน รพ.สต.">คีย์/แก้ใบ</button>`);
+      if (isAdmin && canEnter) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="entry" data-pcu="${pcu.code}" title="admin คีย์/แก้ใบเบิกแทน รพ.สต.">คีย์แทน</button>`);
       if (isAdmin) {
-        actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}">โน้ตขอให้แก้</button>`);
+        actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}" title="ฝากข้อความขอให้ รพ.สต. แก้ใบ — ขึ้นบนการ์ดรอบของเขา">โน้ตถึง รพ.สต.</button>`);
         if (req && req.admin_note) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="clear-note" data-pcu="${pcu.code}">ล้างโน้ต</button>`);
       }
       return `<tr data-pcu="${pcu.code}">
@@ -305,7 +305,7 @@ export function renderTab1(container, ctx) {
 
   async function editNote(pcu, req) {
     const name = (state.bootstrap.pcus.find((p) => p.code === pcu) || {}).name || pcu;
-    const res = await formDialog(`โน้ตขอให้แก้ — ${pcu} ${name}`, [
+    const res = await formDialog(`โน้ตถึง รพ.สต. — ${pcu} ${name}`, [
       { key: "note", label: "ข้อความถึง รพ.สต.", type: "textarea", value: (req && req.admin_note) || "", required: true, maxlength: 500 }
     ], { intro: "รพ.สต. จะเห็นข้อความนี้ในใบเบิก — ไม่เปลี่ยนสถานะใบ", okText: "บันทึกโน้ต" });
     if (res) saveNote(pcu, res.note);

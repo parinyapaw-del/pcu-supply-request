@@ -50,7 +50,7 @@ export function openEntry(ctx, pcuCode, month, { onSaved } = {}) {
   body.appendChild(actions);
 
   let saved = false;
-  const m = openModal(`คีย์/แก้ใบแทน — ${pcu.code} ${pcu.name}`, body, { wide: true, onClose: () => { if (saved && onSaved) onSaved(st.month); } });
+  const m = openModal(`คีย์แทน รพ.สต. — ${pcu.code} ${pcu.name}`, body, { wide: true, onClose: () => { if (saved && onSaved) onSaved(st.month); } });
   m.modal.classList.add("entry-modal");
 
   const lines = () => (st.data && st.data.request && st.data.request.lines) || {};
