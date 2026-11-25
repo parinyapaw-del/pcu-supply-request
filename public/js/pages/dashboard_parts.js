@@ -257,8 +257,13 @@ export function kpiHtml(agg, data) {
   return `
     <div class="dash-kpis">
       ${tile("ขอเบิก", `<strong>${fmt(totals.req)}</strong>`, `สะสมปีงบ ${esc(data.fy)}`)}
-      ${tile("ได้รับจริง", `<strong>${fmt(totals.got)}</strong>`, (data.pcu || data.network) ? "ที่จ่ายแล้ว (เห็นทุกหน่วยจ่าย ไม่ต้องรอจ่ายครบ)" : "นับเฉพาะหน่วยที่จ่ายแล้ว")}
-      ${tile("ใช้ไป", `<strong>${fmt(totals.used)}</strong>`, coverage ? `มีข้อมูล ${esc(coverage.with)}/${esc(coverage.total)} รายการ` : "ตามที่ รพ.สต. กรอก")}
+      ${tile("ได้รับจริง", `<strong>${fmt(totals.got)}</strong>`, (data.pcu || data.network)
+        ? "ตามที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก"
+        : "ตามที่แจ้งรับของ ถ้าไม่ได้แจ้งใช้ยอดผู้จ่าย (เฉพาะหน่วยที่จ่ายครบแล้ว)")}
+      ${tile("ใช้ไป", `<strong>${fmt(totals.used)}</strong>`, [
+        coverage ? `กรอกเอง ${esc(coverage.with)}/${esc(coverage.total)} รายการ` : "ตามที่ รพ.สต. กรอก",
+        totals.est > 0 ? `รวมค่าประมาณจากคงเหลือ ≈ ${fmt(totals.est)}` : "",
+      ].filter(Boolean).join(" · "))}
       ${pctTile}
     </div>${flagNote}`;
 }
@@ -317,9 +322,10 @@ export function detailsListHtml(summary, items) {
 // ---------------------------------------------------------------- brief 2aa cards (PCU dashboard + admin per-PCU view)
 export function spentHtml(rows, data) {
   const total = spentSum(rows, data.spent);
-  return `<div class="dash-card dash-spent"><div class="dash-kpi-label">ใช้ไปสะสมปีงบ ${esc(data.fy)}</div>
+  // 2an: was labelled "ใช้ไปสะสม" — it is the value of what was received (else requested), not the used figure
+  return `<div class="dash-card dash-spent"><div class="dash-kpi-label">มูลค่าของที่เบิกสะสมปีงบ ${esc(data.fy)}</div>
     <div class="dash-kpi-value"><strong>${fmt(total)}</strong> <span class="muted small">บาท</span></div>
-    <p class="muted small dash-caption">คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
+    <p class="muted small dash-caption">ใช้ยอดได้รับจริงถ้ามี ไม่งั้นใช้ยอดขอ · คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
 }
 
 export function stockCardHtml(data) {
@@ -424,7 +430,7 @@ export function tableHtml(agg, data, { heat } = {}) {
         ${rounds.map((_, i) => roundCell(r, i)).join("")}
         <td class="num strong">${cell(r.cum.req)}</td>
         <td class="num">${cell(r.cum.got)}</td>
-        <td class="num">${cell(r.cum.used)}</td>
+        <td class="num"${r.est > 0 ? ` title="${esc(`รวมค่าประมาณจากคงเหลือ ${fmt(r.est)}`)}"` : ""}>${r.est > 0 ? "≈ " : ""}${cell(r.cum.used)}</td>
         <td class="num">${r.plan != null ? fmt(r.plan) : dash}</td>
         <td class="num">${esc(pctText(r.pct))}</td>
         <td class="num">${avg == null ? dash : cell(avg)}</td>
@@ -435,7 +441,7 @@ export function tableHtml(agg, data, { heat } = {}) {
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
   const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""}</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ≈ ใช้ไปมีค่าประมาณ (คงเหลือรอบก่อน + ได้รับ − คงเหลือรอบนี้)</p>
     ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">

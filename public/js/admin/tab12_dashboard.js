@@ -10,11 +10,12 @@ import {
 } from "../pages/dashboard_parts.js";
 import {
   RULE_LABEL, RULE_ORDER, adminGroups, isAdminEmpty, overviewAgg, topItemsNetwork, bottomItemsNetwork, neverItemsNetwork, overPlanItems,
-  groupBreakdown, anomalyRows, rankRows, sortRank,
+  groupBreakdown, anomalyRows, rankRows, sortRank, stockNetRows, stockFilledLatest,
 } from "./dash_calc.js";
 import { mountShortage } from "./shortage.js";
 
 const ANOM_PAGE = 30;
+const STOCK_NET_PAGE = 10;
 const pct1 = (v) => `${Math.round(Number(v) * 1000) / 10}%`;
 
 function anomalyDetail(r) {
@@ -229,7 +230,7 @@ export function renderTab12(container, ctx) {
     box.classList.remove("is-loading");
     box.innerHTML = `
       <h2>แดชบอร์ดภาพรวมเครือข่าย</h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้รับจริง = ที่จ่ายแล้วทุกหน่วย</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้รับจริง = ที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก · ใช้ไปรวมค่าประมาณจากคงเหลือ</p>
       ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
@@ -237,6 +238,7 @@ export function renderTab12(container, ctx) {
         <div id="adm-top3"></div>
         <div class="dash-card"><h3>แยกตามหน่วยจ่าย</h3>
           <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ — แสดงทุกหน่วยจ่ายเสมอ กดแถวเพื่อกรองทั้งหน้า</p><div id="adm-groups"></div></div>
+        <div id="adm-stock"></div>
         <div class="dash-card"><h3>จัดอันดับ รพ.สต.</h3>
           <p class="muted small dash-caption" id="adm-rank-cap"></p><div id="adm-rank"></div></div>
         <div id="adm-anom"></div>
@@ -295,6 +297,8 @@ export function renderTab12(container, ctx) {
     g.innerHTML = groupRowsHtml(groupBreakdown(d, ui.mode));
     g.querySelectorAll(".dash-group").forEach((b) => b.addEventListener("click", () => setUnit(ui.unit === b.dataset.unit ? "all" : b.dataset.unit)));
 
+    renderStockNet();
+
     $("#adm-rank-cap").textContent = `${scope} · ยอดเป็นบาทเสมอ · เดือนสูงสุด/ต่ำสุด (เดือนที่ไม่เบิกไม่นับ) และเกินแผน (รายการสะสมขอ > แผนปี) เป็นตัวเลขของทุกหน่วยจ่าย ไม่เปลี่ยนตามตัวกรอง · รูปแบบการเบิก (pattern) คิดจากทุกหน่วยจ่ายของแห่งนั้น ไม่เปลี่ยนตามตัวกรอง · กดชื่อ รพ.สต. เพื่อดูรายแห่ง`;
     const r = $("#adm-rank");
     r.innerHTML = rankTableHtml(d);
@@ -306,6 +310,32 @@ export function renderTab12(container, ctx) {
     r.querySelectorAll(".adm-link").forEach((b) => b.addEventListener("click", () => openPcu(b.dataset.pcu)));
 
     renderAnomalies();
+  }
+
+  // 2an: network คงเหลือ — latest stock per PCU × item summed, by baht; each item opens to its PCUs
+  function renderStockNet() {
+    const host = box.querySelector("#adm-stock");
+    if (!host) return;
+    const d = ts.overview;
+    const all = stockNetRows(d, ui.unit);
+    const list = all.slice(0, ts.stockLimit || STOCK_NET_PAGE);
+    const latest = stockFilledLatest(d);
+    const filled = latest ? `รอบล่าสุดที่มีการกรอก (${esc(shortRound(latest.round))}): กรอกคงเหลือ ${fmt(latest.n)}/${fmt(latest.total)} แห่ง` : "";
+    const body = list.map((r) => `<tr>
+        <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}${r.group ? ` · ${esc(r.group)}` : ""}</div>
+          <details class="dash-det"><summary>${fmt(r.pcus.length)} แห่ง</summary>
+            <ul class="dash-plain">${r.pcus.map((p) => `<li>${esc(p.name)} <strong>${fmt(p.stock)}</strong> <span class="muted small">${esc(shortRound(p.round))}</span></li>`).join("")}</ul></details></th>
+        <td class="num strong">${fmt(r.qty)}</td><td class="num">${fmt(r.baht)}</td></tr>`).join("");
+    const more = all.length > list.length ? `<button type="button" class="btn btn-secondary adm-stock-more">แสดงเพิ่ม (เหลืออีก ${all.length - list.length} รายการ)</button>` : "";
+    host.innerHTML = `<div class="dash-card" id="adm-stock-card"><h3>คงเหลือรวมทุกแห่ง</h3>
+      <p class="muted small dash-caption">ต่อรายการ รวมคงเหลือล่าสุดของแต่ละ รพ.สต. (รอบล่าสุดที่แห่งนั้นกรอกรายการนี้) · เรียงตามมูลค่า${filled ? ` · ${filled}` : ""}</p>
+      ${!Object.keys(d.stock_net || {}).length ? `<p class="muted">ยังไม่มี รพ.สต. กรอกคงเหลือ</p>` : !all.length ? `<p class="muted">ไม่มีรายการในหน่วยจ่ายนี้</p>` : `
+      <div class="table-scroll dash-table-wrap"><table class="dash-table dash-table-sm">
+        <caption class="sr-only">คงเหลือรวมทุก รพ.สต. ต่อรายการ</caption>
+        <thead><tr><th scope="col" class="dash-name">รายการ</th><th scope="col" class="num">คงเหลือรวม</th><th scope="col" class="num">มูลค่า (บาท)</th></tr></thead>
+        <tbody>${body}</tbody></table></div>${more}`}</div>`;
+    const btn = host.querySelector(".adm-stock-more");
+    if (btn) btn.addEventListener("click", () => { ts.stockLimit = (ts.stockLimit || STOCK_NET_PAGE) + STOCK_NET_PAGE; renderStockNet(); });
   }
 
   function renderAnomalies() {
@@ -362,7 +392,7 @@ export function renderTab12(container, ctx) {
     box.innerHTML = `
       <p class="dash-back"><button type="button" class="btn btn-secondary btn-sm" id="adm-back">← กลับภาพรวมเครือข่าย</button></p>
       <h2>${esc(name)} <span class="muted small">${esc((d.pcu && d.pcu.code) || "")}</span></h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้รับจริง = ที่จ่ายแล้วทุกหน่วย</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้รับจริง = ที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก · ใช้ไปรวมค่าประมาณจากคงเหลือ</p>
       ${controlsHtml(d, ordered, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);

@@ -250,15 +250,20 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // versions). unit_group = step.dispense_unit (2ak A7: an item on no page → "พัสดุ", as the network) · plan_qty = plans.plan_op + plan_pp of (fy, pcu), 0 when none
            // · 2ak A4 plan_baht = plan_qty × price in the fy's latest form (the network ranking's rule), 0 when no plan
            // · 2ak A6 has_used: true when a counted line of the item has used not null (0 counts) — absent otherwise
-  monthly: { code: { "2026-12": [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht] } },
-           // only code × round entries that are not all zero · req = op+pp · got = issued_total when the line's dispense unit (bound form) has an
-           // issue_status row and issued_total is not null (PCU view, Q78 — undone units never leak), else 0 · used = request_lines.used (null → 0)
+  monthly: { code: { "2026-12": [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht, est_qty, est_baht] } },
+           // only code × round entries that are not all zero · req = op+pp · got (2an) = the PCU's own received report (received_reports.qty) when
+           // there is one (req > 0), else issued_total when the line's dispense unit (bound form) has an issue_status row and issued_total is not null
+           // (PCU view, Q78 — undone units never leak), else 0 · used = request_lines.used (null → 0)
+           // · 2an est = "ใช้ไป (ประมาณ)": a line with stock not null and used null whose previous round (prevMonth, same code, counted request,
+           // inside the fy) has stock not null → prev stock + prev received + adj − stock, only when > 0 (received = got of that line by this view's
+           // rule, else its op+pp — as stock.js) · the UI adds est to the used series and marks it ≈ · 2v links: est of an old code counts under the new code
            // baht = qty × price_snapshot (fallback priceFor(fy, code, round), 2p) — same price for req/got/used · baht rounded to 2 decimals
   prev_fy: { months:["2025-11", …], qty:[…], baht:[…] } | null,
            // actual_prev of fy−1 for this pcu, ALIGNED TO `rounds` (same length, index i ↔ rounds[i]): months[i] = the Excel/calendar month of the
            // same round one year earlier = monthMinus(rounds[i], 12) (2w: round X ↔ Excel month X, as tab 4 / fyExcelMonths). qty = Σ op+pp,
            // baht = qty × prices_prev(fy−1) (fallback: price in the latest form of fy−1, else of fy) · null when this pcu has no actual_prev row in fy−1
-  used_coverage: { items_with_used, items_total },   // codes with ≥ 1 counted line whose used is not null · codes with req > 0 in fy
+  used_coverage: { items_with_used, items_total },   // codes with req > 0 that have ≥ 1 counted line whose used is not null (2an: was every code) · codes with req > 0 in fy
+  got_src: { pcu, issuer },    // 2an: counted lines whose got came from the PCU's received report / from the dispenser's issued_total (by the view rule)
            // 2ak A6: the UI shows coverage = requested items with has_used / requested items (both sides of the ratio over the same set)
   flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
            // rule 2 only (Q25): cum_qty (Σ req of fy) > plan_qty × elapsed/12 × 1.2 · elapsed = rounds of `rounds` ≤ currentRound
@@ -590,7 +595,9 @@ price_backdate:{items, requests, lines, delta_baht, months:[first,last]|[]}, pla
 
 ### 5.5 Admin dashboard + "จ่ายไม่พอ" (2s — `functions/_lib/dashboard.js`, spec 2o-2s §6.2–§6.3, brief 2s §6)
 Common rules: **`submitted`/`issued` requests only**, never the trial round (`config.trial_month`), never PCUs of group `ทดลอง` (`TRIAL_GROUP`).
-`V6` = `[req_qty, req_baht, got_qty, got_baht, used_qty, used_baht]` · req = op+pp · **got = staff view**: `issued_total` when not null (no need for the unit to be done; null → 0)
+`V6` (2an: **V8** = V6 + `est_qty, est_baht`, the name V6 is kept below) = `[req_qty, req_baht, got_qty, got_baht, used_qty, used_baht, est_qty, est_baht]` · req = op+pp ·
+**got = staff view**: 2an the PCU's `received_reports.qty` when present, else `issued_total` when not null (no need for the unit to be done; null → 0) · est = ใช้ไป (ประมาณ)
+as §4.2 (staff view: prev received = report → issued_total → op+pp; baht only from `price_snapshot`) — network only (`adminDashboard{pcu}` gets it from §4.2)
 · used = `request_lines.used` (null → 0) · baht = qty × `price_snapshot` (fallback `priceFor(fy, code, round)`, 2p) · baht rounded to 2 decimals, ratios (`pct_plan`, share values) to 4.
 `fy` param: as `pcuDashboard` (absent = `fy_current`; not an integer 1–9999 → `BAD_REQUEST`; no form version of that fy → `NOT_FOUND`). `elapsed` = rounds of `rounds` ≤ currentRound.
 
@@ -615,7 +622,11 @@ Common rules: **`submitted`/`issued` requests only**, never the trial round (`co
             over_plan: {n, codes:[code…]} } ],                              // 2aa (Q13): items with fy-to-date req qty > plan (plan > 0) · item order
                                                                             // every non-trial pcu, req_baht high → low (ties by code)
   flags: [ { pcu, code, rule:"p90"|"pace"|"share", round?, value, threshold } ],    // ordered pcu → item order → rule (p90, pace, share) → round
-  info_new: [ { pcu, code } ]                                  // ordered pcu → item order
+  info_new: [ { pcu, code } ],                                 // ordered pcu → item order
+  // 2an: network คงเหลือ
+  stock_net: { code: { qty, baht, pcus: [[pcu, stock, round]] } },   // per item (2v links → new code): Σ of each pcu's LATEST counted round with stock not null
+                                                               // baht = stock × price_snapshot (fallback latest form price) · pcus by code
+  stock_filled: { round: n_pcus }                              // rounds with ≥ 1 counted line with a stock → distinct pcus
 }
 ```
 - **Rule 1 `p90`** (one flag per pcu × item × round): qty of the round > `stats.p90_m` of (fy−1, pcu, item). `round`, `value` = qty, `threshold` = p90_m. **stats key = the data year**

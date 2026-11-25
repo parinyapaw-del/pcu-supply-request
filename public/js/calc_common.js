@@ -2,7 +2,8 @@
 // Pure, no DOM. V6 = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht].
 
 export const UNIT_ORDER = ["พัสดุ", "จ่ายกลาง", "LAB"];
-export const IDX = { qty: { req: 0, got: 2, used: 4 }, baht: { req: 1, got: 3, used: 5 } };
+// 2an: est = "ใช้ไป (ประมาณ)" from consecutive คงเหลือ (V8 index 6/7) — the "used" series adds it on top of the entered used
+export const IDX = { qty: { req: 0, got: 2, used: 4, est: 6 }, baht: { req: 1, got: 3, used: 5, est: 7 } };
 
 export function num(v) {
   const n = Number(v);

@@ -2692,12 +2692,12 @@ async function main() {
     eq(d.monthly[A.code] && Object.keys(d.monthly[A.code]).sort(), [R1, R2], "A: only rounds 2026-12 + 2027-01 (trial 2026-11 and draft 2027-02 not counted)");
     ok(!Object.values(d.monthly).some((byR) => TRIAL in byR || R3 in byR), "no item has a trial-round or draft-round entry");
     const pA1 = ps(g1[A.code]), pB1 = ps(g1[B.code]), pC1 = ps(g1[CSI.code]), pL1 = ps(g1[LABI.code]), pA2 = ps(g2[A.code]), pB2 = ps(g2[B.code]);
-    eq(d.monthly[A.code][R1], [5, r2(5 * pA1), 3, r2(3 * pA1), 2, r2(2 * pA1)], "A 2026-12 = [req 5, ×snapshot, got 3 (unit done, short), ×snapshot, used 2, ×snapshot]");
-    eq(d.monthly[A.code][R2], [1, r2(pA2), 0, 0, 3, r2(3 * pA2)], "A 2027-01 = [1, …, got 0 (not issued), used 3 × snapshot]");
-    eq(d.monthly[B.code][R1], [2, r2(2 * pB1), bGot, r2(bGot * pB1), 0, 0], `B 2026-12 got ${bGot} (done unit default = requested)`);
-    eq(d.monthly[B.code][R2], [10, r2(10 * pB2), 0, 0, 0, 0], "B 2027-01 (used 0 → used columns 0)");
-    eq(d.monthly[CSI.code][R1], [3, r2(3 * pC1), 0, 0, 0, 0], "CSI: issued_total set but its unit is not done → got 0 (no leak)");
-    eq(d.monthly[LABI.code][R1], [1, r2(pL1), 0, 0, 0, 0], "LAB item: requested, nothing issued");
+    eq(d.monthly[A.code][R1], [5, r2(5 * pA1), 3, r2(3 * pA1), 2, r2(2 * pA1), 0, 0], "A 2026-12 = [req 5, ×snapshot, got 3 (unit done, short), ×snapshot, used 2, ×snapshot]");
+    eq(d.monthly[A.code][R2], [1, r2(pA2), 0, 0, 3, r2(3 * pA2), 0, 0], "A 2027-01 = [1, …, got 0 (not issued), used 3 × snapshot]");
+    eq(d.monthly[B.code][R1], [2, r2(2 * pB1), bGot, r2(bGot * pB1), 0, 0, 0, 0], `B 2026-12 got ${bGot} (done unit default = requested)`);
+    eq(d.monthly[B.code][R2], [10, r2(10 * pB2), 0, 0, 0, 0, 0, 0], "B 2027-01 (used 0 → used columns 0)");
+    eq(d.monthly[CSI.code][R1], [3, r2(3 * pC1), 0, 0, 0, 0, 0, 0], "CSI: issued_total set but its unit is not done → got 0 (no leak)");
+    eq(d.monthly[LABI.code][R1], [1, r2(pL1), 0, 0, 0, 0, 0, 0], "LAB item: requested, nothing issued");
     ok(near(d.monthly[A.code][R1][1], 5 * pA1) && pA1 !== A.price, `baht = qty × price_snapshot (${pA1}; ≠ the import price ${A.price} — 2p repriced A from 2026-12)`);
     eq(d.used_coverage, { items_with_used: 2, items_total: 4 }, "used_coverage: 2 items with a used line (A, B used 0) of 4 requested");
     eq(d.fys, [2570], "fys = [2570] (the trial round does not add a fy)");
@@ -2871,8 +2871,8 @@ async function main() {
     eq(N.pcus.slice(0, 4).map((x) => x.req_baht), expOrder.map((k) => r2(T[k])), "network: req_baht per pcu (trial round + trial group excluded)");
     eq(["PCU98", "PCU01", "PCU11", "PCU12"].map((k) => pc[k].got_baht), [r2((a - 2) * px), r2(qy * py + pw), 0, r2(pkk)],
       "network: got = staff view (issued_total of undone units counted; null → 0)");
-    eq(N.network.items[X.code], [a + b + 2, r2((a + b + 2) * px), a - 2, r2((a - 2) * px), 0, 0], "network.items[X] = V6 without PCU00 (100) and the trial round (50)");
-    eq(N.network.monthly["จ่ายกลาง"], { [R2]: [5, r2(5 * pkk), 1, r2(pkk), 0, 0] }, "network.monthly[จ่ายกลาง] = only R2 (K 5 → got 1)");
+    eq(N.network.items[X.code], [a + b + 2, r2((a + b + 2) * px), a - 2, r2((a - 2) * px), 0, 0, 0, 0], "network.items[X] = V8 without PCU00 (100) and the trial round (50)");
+    eq(N.network.monthly["จ่ายกลาง"], { [R2]: [5, r2(5 * pkk), 1, r2(pkk), 0, 0, 0, 0] }, "network.monthly[จ่ายกลาง] = only R2 (K 5 → got 1)");
     eq(N.network.monthly["พัสดุ"][R1][0], a + qz + 2 + qy + 2 + qy + 1, "network.monthly[พัสดุ][R1] req qty = Σ พัสดุ lines of R1");
     ok(!Object.values(N.network.monthly).some((byR) => TRIAL in byR) && Object.keys(N.network.monthly.LAB).length === 0, "network.monthly: no trial-round key · LAB empty");
     eq(N.items[X.code], { name: X.name, unit: X.unit || "", unit_group: "พัสดุ", net_plan_qty: a + b }, "items[X] = {name, unit, unit_group, net_plan_qty}");
@@ -2921,7 +2921,7 @@ async function main() {
     ok(vr.ok, "adminDashboard{pcu:'pcu98'} (code upper-cased)" + (vr.ok ? "" : ` (${vr.error.code}: ${vr.error.message})`));
     const V = vr.data;
     eq([V.fy, V.pcu, V.elapsed, V.rounds.length], [FY, { code: "PCU98", name: pc.PCU98.name }, 4, 11], "pcu view: fy, pcu {code,name}, elapsed, rounds");
-    eq(V.monthly[X.code][R1], [a, r2(a * px), a - 2, r2((a - 2) * px), 0, 0], "pcu view monthly X R1: got = issued_total although the unit is not done (staff view)");
+    eq(V.monthly[X.code][R1], [a, r2(a * px), a - 2, r2((a - 2) * px), 0, 0, 0, 0], "pcu view monthly X R1: got = issued_total although the unit is not done (staff view)");
     ok(!(TRIAL in V.monthly[X.code]), "pcu view: trial round not counted");
     const pdA = await api("pcuDashboard", { fy: FY }, tok.PCU98, AT);
     ok(pdA.ok && pdA.data.monthly[X.code][R1][2] === 0, "pcuDashboard (PCU view) of the same line: got 0 while the unit is not done");
@@ -4137,6 +4137,63 @@ async function main() {
     eq([fs2.diff.cols_changed, "closed_cols" in row(fs2.form, X.code)], [[{ code: X.code, old: ["pp"], new: [] }], false], "reopening the column drops closed_cols");
     ok((await sv({ [X.code]: { op: 9, pp: 7 } })).ok, "reopened: pp raise ok again");
     await mustOk("devDeleteRequest", { pcu: P, month: CUR });
+  }
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2an: dashboard got = PCU received report → dispenser · ใช้ไป (ประมาณ) from consecutive คงเหลือ · network stock_net");
+  {
+    for (const m of [CUR, PREV]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const FYD = 2570; // PREV / CUR rounds are both in FY2570
+    const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
+    const [X, Y, Z] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const P = b0.pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-29T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (month, lines) => api("saveLines", { month, lines: L(lines), send: true }, TP);
+    const netV = async () => (await mustOk("adminDashboard", { fy: FYD }, ADM2));
+    const itemV = (N, c) => N.network.items[c] || [0, 0, 0, 0, 0, 0, 0, 0];
+    const N0 = await netV();
+    ok(Array.isArray(N0.network.items[Object.keys(N0.network.items)[0]] || []) && "stock_net" in N0 && "stock_filled" in N0, "2an: network payload has stock_net + stock_filled");
+
+    // PREV: X stock 10 req 5 · Y stock 20 req 4 · Z stock 7 (no request) · CUR: X 8 · Y 30 · Z 2 (stock only)
+    ok((await sv(PREV, { [X.code]: { stock: 10, op: 5 }, [Y.code]: { stock: 20, op: 4 }, [Z.code]: { stock: 7 } })).ok, "2an setup: PREV sent");
+    ok((await sv(CUR, { [X.code]: { stock: 8 }, [Y.code]: { stock: 30 }, [Z.code]: { stock: 2 } })).ok, "2an setup: CUR sent (stock only)");
+    await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: 3 }] }, TP); // the PCU says it got 3 of X
+    await mustOk("issueLines", { pcu: P, month: PREV, lines: { [X.code]: { issued_total: 5 }, [Y.code]: { issued_total: 2, reason: "out_of_stock" } } }, ADM2);
+
+    // staff view: X got 3 (report wins over issued 5) · Y got 2 (dispenser) · est CUR: X 10+3−8 = 5 · Y 20+2−30 < 0 → none · Z 7+0−2 = 5
+    const V = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
+    const mv = (D, c, m) => (D.monthly[c] || {})[m] || [0, 0, 0, 0, 0, 0, 0, 0];
+    eq([mv(V, X.code, PREV)[2], mv(V, Y.code, PREV)[2]], [3, 2], "2an staff view: got X = PCU report 3 (not issued 5) · Y = issued 2");
+    eq([mv(V, X.code, CUR)[6], mv(V, Y.code, CUR)[6], mv(V, Z.code, CUR)[6]], [5, 0, 5], "2an staff view: est CUR X 5 · Y negative → 0 · Z (stock-only both rounds) 5");
+    eq(mv(V, X.code, PREV)[6], 0, "2an: no est for the first round with a stock (no previous stock)");
+    ok(Math.abs(mv(V, X.code, CUR)[7] - 5 * mv(V, X.code, PREV)[1] / 5) < 0.01, "2an: est baht = est qty × the line price");
+    eq(V.got_src, { pcu: 1, issuer: 1 }, "2an got_src (staff): 1 line from the PCU report, 1 from the dispenser");
+    eq(V.stock_latest[X.code], { round: CUR, stock: 8, got: 0 }, "2an stock_latest unchanged in shape (CUR stock-only → got 0)");
+
+    // PCU view: Y issued but unit not done → not received (est uses requested 4: 20+4−30 < 0) · X report still counts
+    const PV = await mustOk("pcuDashboard", { fy: FYD }, TP);
+    eq([mv(PV, X.code, PREV)[2], mv(PV, Y.code, PREV)[2]], [3, 0], "2an PCU view: own report counts at once · dispenser figure waits for the unit (Q78)");
+    eq([mv(PV, X.code, CUR)[6], mv(PV, Z.code, CUR)[6]], [5, 5], "2an PCU view: same estimate for X / Z");
+    eq(PV.got_src, { pcu: 1, issuer: 0 }, "2an got_src (PCU view)");
+
+    // network = the same figures added to the totals (delta against the state before the setup)
+    const N1 = await netV();
+    eq([X, Y, Z].map((it) => itemV(N1, it.code)[2] - itemV(N0, it.code)[2]), [3, 2, 0], "2an network items: got delta X 3 · Y 2 · Z 0");
+    eq([X, Y, Z].map((it) => itemV(N1, it.code)[6] - itemV(N0, it.code)[6]), [5, 0, 5], "2an network items: est delta X 5 · Y 0 · Z 5");
+    eq(N1.pcus.find((x) => x.code === P).got_baht > 0, true, "2an pcus[].got_baht includes the PCU report");
+    const sn = (N, c) => ((N.stock_net[c] || { pcus: [] }).pcus.find((x) => x[0] === P) || null);
+    eq([sn(N1, X.code), sn(N1, Y.code), sn(N1, Z.code)], [[P, 8, CUR], [P, 30, CUR], [P, 2, CUR]], "2an stock_net: latest stock of the pcu per item (CUR)");
+    eq((N1.stock_filled[CUR] || 0) - (N0.stock_filled[CUR] || 0), 1, "2an stock_filled[CUR] counts the pcu once");
+
+    // removing the report → back to the dispenser figure
+    await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: null }] }, TP);
+    eq(mv(await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2), X.code, PREV)[2], 5, "2an: report removed → got = issued 5");
+
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);

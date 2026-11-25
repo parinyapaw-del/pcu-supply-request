@@ -1,5 +1,6 @@
 // Brief 2s — pure aggregation helpers for the admin dashboard (no DOM; unit-testable in node).
-// Input = the adminDashboard payload (briefs/2s_admin_dashboard.md §6). V6 = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht].
+// Input = the adminDashboard payload (briefs/2s_admin_dashboard.md §6). V8 = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht,
+// est_qty, est_baht] (2an: est = ใช้ไป ประมาณ from คงเหลือ — added to the "used" series, kept apart in totals.est).
 import { IDX, UNIT_ORDER, cumulative, num, withShares, zeros } from "../calc_common.js";
 
 export const RULE_LABEL = {
@@ -47,6 +48,7 @@ export function overviewAgg(data, mode, unit) {
   const groups = pickGroups(data, unit);
   const monthly = (data.network || {}).monthly || {};
   const perRound = { req: zeros(n), got: zeros(n), used: zeros(n) };
+  let est = 0;
   groups.forEach((g) => {
     const byRound = monthly[g] || {};
     rounds.forEach((r, i) => {
@@ -54,11 +56,12 @@ export function overviewAgg(data, mode, unit) {
       if (!v) return;
       perRound.req[i] += num(v[idx.req]);
       perRound.got[i] += num(v[idx.got]);
-      perRound.used[i] += num(v[idx.used]);
+      perRound.used[i] += num(v[idx.used]) + num(v[idx.est]);
+      est += num(v[idx.est]);
     });
   });
   const cumul = { req: cumulative(perRound.req), got: cumulative(perRound.got), used: cumulative(perRound.used) };
-  const totals = { req: cumul.req[n - 1] || 0, got: cumul.got[n - 1] || 0, used: cumul.used[n - 1] || 0 };
+  const totals = { req: cumul.req[n - 1] || 0, got: cumul.got[n - 1] || 0, used: cumul.used[n - 1] || 0, est };
   let lastActive = -1;
   for (let i = n - 1; i >= 0; i--) {
     if (perRound.req[i] || perRound.got[i] || perRound.used[i]) { lastActive = i; break; }
@@ -137,7 +140,7 @@ export function groupBreakdown(data, mode) {
     const v = net[code] || [];
     const req = num(v[idx.req]);
     const got = num(v[idx.got]);
-    const used = num(v[idx.used]);
+    const used = num(v[idx.used]) + num(v[idx.est]);
     if (req > 0 || got > 0 || used > 0) o.items++;
     o.req += req;
     o.got += got;
@@ -208,4 +211,33 @@ export function sortRank(rows, key, dir) {
     const c = key === "name" ? String(x).localeCompare(String(y), "th") : x - y;
     return c ? sign * c : b.req - a.req || String(a.code).localeCompare(String(b.code));
   });
+}
+
+/**
+ * 2an: network stock card rows from stock_net {code: {qty, baht, pcus:[[pcu, stock, round]]}} for the unit filter, by baht desc.
+ * Each row's pcus carry the PCU name (data.pcus) — the latest round each PCU entered a คงเหลือ for the item.
+ */
+export function stockNetRows(data, unit) {
+  const items = data.items || {};
+  const names = new Map((data.pcus || []).map((p) => [p.code, p.name || p.code]));
+  return Object.keys(data.stock_net || {})
+    .filter((code) => unit === "all" || (items[code] || {}).unit_group === unit)
+    .map((code) => {
+      const e = data.stock_net[code] || {};
+      const it = items[code] || {};
+      return {
+        code, name: it.name || code, unit: it.unit || "", group: it.unit_group || "", qty: num(e.qty), baht: num(e.baht),
+        pcus: (e.pcus || []).map(([pcu, stock, round]) => ({ pcu, name: names.get(pcu) || pcu, stock: num(stock), round })),
+      };
+    })
+    .sort((a, b) => b.baht - a.baht || b.qty - a.qty || a.name.localeCompare(b.name, "th") || a.code.localeCompare(b.code));
+}
+
+/** 2an: the latest round with any คงเหลือ entered → {round, n, total} (total = PCUs in the ranking) or null. */
+export function stockFilledLatest(data) {
+  const f = data.stock_filled || {};
+  const rounds = Object.keys(f).filter((m) => num(f[m]) > 0).sort();
+  if (!rounds.length) return null;
+  const round = rounds[rounds.length - 1];
+  return { round, n: num(f[round]), total: (data.pcus || []).length };
 }

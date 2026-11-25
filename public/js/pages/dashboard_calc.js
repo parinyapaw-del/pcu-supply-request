@@ -1,5 +1,6 @@
 // Brief 2q — pure aggregation helpers for the PCU dashboard (no DOM; unit-testable in node).
-// Input = the `pcuDashboard` payload (functions/API.md): monthly[code][round] = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht].
+// Input = the `pcuDashboard` payload (functions/API.md): monthly[code][round] = [req_qty, req_baht, got_qty, got_baht, used_qty, used_baht,
+// est_qty, est_baht] (2an: est = ใช้ไป ประมาณ from คงเหลือ — folded into the "used" series; row.est / totals.est keep the estimated part).
 
 import { IDX, UNIT_ORDER, cumulative, num, withShares, zeros } from "../calc_common.js";
 import { buildCsvText } from "../csv.js";
@@ -43,14 +44,19 @@ export function buildRows(data, mode) {
     const rb = zeros(n);
     let gq = 0;
     let uq = 0;
+    let eq = 0;
+    let est = 0;
     rounds.forEach((r, i) => {
       const v = byRound[r];
       if (!v) return;
       SERIES_KEYS.forEach((k) => { m[k][i] = num(v[idx[k]]); });
+      m.used[i] += num(v[idx.est]);
+      est += num(v[idx.est]);
       rq[i] = num(v[0]);
       rb[i] = num(v[1]);
       gq += num(v[2]);
       uq += num(v[4]);
+      eq += num(v[6]);
     });
     const cum = {
       req: m.req.reduce((a, b) => a + b, 0),
@@ -74,6 +80,8 @@ export function buildRows(data, mode) {
       cb: rb.reduce((a, b) => a + b, 0),
       gq,
       uq,
+      eq,
+      est,
       planQty,
       hasUsed: !!it.has_used,
       m,
@@ -130,7 +138,7 @@ export function aggregate(data, mode, unit) {
     SERIES_KEYS.forEach((k) => { for (let i = 0; i < n; i++) perRound[k][i] += r.m[k][i]; });
   });
   const cumul = { req: cumulative(perRound.req), got: cumulative(perRound.got), used: cumulative(perRound.used) };
-  const totals = { req: cumul.req[n - 1] || 0, got: cumul.got[n - 1] || 0, used: cumul.used[n - 1] || 0 };
+  const totals = { req: cumul.req[n - 1] || 0, got: cumul.got[n - 1] || 0, used: cumul.used[n - 1] || 0, est: rows.reduce((a, r) => a + r.est, 0) };
   const lastActive = lastActiveIndex(rows, n);
 
   let prevCum = null;
@@ -268,12 +276,12 @@ export function buildCsv(data, rows) {
   const rounds = data.rounds || [];
   const elapsed = num(data.elapsed);
   const head = ["รหัส", "รายการ", "หน่วย", "หน่วยจ่าย", ...rounds.map((r) => `ขอเบิก ${shortRound(r)}`),
-    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้รับจริง", "ใช้ไป", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
+    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้รับจริง", "ใช้ไป", "ใช้ไป (ประมาณจากคงเหลือ)", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
   const r2 = (x) => Math.round(x * 100) / 100;
   return buildCsvText(head, rows.map((r) => {
     const avg = avgPerMonth(r.cq, elapsed);
     return [
-      r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq),
+      r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq), r2(r.eq),
       r.planQty > 0 ? r.planQty : "", r.planQty > 0 ? `${Math.round((r.cq / r.planQty) * 1000) / 10}%` : "",
       avg == null ? "" : r2(avg), avg == null ? "" : r2(avg * 12),
     ];
