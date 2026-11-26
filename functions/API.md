@@ -185,7 +185,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   byMonth: { "2026-11": {                                    // for the 2 shown rounds (also returned by pcuGetMonth)
       request: RequestObj | null,
       used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Oct … Sep rounds, 2w), excluding that round
-      prev_lines: { code: {op,pp,stock,received,received_src:"issued"|"requested"} }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
+      prev_lines: { code: {op,pp,stock,received,received_src:"pcu"|"issued"|"requested"} }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
                                      // rows with op+pp>0 OR stock set; stock null = no baseline; received = issued_total when the item's unit is done
                                      // (issue_status) and issued_total not null, else op+pp; {} if no request / draft. The trial round is an ordinary baseline.
       issue: null | IssueInfo        // 2c; null until >= 1 unit is marked done (PCU view, see below)

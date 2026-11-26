@@ -66,6 +66,14 @@ export function mount(host, opts) {
     let last = -1;
     (all || []).forEach((m, i) => { if (Object.values(src || {}).some((byM) => byM[m] && num(byM[m][8]) > 0)) last = i; });
     const rounds = (all || []).slice(0, last + 1);
+    // 2ar: no dispenser figure anywhere in the fy (before the unit / search filters) → hide "ตามที่หน่วยจ่ายจ่าย" until one is keyed
+    const issAny = Object.values(src || {}).some((byM) => Object.values(byM).some((t) => num(t[7]) > 0));
+    const ib = host.querySelector('[data-hmsrc="iss"]');
+    if (ib) ib.hidden = !issAny;
+    if (!issAny && st.key === "iss") {
+      st.key = "req";
+      host.querySelectorAll("[data-hmsrc]").forEach((x) => { const on = x.dataset.hmsrc === "req"; x.classList.toggle("is-on", on); x.setAttribute("aria-pressed", String(on)); });
+    }
     const def = HEAT_SRC.find((s) => s.key === st.key);
     const unit = opts.getUnit ? opts.getUnit() : "all";
     const q = st.search.trim().toLowerCase();

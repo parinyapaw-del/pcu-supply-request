@@ -1835,6 +1835,18 @@ async function main() {
     const k2 = (await mustOk("devPrintToken", { pcu: "PCU06", month: M2 })).content_key;
     eq(k1, k2, "PDF content_key unchanged by a stock recalc (the printed sheet shows only OP/PP)");
 
+    // ---- 2ar: the PCU's own received report beats the dispenser's figure in the baseline, and saving it recalcs the next round ----
+    await mustOk("pcuReceivedSave", { month: M1, lines: [{ code: A.code, qty: 3 }] }, P);
+    pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
+    m2 = await adm("PCU06", M2);
+    eq([pl2[A.code], pick(m2.lines[A.code]), pick(m2.lines[A2.code]), m2.updated_at],
+      [{ op: 2, pp: 0, stock: 7, received: 3, received_src: "pcu" }, [6, 4, null, null, "used"], [5, 4, null, null, "stock"], u2],
+      "2ar: PCU reports 3 received (dispenser 1) → prev_lines received 3 (pcu) · 2026-12 A stock 7+3−4 = 6, A2 untouched, updated_at untouched");
+    await mustOk("pcuReceivedSave", { month: M1, lines: [{ code: A.code, qty: null }] }, P);
+    pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
+    eq([pl2[A.code].received_src, pick((await adm("PCU06", M2)).lines[A.code])], ["issued", [4, 4, null, null, "used"]],
+      "2ar: report removed → back to the dispenser's figure (stock 7+1−4 = 4)");
+
     // ---- cascade 2 rounds from the trial round, through a locked round ----
     await mustOk("adminLockRound", { month: M2, locked: 1 }, ADM2);
     const u1 = (await adm("PCU06", M1)).updated_at;

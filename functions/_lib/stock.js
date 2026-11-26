@@ -1,6 +1,7 @@
 // stock.js — 2o: stock calculation (mode B). The server owns the formula (spec 2o-2s §3.2/§3.4):
 //   baseline (pcu, round M, item) = the stock of the item on the pcu's prevMonth(M) request, when that request is submitted/issued and stock is not null
-//   received = issued_total when the item's dispense unit is done (issue_status row) and issued_total is not null, else op+pp of that request
+//   received = the PCU's own received report (received_reports.qty) first (2ar — the dashboard's rule since 2an), else issued_total when the
+//   item's dispense unit is done (issue_status row) and issued_total is not null, else op+pp of that request
 //   available = baseline + received + (adj ?? 0) · calc_from 'used' → stock = available − used · 'stock' → used = available − stock · negative → null
 import { formForFy, linkMap, loadForm } from "./db.js";
 import { currentRound, monthFy, nextMonth, prevMonth } from "./time.js";
@@ -11,14 +12,15 @@ export const ADJ_REASON_TH = { received_extra: "ได้รับเพิ่�
 
 const reqIdOf = (pcu, month) => `${pcu}_${month}`; // = views.requestId (kept local: views.js imports this module)
 
-// { code: {op, pp, stock, received, received_src:'issued'|'requested'} } from the pcu's prevMonth(month) request (submitted/issued only).
+// { code: {op, pp, stock, received, received_src:'pcu'|'issued'|'requested'} } from the pcu's prevMonth(month) request (submitted/issued only).
 // Rows: op+pp > 0 or stock not null. No request / draft → {}. Issued figures only for DONE units (same rule as the PCU view, Q78).
 export async function baselineFor(DB, pcu, month) {
   const pm = prevMonth(month);
   const [lineRes, doneRes] = await Promise.all([
     DB.prepare(
-      `SELECT r.form_version_id AS fv, l.item_code AS code, l.stock, COALESCE(l.op,0) AS op, COALESCE(l.pp,0) AS pp, l.issued_total
+      `SELECT r.form_version_id AS fv, l.item_code AS code, l.stock, COALESCE(l.op,0) AS op, COALESCE(l.pp,0) AS pp, l.issued_total, rr.qty AS rq
          FROM requests r JOIN request_lines l ON l.request_id = r.id
+         LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code
         WHERE r.pcu = ? AND r.month = ? AND r.status IN ('submitted','issued') AND (l.stock IS NOT NULL OR COALESCE(l.op,0) + COALESCE(l.pp,0) > 0)`
     ).bind(pcu, pm).all(),
     DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(reqIdOf(pcu, pm)).all(),
@@ -31,10 +33,11 @@ export async function baselineFor(DB, pcu, month) {
   if (done.size) form = rows[0].fv ? await loadForm(DB, rows[0].fv) : await formForFy(DB, monthFy(pm)); // only needed to map item → unit
   for (const r of rows) {
     const ent = form && form.index.get(r.code);
-    const issued = ent && done.has(ent.step.dispense_unit) && r.issued_total !== null && r.issued_total !== undefined;
+    const reported = r.op + r.pp > 0 && r.rq !== null && r.rq !== undefined; // 2ar: the PCU's report wins (as dashboard.js)
+    const issued = !reported && ent && done.has(ent.step.dispense_unit) && r.issued_total !== null && r.issued_total !== undefined;
     out[r.code] = {
       op: r.op, pp: r.pp, stock: r.stock ?? null,
-      received: issued ? r.issued_total : r.op + r.pp, received_src: issued ? "issued" : "requested",
+      received: reported ? r.rq : issued ? r.issued_total : r.op + r.pp, received_src: reported ? "pcu" : issued ? "issued" : "requested",
     };
   }
   // 2v: last round's line of a linked old code is the baseline of the item that replaces it (when that item has none of its own)

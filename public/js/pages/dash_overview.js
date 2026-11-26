@@ -127,7 +127,11 @@ export function mount(host, opts) {
     const mode = opts.getMode() === "baht" ? "baht" : "qty";
     const unit = opts.getUnit ? opts.getUnit() : "all";
     const q = st.search.trim().toLowerCase();
-    let rows = opts.getRows().filter((r) => (unit === "all" || r.group === unit)
+    const all = opts.getRows();
+    // 2ar: no dispenser figure anywhere in this payload (fy) → no จ่ายจริง column (comes back once a dispenser keys one)
+    const showIss = all.some((r) => r.issN > 0);
+    if (!showIss && st.sort.key === "iss") st.sort = { key: "req", dir: "desc" };
+    let rows = all.filter((r) => (unit === "all" || r.group === unit)
       && (q ? r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q) : r.n > 0 || r.gotQ > 0 || r.usedQ > 0 || r.stockQ != null));
     const { key, dir } = st.sort;
     const sign = dir === "asc" ? 1 : -1;
@@ -163,7 +167,7 @@ export function mount(host, opts) {
         <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</div></th>
         <td class="num">${cell(money ? r.reqB : r.reqQ)}</td>
         ${srcCell(r, r.pcuQ, r.pcuB, r.pcuN)}
-        ${srcCell(r, r.issQ, r.issB, r.issN)}
+        ${showIss ? srcCell(r, r.issQ, r.issB, r.issN) : ""}
         <td class="num"${est ? ` title="${esc(`รวมค่าประมาณจากคงเหลือ ${formatQty(r.estQ)}`)}"` : ""}>${est ? "≈ " : ""}${cell(used)}</td>
         <td class="num">${stock == null ? dash : `<span class="strong">${f(stock)}</span>${r.stockNote ? ` <span class="muted small">${esc(r.stockNote)}</span>` : ""}${add}`}</td>
         <td class="num">${r.left == null ? dash : `<strong>~${esc(monthsText(r.left))}</strong> <span class="muted small">เดือน</span>`}</td></tr>`;
@@ -171,11 +175,11 @@ export function mount(host, opts) {
     const rest = total - rows.length;
     const more = rest > 0 ? `<div class="ov-more-row"><button type="button" class="btn btn-secondary ov-more">${opts.page ? `ดูทั้งหมด (อีก ${rest} รายการ)` : `แสดงเพิ่ม (เหลืออีก ${rest} รายการ)`}</button></div>`
       : opts.page && total > page ? `<div class="ov-more-row"><button type="button" class="btn btn-secondary ov-less">ย่อเหลือ ${page} รายการ</button></div>` : "";
-    t.innerHTML = `<p class="muted small" aria-live="polite">แสดง ${rows.length} จาก ${total} รายการ · ${money ? "บาท" : "จำนวน (หน่วยเบิก)"} · ได้รับ / จ่ายจริง: กรอก 0 แสดง 0 · “ยังไม่มีข้อมูล” = ขอเบิกแต่ยังไม่ได้กรอก · (a/n) = กรอกแล้วบางส่วน · พอใช้อีก = คงเหลือ ÷ ใช้ไปเฉลี่ยต่อเดือน · ≈ ใช้ไปมีค่าประมาณจากคงเหลือ</p>
+    t.innerHTML = `<p class="muted small" aria-live="polite">แสดง ${rows.length} จาก ${total} รายการ · ${money ? "บาท" : "จำนวน (หน่วยเบิก)"} · ${showIss ? "ได้รับ / จ่ายจริง" : "ได้รับ"}: กรอก 0 แสดง 0 · “ยังไม่มีข้อมูล” = ขอเบิกแต่ยังไม่ได้กรอก · (a/n) = กรอกแล้วบางส่วน · พอใช้อีก = คงเหลือ ÷ ใช้ไปเฉลี่ยต่อเดือน · ≈ ใช้ไปมีค่าประมาณจากคงเหลือ${showIss ? "" : " · ยังไม่มียอดจ่ายจริงจากหน่วยจ่ายในปีงบนี้ (ซ่อนคอลัมน์ไว้)"}</p>
       ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
       <div class="table-scroll dash-table-wrap"><table class="dash-table dash-table-sm ov-tbl">
-        <caption class="sr-only">ภาพรวมต่อรายการ: ขอเบิก ได้รับที่ รพ.สต. กรอก จ่ายจริงที่หน่วยจ่ายบันทึก ใช้ไป คงเหลือ พอใช้อีกกี่เดือน</caption>
-        <thead><tr>${th("name", "รายการ")}${th("req", "ขอเบิก")}${th("pcu", "ได้รับ (รพ.สต. กรอก)", "ยอดที่ รพ.สต. แจ้งว่าได้รับ")}${th("iss", "จ่ายจริง (หน่วยจ่าย)", "ยอดที่หน่วยจ่ายบันทึกว่าจ่าย")}${th("used", "ใช้ไป")}${th("stock", "คงเหลือ")}${th("left", "พอใช้อีก ~เดือน")}</tr></thead>
+        <caption class="sr-only">ภาพรวมต่อรายการ: ขอเบิก ได้รับที่ รพ.สต. กรอก${showIss ? " จ่ายจริงที่หน่วยจ่ายบันทึก" : ""} ใช้ไป คงเหลือ พอใช้อีกกี่เดือน</caption>
+        <thead><tr>${th("name", "รายการ")}${th("req", "ขอเบิก")}${th("pcu", "ได้รับ (รพ.สต. กรอก)", "ยอดที่ รพ.สต. แจ้งว่าได้รับ")}${showIss ? th("iss", "จ่ายจริง (หน่วยจ่าย)", "ยอดที่หน่วยจ่ายบันทึกว่าจ่าย") : ""}${th("used", "ใช้ไป")}${th("stock", "คงเหลือ")}${th("left", "พอใช้อีก ~เดือน")}</tr></thead>
         <tbody>${body}</tbody></table></div>${more}`}`;
     t.querySelectorAll(".ov-sort").forEach((b) => b.addEventListener("click", () => {
       const k = b.dataset.sort;

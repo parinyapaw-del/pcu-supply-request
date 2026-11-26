@@ -633,6 +633,8 @@ export async function pcuReceivedSave(ctx, p) {
     stmts.push(auditStmt(DB, pcu.code, "pcu", "pcuReceivedSave", pcu.code, month,
       plan.map((x) => (x.del ? `${x.code}=null` : `${x.code}=${x.qty}`)).join(" ").slice(0, 1500)));
     await batchChunked(DB, stmts);
+    // 2ar: what the PCU got is the next round's received (stock.js baselineFor) → its calc lines follow (writes changed lines only)
+    if (reqRow.status !== "draft") await recalcStockChain(DB, pcu.code, month);
   }
   const { view } = await pcuMonthView(DB, pcu.code, month, cfg.fy_current);
   return { changed: plan.length, request: view.request, issue: view.issue };

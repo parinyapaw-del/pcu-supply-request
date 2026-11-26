@@ -814,7 +814,7 @@ function hintHtml(app, month, item) {
     if (prev.received === undefined) {
       html += `<div class="ghost-line">รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}</div>`; // old server without 2o fields
     } else {
-      const src = prev.received_src === "issued" ? "จ่ายจริง" : "ตามที่ขอ";
+      const src = prev.received_src === "pcu" ? "ตามที่แจ้งรับ" : prev.received_src === "issued" ? "จ่ายจริง" : "ตามที่ขอ"; // 2ar
       html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ไม่ได้กรอกคงเหลือ" : `คงเหลือ ${formatQty(prev.stock)}`} · ได้รับ ${formatInt(Number(prev.received) || 0)} (${src})${opPp}</div>`;
     }
   }
