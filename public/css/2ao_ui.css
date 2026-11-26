@@ -17,3 +17,13 @@ td .t10-pack-row input.t10-in.t10-in-pack { display: block; width: 100%; min-wid
 .hm-head { margin-bottom: 8px; }
 .hm-tbl .hm-none { white-space: nowrap; }
 .hm-part { font-size: 0.7rem; }
+
+/* 2as: per-round ledger (expand row in ภาพรวมต่อรายการ) + "not entered yet" tags */
+.ov-led-btn { margin-left: 6px; padding: 0 6px; min-height: 24px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 0.85em; cursor: pointer; }
+.ov-led-row > td { background: var(--surface-2, var(--surface)); padding: 8px 12px; }
+.led-tbl { max-width: 520px; margin: 0 0 4px; }
+.led-tag { display: inline-block; padding: 0 6px; border-radius: 6px; font-size: 0.85em; border: 1px solid var(--line); color: var(--muted, inherit); white-space: nowrap; }
+.led-tag.led-miss { border-color: #d9a400; color: #8a6400; background: color-mix(in srgb, #ffd54a 18%, transparent); }
+.led-tag.led-warn { border-color: #c62828; color: #c62828; }
+.led-notice .led-list { margin: 0 0 4px; padding-left: 18px; }
+@media (prefers-color-scheme: dark) { .led-tag.led-miss { color: #ffd54a; } .led-tag.led-warn { color: #ff8a80; border-color: #ff8a80; } }

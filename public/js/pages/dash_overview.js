@@ -8,6 +8,7 @@ import { formatInt } from "../format.js";
 import { formatQty } from "../units.js";
 import { num } from "../calc_common.js";
 import { shortRound } from "./dashboard_calc.js";
+import { ledgerTableHtml } from "./dash_ledger.js"; // 2as
 
 const PAGE = 50;
 const dash = '<span class="muted">–</span>';
@@ -60,6 +61,7 @@ export function pcuOverviewRows(data) {
       stockQ: stock, stockB: stock == null ? null : stock * price, stockNote: e ? shortRound(e.round) : "",
       stockGot: e ? (e.got == null ? null : num(e.got)) : 0, // 2aq: ได้เพิ่ม in the stock's round (null = requested, not received yet)
       left: monthsLeft(stock, uq, um),
+      ledger: (data.ledger || {})[code] || null, mode: data.received_mode || "pcu", // 2as: the per-round ledger (expand row)
     });
   });
   return rows;
@@ -104,7 +106,7 @@ const SORTERS = {
  */
 export function mount(host, opts) {
   const page = opts.page || PAGE;
-  const st = { search: "", sort: { key: "req", dir: "desc" }, limit: page, built: false };
+  const st = { search: "", sort: { key: "req", dir: "desc" }, limit: page, built: false, open: new Set() }; // 2as: open = codes showing their ledger
 
   function shell() {
     const inner = `<p class="muted small dash-caption">${opts.caption || ""}</p>
@@ -163,19 +165,22 @@ export function mount(host, opts) {
       // 2aq: the old คงเหลือ card's ของเดิม + ได้เพิ่ม = รวม, under the figure (qty mode, PCU rows only)
       const add = !money && stock != null && r.stockGot !== 0
         ? `<div class="muted small">${r.stockGot == null ? "ได้เพิ่ม รอจ่าย" : `+ ได้เพิ่ม ${formatQty(r.stockGot)} = ${formatQty(r.stockQ + r.stockGot)}`}</div>` : "";
+      const open = r.ledger && st.open.has(r.code);
+      const ledBtn = r.ledger ? ` <button type="button" class="ov-led-btn" data-led="${esc(r.code)}" aria-expanded="${open}">${open ? "ซ่อนรายเดือน" : "ดูรายเดือน"}</button>` : "";
+      const ledRow = open ? `<tr class="ov-led-row"><td colspan="${showIss ? 7 : 6}">${ledgerTableHtml(r.ledger, r.mode)}</td></tr>` : "";
       return `<tr>
-        <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</div></th>
+        <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}${ledBtn}</div></th>
         <td class="num">${cell(money ? r.reqB : r.reqQ)}</td>
         ${srcCell(r, r.pcuQ, r.pcuB, r.pcuN)}
         ${showIss ? srcCell(r, r.issQ, r.issB, r.issN) : ""}
-        <td class="num"${est ? ` title="${esc(`รวมค่าประมาณจากคงเหลือ ${formatQty(r.estQ)}`)}"` : ""}>${est ? "≈ " : ""}${cell(used)}</td>
+        <td class="num"${est ? ` title="${esc(`ในนี้ ${formatQty(r.estQ)} คิดด้วยยอดเบิกแทนได้มาจริง (ยังไม่กรอก)`)}"` : ""}>${est ? "≈ " : ""}${cell(used)}</td>
         <td class="num">${stock == null ? dash : `<span class="strong">${f(stock)}</span>${r.stockNote ? ` <span class="muted small">${esc(r.stockNote)}</span>` : ""}${add}`}</td>
-        <td class="num">${r.left == null ? dash : `<strong>~${esc(monthsText(r.left))}</strong> <span class="muted small">เดือน</span>`}</td></tr>`;
+        <td class="num">${r.left == null ? dash : `<strong>~${esc(monthsText(r.left))}</strong> <span class="muted small">เดือน</span>`}</td></tr>${ledRow}`;
     }).join("");
     const rest = total - rows.length;
     const more = rest > 0 ? `<div class="ov-more-row"><button type="button" class="btn btn-secondary ov-more">${opts.page ? `ดูทั้งหมด (อีก ${rest} รายการ)` : `แสดงเพิ่ม (เหลืออีก ${rest} รายการ)`}</button></div>`
       : opts.page && total > page ? `<div class="ov-more-row"><button type="button" class="btn btn-secondary ov-less">ย่อเหลือ ${page} รายการ</button></div>` : "";
-    t.innerHTML = `<p class="muted small" aria-live="polite">แสดง ${rows.length} จาก ${total} รายการ · ${money ? "บาท" : "จำนวน (หน่วยเบิก)"} · ${showIss ? "ได้รับ / จ่ายจริง" : "ได้รับ"}: กรอก 0 แสดง 0 · “ยังไม่มีข้อมูล” = ขอเบิกแต่ยังไม่ได้กรอก · (a/n) = กรอกแล้วบางส่วน · พอใช้อีก = คงเหลือ ÷ ใช้ไปเฉลี่ยต่อเดือน · ≈ ใช้ไปมีค่าประมาณจากคงเหลือ${showIss ? "" : " · ยังไม่มียอดจ่ายจริงจากหน่วยจ่ายในปีงบนี้ (ซ่อนคอลัมน์ไว้)"}</p>
+    t.innerHTML = `<p class="muted small" aria-live="polite">แสดง ${rows.length} จาก ${total} รายการ · ${money ? "บาท" : "จำนวน (หน่วยเบิก)"} · ${showIss ? "ได้รับ / จ่ายจริง" : "ได้รับ"}: กรอก 0 แสดง 0 · “ยังไม่มีข้อมูล” = ขอเบิกแต่ยังไม่ได้กรอก · (a/n) = กรอกแล้วบางส่วน · พอใช้อีก = คงเหลือ ÷ ใช้ไปเฉลี่ยต่อเดือน · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป · ≈ บางรอบยังไม่กรอกได้มาจริง ใช้ยอดเบิกแทน${showIss ? "" : " · ยังไม่มียอดจ่ายจริงจากหน่วยจ่ายในปีงบนี้ (ซ่อนคอลัมน์ไว้)"}</p>
       ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
       <div class="table-scroll dash-table-wrap"><table class="dash-table dash-table-sm ov-tbl">
         <caption class="sr-only">ภาพรวมต่อรายการ: ขอเบิก ได้รับที่ รพ.สต. กรอก${showIss ? " จ่ายจริงที่หน่วยจ่ายบันทึก" : ""} ใช้ไป คงเหลือ พอใช้อีกกี่เดือน</caption>
@@ -184,6 +189,11 @@ export function mount(host, opts) {
     t.querySelectorAll(".ov-sort").forEach((b) => b.addEventListener("click", () => {
       const k = b.dataset.sort;
       st.sort = st.sort.key === k ? { key: k, dir: st.sort.dir === "asc" ? "desc" : "asc" } : { key: k, dir: k === "name" ? "asc" : "desc" };
+      table();
+    }));
+    t.querySelectorAll(".ov-led-btn").forEach((b) => b.addEventListener("click", () => { // 2as
+      const k = b.dataset.led;
+      if (st.open.has(k)) st.open.delete(k); else st.open.add(k);
       table();
     }));
     const mb = t.querySelector(".ov-more");

@@ -390,7 +390,7 @@ async function main() {
   for (const k of ["server_time", "current_month", "current_round", "pcu", "config", "form_version_id", "form", "rounds", "next_round", "history", "hidden", "never_prev", "limits", "plans", "unlocks", "byMonth", "issue_notices"]) ok(k in pb, `bootstrap has "${k}"`);
   eq(pb.current_month, CAL, "bootstrap.current_month = calendar month (honours X-Dev-Month)");
   eq(pb.current_round, ROUND, "bootstrap.current_round = calendar month + 1 (2j)");
-  eq(pb.config, { limit_mode: "off", limits_retired: true, stock_required: 0, deadline_day: null, fy_current: 2570, trial_month: null }, "bootstrap.config (+ trial_month null · 2ad: limit_mode off from fy 2570)");
+  eq(pb.config, { limit_mode: "off", limits_retired: true, stock_required: 0, deadline_day: null, fy_current: 2570, trial_month: null, received_mode: "pcu" }, "bootstrap.config (+ trial_month null · 2ad: limit_mode off from fy 2570)");
   eq(pb.rounds.map((r) => r.month), [ROUND, PREV_ROUND], "bootstrap.rounds = [currentRound, prevRound] = [CAL+1, CAL]");
   eq(pb.rounds.map((r) => r.fy), [2570, 2570], "rounds 2026-12 / 2026-11 are both FY2570");
   eq(pb.rounds.map((r) => r.deadline_date), ["2026-11-30", "2026-10-31"], "deadline = last day of the month BEFORE the round (submission month)");
@@ -1720,6 +1720,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("stock mode (2o): used / adj / calc_from + server recalc");
   {
+    await mustOk("adminSetConfig", { key: "received_mode", value: "issuer" }, ADM2); // 2as: these cases are about the dispenser's figure
     const M0 = "2026-10", M1 = PREV, M2 = CUR; // M0 = the trial round (FY2569) — a valid baseline since 2026-10-20 (no special-casing)
     const H0 = { month: "2026-09" }; // calendar 2026-09 → round 2026-10 open for keying
     await mustOk("adminSetLimitMode", { mode: "off" }, ADM2);
@@ -1835,17 +1836,28 @@ async function main() {
     const k2 = (await mustOk("devPrintToken", { pcu: "PCU06", month: M2 })).content_key;
     eq(k1, k2, "PDF content_key unchanged by a stock recalc (the printed sheet shows only OP/PP)");
 
-    // ---- 2ar: the PCU's own received report beats the dispenser's figure in the baseline, and saving it recalcs the next round ----
+    // ---- 2ar / 2as: received_mode — "pcu" = the PCU's own report (missing → ยอดขอ) · switching recalcs every chain ----
+    expectErr(await api("adminSetConfig", { key: "received_mode", value: "both" }, ADM2), "BAD_REQUEST", "2as: received_mode must be pcu / issuer");
+    const sw = await mustOk("adminSetConfig", { key: "received_mode", value: "pcu" }, ADM2);
+    m2 = await adm("PCU06", M2);
+    eq([sw.config.received_mode, sw.recalced >= 2, pick(m2.lines[A.code]), pick(m2.lines[A2.code]), m2.updated_at],
+      ["pcu", true, [5, 4, null, null, "used"], [5, 6, null, null, "stock"], u2],
+      "2as: mode pcu (no report) → received = ขอ (A 7+2−4 = 5 · A2 used 8+3−5 = 6), the dispenser's 1 ignored, recalced on the switch");
     await mustOk("pcuReceivedSave", { month: M1, lines: [{ code: A.code, qty: 3 }] }, P);
     pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
     m2 = await adm("PCU06", M2);
     eq([pl2[A.code], pick(m2.lines[A.code]), pick(m2.lines[A2.code]), m2.updated_at],
-      [{ op: 2, pp: 0, stock: 7, received: 3, received_src: "pcu" }, [6, 4, null, null, "used"], [5, 4, null, null, "stock"], u2],
-      "2ar: PCU reports 3 received (dispenser 1) → prev_lines received 3 (pcu) · 2026-12 A stock 7+3−4 = 6, A2 untouched, updated_at untouched");
+      [{ op: 2, pp: 0, stock: 7, received: 3, received_src: "pcu" }, [6, 4, null, null, "used"], [5, 6, null, null, "stock"], u2],
+      "2ar: PCU reports 3 received → prev_lines received 3 (pcu) · 2026-12 A stock 7+3−4 = 6, A2 untouched, updated_at untouched");
     await mustOk("pcuReceivedSave", { month: M1, lines: [{ code: A.code, qty: null }] }, P);
     pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
-    eq([pl2[A.code].received_src, pick((await adm("PCU06", M2)).lines[A.code])], ["issued", [4, 4, null, null, "used"]],
-      "2ar: report removed → back to the dispenser's figure (stock 7+1−4 = 4)");
+    eq([pl2[A.code].received_src, pick((await adm("PCU06", M2)).lines[A.code])], ["requested", [5, 4, null, null, "used"]],
+      "2ar: report removed → ขอ again (stock 7+2−4 = 5)");
+    await mustOk("adminSetConfig", { key: "received_mode", value: "issuer" }, ADM2);
+    pl2 = (await mustOk("pcuGetMonth", { month: M2 }, P)).prev_lines;
+    m2 = await adm("PCU06", M2);
+    eq([pl2[A.code].received_src, pick(m2.lines[A.code]), pick(m2.lines[A2.code])], ["issued", [4, 4, null, null, "used"], [5, 4, null, null, "stock"]],
+      "2as: back to issuer → the dispenser's 1 (A 7+1−4 = 4 · A2 8+1−5 = 4)");
 
     // ---- cascade 2 rounds from the trial round, through a locked round ----
     await mustOk("adminLockRound", { month: M2, locked: 1 }, ADM2);
@@ -1903,6 +1915,7 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  await mustOk("adminSetConfig", { key: "received_mode", value: "pcu" }, ADM2); // 2as: back to the default
   section("form editor (2d)");
   {
     const cl = (o) => JSON.parse(JSON.stringify(o));
@@ -2644,6 +2657,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("PCU dashboard (2q)");
   {
+    await mustOk("adminSetConfig", { key: "received_mode", value: "issuer" }, ADM2); // 2as: 2q / 2s count the dispenser's figure as ได้รับ
     // PCU98 (added in 2n, no data yet) · trial round = 2026-11 (inside FY2570 here, so it must be dropped) · rounds 2026-12 / 2027-01 sent, 2027-02 draft
     const P = "PCU98", TRIAL = "2026-11", R1 = "2026-12", R2 = "2027-01", R3 = "2027-02";
     const AT_R2 = { month: R2 }; // calendar 2027-01 → currentRound 2027-02, prevRound 2027-01
@@ -2711,8 +2725,9 @@ async function main() {
     eq(d.monthly[A.code] && Object.keys(d.monthly[A.code]).sort(), [R1, R2], "A: only rounds 2026-12 + 2027-01 (trial 2026-11 and draft 2027-02 not counted)");
     ok(!Object.values(d.monthly).some((byR) => TRIAL in byR || R3 in byR), "no item has a trial-round or draft-round entry");
     const pA1 = ps(g1[A.code]), pB1 = ps(g1[B.code]), pC1 = ps(g1[CSI.code]), pL1 = ps(g1[LABI.code]), pA2 = ps(g2[A.code]), pB2 = ps(g2[B.code]);
-    eq(d.monthly[A.code][R1], [5, r2(5 * pA1), 3, r2(3 * pA1), 2, r2(2 * pA1), 0, 0], "A 2026-12 = [req 5, ×snapshot, got 3 (unit done, short), ×snapshot, used 2, ×snapshot]");
-    eq(d.monthly[A.code][R2], [1, r2(pA2), 0, 0, 3, r2(3 * pA2), 0, 0], "A 2027-01 = [1, …, got 0 (not issued), used 3 × snapshot]");
+    eq(d.monthly[A.code][R1], [5, r2(5 * pA1), 3, r2(3 * pA1), 3, r2(3 * pA1), 0, 0],
+      "A 2026-12 = [req 5, ×snapshot, got 3 (unit done, short), ×snapshot, 2as: used 3 typed on the 2027-01 sheet (= ใช้ไปของ 2026-12) × 2026-12 price]");
+    eq(d.monthly[A.code][R2], [1, r2(pA2), 0, 0, 0, 0, 0, 0], "A 2027-01 = [1, …, got 0 (not issued), 2as: used unknown until the 2027-02 sheet is sent] · used 2 on the 2026-12 sheet belongs to the trial round (dropped)");
     eq(d.monthly[B.code][R1], [2, r2(2 * pB1), bGot, r2(bGot * pB1), 0, 0, 0, 0], `B 2026-12 got ${bGot} (done unit default = requested)`);
     eq(d.monthly[B.code][R2], [10, r2(10 * pB2), 0, 0, 0, 0, 0, 0], "B 2027-01 (used 0 → used columns 0)");
     eq(d.monthly[CSI.code][R1], [3, r2(3 * pC1), 0, 0, 0, 0, 0, 0], "CSI: issued_total set but its unit is not done → got 0 (no leak)");
@@ -3056,6 +3071,7 @@ async function main() {
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
+  await mustOk("adminSetConfig", { key: "received_mode", value: "pcu" }, ADM2); // 2as: back to the default
   section("same-fy override import + requests follow the latest form (2t)");
   {
     const cl = (o) => JSON.parse(JSON.stringify(o));
@@ -4166,7 +4182,7 @@ async function main() {
     const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
     const [X, Y, Z] = st.rows.filter((r) => r.type === "item" && r.active !== false);
     const P = b0.pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
-    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+    for (const m of [CUR, PREV, NEXT]) await mustOk("devDeleteRequest", { pcu: P, month: m });
     const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
     let n = 0;
     const tsn = () => new Date(Date.parse("2026-11-29T00:00:00Z") + ++n * 1000).toISOString();
@@ -4177,40 +4193,56 @@ async function main() {
     const N0 = await netV();
     ok(Array.isArray(N0.network.items[Object.keys(N0.network.items)[0]] || []) && "stock_net" in N0 && "stock_filled" in N0, "2an: network payload has stock_net + stock_filled");
 
-    // PREV: X stock 10 req 5 · Y stock 20 req 4 · Z stock 7 (no request) · CUR: X 8 · Y 30 · Z 2 (stock only)
-    ok((await sv(PREV, { [X.code]: { stock: 10, op: 5 }, [Y.code]: { stock: 20, op: 4 }, [Z.code]: { stock: 7 } })).ok, "2an setup: PREV sent");
-    ok((await sv(CUR, { [X.code]: { stock: 8 }, [Y.code]: { stock: 30 }, [Z.code]: { stock: 2 } })).ok, "2an setup: CUR sent (stock only)");
+    // 2as (Save's ledger): PREV: X stock 10 req 5 · Y stock 20 req 4 · Z stock 7 (no request) · CUR: X 8 · Y 18 · Z 2 (stock only)
+    ok((await sv(PREV, { [X.code]: { stock: 10, op: 5 }, [Y.code]: { stock: 20, op: 4 }, [Z.code]: { stock: 7 } })).ok, "2as setup: PREV sent");
+    ok((await sv(CUR, { [X.code]: { stock: 8 }, [Y.code]: { stock: 18 }, [Z.code]: { stock: 2 } })).ok, "2as setup: CUR sent (stock only)");
     await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: 3 }] }, TP); // the PCU says it got 3 of X
     await mustOk("issueLines", { pcu: P, month: PREV, lines: { [X.code]: { issued_total: 5 }, [Y.code]: { issued_total: 2, reason: "out_of_stock" } } }, ADM2);
 
-    // staff view: X got 3 (report wins over issued 5) · Y got 2 (dispenser) · est CUR: X 10+3−8 = 5 · Y 20+2−30 < 0 → none · Z 7+0−2 = 5
+    // mode pcu (default): ได้มาจริง = the PCU's report only · ใช้ไป PREV = stock PREV + ได้มาจริง − stock CUR (missing → ยอดเบิก, "≈")
     const V = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
     const mv = (D, c, m) => (D.monthly[c] || {})[m] || [0, 0, 0, 0, 0, 0, 0, 0];
-    eq([mv(V, X.code, PREV)[2], mv(V, Y.code, PREV)[2]], [3, 2], "2an staff view: got X = PCU report 3 (not issued 5) · Y = issued 2");
-    eq([mv(V, X.code, CUR)[6], mv(V, Y.code, CUR)[6], mv(V, Z.code, CUR)[6]], [5, 0, 5], "2an staff view: est CUR X 5 · Y negative → 0 · Z (stock-only both rounds) 5");
-    eq(mv(V, X.code, PREV)[6], 0, "2an: no est for the first round with a stock (no previous stock)");
-    ok(Math.abs(mv(V, X.code, CUR)[7] - 5 * mv(V, X.code, PREV)[1] / 5) < 0.01, "2an: est baht = est qty × the line price");
-    eq(V.got_src, { pcu: 1, issuer: 1 }, "2an got_src (staff): 1 line from the PCU report, 1 from the dispenser");
+    const pX = mv(V, X.code, PREV)[1] / 5;
+    eq([V.received_mode, mv(V, X.code, PREV)[2], mv(V, Y.code, PREV)[2]], ["pcu", 3, 0], "2as staff view, mode pcu: got X = report 3 (issued 5 ignored) · Y = 0 (no report; issued 2 ignored)");
+    eq([X, Y, Z].map((it) => [mv(V, it.code, PREV)[4], mv(V, it.code, PREV)[6]]), [[5, 0], [0, 6], [5, 0]],
+      "2as: ใช้ไป sits on PREV — X 10+3−8 = 5 · Y 20+4(ขอ)−18 = 6 ≈ · Z 7+0−2 = 5");
+    eq([mv(V, X.code, CUR)[4], mv(V, X.code, CUR)[6]], [0, 0], "2as: CUR ใช้ไป unknown until the next sheet");
+    ok(Math.abs(mv(V, X.code, PREV)[5] - 5 * pX) < 0.01, "2as: used baht = used × the round's price");
+    eq([V.ledger[X.code][PREV], V.ledger[Y.code][PREV], V.ledger[Z.code][PREV], V.ledger[X.code][CUR]],
+      [[10, 5, 3, 5, 0], [20, 4, null, 6, 1], [7, 0, null, 5, 0], [8, 0, null, null, 0]],
+      "2as ledger [stock, req, ได้มาจริง|null, ใช้ไป|null, flag 1 = ยอดเบิกแทน]");
+    eq([V.missing[PREV], V.missing[CUR]], [[2, 1, 3], [0, 0, 3]], "2as missing: PREV 2 requested, 1 without ได้มาจริง, 3 with คงเหลือ");
+    eq(V.got_src, { pcu: 1, issuer: 0 }, "2as got_src: only the mode's source");
     eq(V.stock_latest[X.code], { round: CUR, stock: 8, got: 0 }, "2an stock_latest unchanged in shape (CUR stock-only → got 0)");
 
-    // PCU view: Y issued but unit not done → not received (est uses requested 4: 20+4−30 < 0) · X report still counts
     const PV = await mustOk("pcuDashboard", { fy: FYD }, TP);
-    eq([mv(PV, X.code, PREV)[2], mv(PV, Y.code, PREV)[2]], [3, 0], "2an PCU view: own report counts at once · dispenser figure waits for the unit (Q78)");
-    eq([mv(PV, X.code, CUR)[6], mv(PV, Z.code, CUR)[6]], [5, 5], "2an PCU view: same estimate for X / Z");
-    eq(PV.got_src, { pcu: 1, issuer: 0 }, "2an got_src (PCU view)");
+    eq([PV.ledger[X.code][PREV], PV.ledger[Y.code][PREV], PV.received_mode], [[10, 5, 3, 5, 0], [20, 4, null, 6, 1], "pcu"], "2as PCU view: same ledger");
 
-    // network = the same figures added to the totals (delta against the state before the setup)
+    // network: deltas against the state before the setup · missing / recv_cmp per pcu
     const N1 = await netV();
-    eq([X, Y, Z].map((it) => itemV(N1, it.code)[2] - itemV(N0, it.code)[2]), [3, 2, 0], "2an network items: got delta X 3 · Y 2 · Z 0");
-    eq([X, Y, Z].map((it) => itemV(N1, it.code)[6] - itemV(N0, it.code)[6]), [5, 0, 5], "2an network items: est delta X 5 · Y 0 · Z 5");
+    eq([X, Y, Z].map((it) => itemV(N1, it.code)[2] - itemV(N0, it.code)[2]), [3, 0, 0], "2as network items: got delta X 3 · Y 0 · Z 0");
+    eq([X, Y, Z].map((it) => [itemV(N1, it.code)[4] - itemV(N0, it.code)[4], itemV(N1, it.code)[6] - itemV(N0, it.code)[6]]), [[5, 0], [0, 6], [5, 0]],
+      "2as network items: used / ≈ deltas = the PCU view");
+    eq(N1.missing[P][PREV], [2, 1, 3], "2as network missing[pcu][round]");
+    eq(N1.recv_cmp[P], [1, 1, Math.round(2 * pX * 100) / 100, 0, 1], "2as recv_cmp: X both (3 vs 5, |2| × price) · Y dispenser only");
     eq(N1.pcus.find((x) => x.code === P).got_baht > 0, true, "2an pcus[].got_baht includes the PCU report");
     const sn = (N, c) => ((N.stock_net[c] || { pcus: [] }).pcus.find((x) => x[0] === P) || null);
-    eq([sn(N1, X.code), sn(N1, Y.code), sn(N1, Z.code)], [[P, 8, CUR], [P, 30, CUR], [P, 2, CUR]], "2an stock_net: latest stock of the pcu per item (CUR)");
+    eq([sn(N1, X.code), sn(N1, Y.code), sn(N1, Z.code)], [[P, 8, CUR], [P, 18, CUR], [P, 2, CUR]], "2an stock_net: latest stock of the pcu per item (CUR)");
     eq((N1.stock_filled[CUR] || 0) - (N0.stock_filled[CUR] || 0), 1, "2an stock_filled[CUR] counts the pcu once");
 
-    // removing the report → back to the dispenser figure
+    // mode issuer: the dispenser's figure only (staff view: every unit)
+    await mustOk("adminSetConfig", { key: "received_mode", value: "issuer" }, ADM2);
+    const V2 = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
+    eq([mv(V2, X.code, PREV)[2], mv(V2, Y.code, PREV)[2], mv(V2, X.code, PREV)[4], mv(V2, Y.code, PREV)[4], mv(V2, Y.code, PREV)[6], V2.missing[PREV]],
+      [5, 2, 7, 4, 0, [2, 0, 3]], "2as mode issuer: got X 5 · Y 2 → used X 10+5−8 = 7 · Y 20+2−18 = 4 (no ≈) · nothing missing");
+    const N2 = await netV();
+    eq([itemV(N2, X.code)[4] - itemV(N0, X.code)[4], N2.received_mode], [7, "issuer"], "2as network follows the mode");
+    await mustOk("adminSetConfig", { key: "received_mode", value: "pcu" }, ADM2);
+
+    // removing the report (mode pcu) → X ได้มาจริง unknown → ยอดเบิก 5 stands in: 10+5−8 = 7 ≈
     await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: null }] }, TP);
-    eq(mv(await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2), X.code, PREV)[2], 5, "2an: report removed → got = issued 5");
+    const V3 = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
+    eq([mv(V3, X.code, PREV)[2], mv(V3, X.code, PREV)[6], V3.ledger[X.code][PREV]], [0, 7, [10, 5, null, 7, 1]], "2as: report removed → got 0, used 7 ≈ (ยอดเบิกแทน)");
 
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }

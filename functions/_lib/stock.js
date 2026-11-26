@@ -1,9 +1,9 @@
 // stock.js — 2o: stock calculation (mode B). The server owns the formula (spec 2o-2s §3.2/§3.4):
 //   baseline (pcu, round M, item) = the stock of the item on the pcu's prevMonth(M) request, when that request is submitted/issued and stock is not null
-//   received = the PCU's own received report (received_reports.qty) first (2ar — the dashboard's rule since 2an), else issued_total when the
-//   item's dispense unit is done (issue_status row) and issued_total is not null, else op+pp of that request
+//   received (2as, config.received_mode — the dashboard's rule): "pcu" = the PCU's own received report (received_reports.qty) · "issuer" =
+//   issued_total when the item's dispense unit is done (issue_status row) · that figure missing → op+pp of that request (received_src requested)
 //   available = baseline + received + (adj ?? 0) · calc_from 'used' → stock = available − used · 'stock' → used = available − stock · negative → null
-import { formForFy, linkMap, loadForm } from "./db.js";
+import { formForFy, getConfigAll, linkMap, loadForm, receivedMode } from "./db.js";
 import { currentRound, monthFy, nextMonth, prevMonth } from "./time.js";
 
 export const CALC_FROM = ["used", "stock"];
@@ -16,7 +16,7 @@ const reqIdOf = (pcu, month) => `${pcu}_${month}`; // = views.requestId (kept lo
 // Rows: op+pp > 0 or stock not null. No request / draft → {}. Issued figures only for DONE units (same rule as the PCU view, Q78).
 export async function baselineFor(DB, pcu, month) {
   const pm = prevMonth(month);
-  const [lineRes, doneRes] = await Promise.all([
+  const [lineRes, doneRes, cfg] = await Promise.all([
     DB.prepare(
       `SELECT r.form_version_id AS fv, l.item_code AS code, l.stock, COALESCE(l.op,0) AS op, COALESCE(l.pp,0) AS pp, l.issued_total, rr.qty AS rq
          FROM requests r JOIN request_lines l ON l.request_id = r.id
@@ -24,17 +24,19 @@ export async function baselineFor(DB, pcu, month) {
         WHERE r.pcu = ? AND r.month = ? AND r.status IN ('submitted','issued') AND (l.stock IS NOT NULL OR COALESCE(l.op,0) + COALESCE(l.pp,0) > 0)`
     ).bind(pcu, pm).all(),
     DB.prepare(`SELECT dispense_unit FROM issue_status WHERE request_id = ?`).bind(reqIdOf(pcu, pm)).all(),
+    getConfigAll(DB),
   ]);
+  const byIssuer = receivedMode(cfg) === "issuer";
   const rows = lineRes.results;
   const out = {};
   if (!rows.length) return out;
   const done = new Set(doneRes.results.map((r) => r.dispense_unit));
   let form = null;
-  if (done.size) form = rows[0].fv ? await loadForm(DB, rows[0].fv) : await formForFy(DB, monthFy(pm)); // only needed to map item → unit
+  if (byIssuer && done.size) form = rows[0].fv ? await loadForm(DB, rows[0].fv) : await formForFy(DB, monthFy(pm)); // only needed to map item → unit
   for (const r of rows) {
     const ent = form && form.index.get(r.code);
-    const reported = r.op + r.pp > 0 && r.rq !== null && r.rq !== undefined; // 2ar: the PCU's report wins (as dashboard.js)
-    const issued = !reported && ent && done.has(ent.step.dispense_unit) && r.issued_total !== null && r.issued_total !== undefined;
+    const reported = !byIssuer && r.op + r.pp > 0 && r.rq !== null && r.rq !== undefined; // 2ar/2as: mode pcu → the PCU's report
+    const issued = byIssuer && ent && done.has(ent.step.dispense_unit) && r.issued_total !== null && r.issued_total !== undefined;
     out[r.code] = {
       op: r.op, pp: r.pp, stock: r.stock ?? null,
       received: reported ? r.rq : issued ? r.issued_total : r.op + r.pp, received_src: reported ? "pcu" : issued ? "issued" : "requested",
@@ -109,5 +111,17 @@ export async function recalcAfterIssue(DB, pcus, month) {
   ).bind(nm, ...list).all();
   let n = 0;
   for (const r of results) n += await recalcStockChain(DB, r.pcu, month);
+  return n;
+}
+
+// 2as: config.received_mode changed → every pcu's calc lines of `fromMonth` on follow the new received rule (writes changed lines only).
+// Each (pcu, round) with calc lines is recalculated in month order — recalcStockChain alone stops at the first round that did not change.
+export async function recalcAllStock(DB, fromMonth) {
+  const { results } = await DB.prepare(
+    `SELECT DISTINCT r.pcu, r.month AS m FROM requests r JOIN request_lines l ON l.request_id = r.id
+      WHERE r.month >= ? AND l.calc_from IS NOT NULL ORDER BY r.pcu, r.month`
+  ).bind(fromMonth).all();
+  let n = 0;
+  for (const r of results) n += await recalcStockChain(DB, r.pcu, prevMonth(r.m));
   return n;
 }

@@ -16,6 +16,7 @@ import { mountShortage } from "./shortage.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, networkOverviewRows, pcuOverviewRows } from "../pages/dash_overview.js"; // 2ao
 import { mount as mountHeat } from "../pages/dash_heat.js"; // 2aq
+import { netMissingCardHtml, pcuMismatchCardHtml, recvCmpCardHtml } from "../pages/dash_ledger.js"; // 2as
 
 const ANOM_PAGE = 30;
 const STOCK_NET_PAGE = 10;
@@ -237,7 +238,7 @@ export function renderTab12(container, ctx) {
     box.classList.remove("is-loading");
     box.innerHTML = `
       <h2>แดชบอร์ดภาพรวมเครือข่าย</h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้รับจริง = ที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก · ใช้ไปรวมค่าประมาณจากคงเหลือ</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง ใช้ยอดเบิกแทน)</p>
       ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
@@ -247,6 +248,7 @@ export function renderTab12(container, ctx) {
           <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ — แสดงทุกหน่วยจ่ายเสมอ กดแถวเพื่อกรองทั้งหน้า</p><div id="adm-groups"></div></div>
         <div id="adm-overview"></div>
         <div id="adm-stock"></div>
+        <div id="adm-missing-slot"></div><div id="adm-cmp-slot"></div>
         <div class="dash-card"><h3>จัดอันดับ รพ.สต.</h3>
           <p class="muted small dash-caption" id="adm-rank-cap"></p><div id="adm-rank"></div></div>
         <div id="adm-anom"></div>
@@ -308,6 +310,11 @@ export function renderTab12(container, ctx) {
 
     renderOverviewCard();
     renderStockNet();
+    for (const [id, html] of [["#adm-missing-slot", netMissingCardHtml(d, pcuNames())], ["#adm-cmp-slot", recvCmpCardHtml(d, pcuNames())]]) { // 2as
+      const el = $(id);
+      el.innerHTML = html;
+      el.querySelectorAll(".adm-link").forEach((b) => b.addEventListener("click", () => openPcu(b.dataset.pcu)));
+    }
 
     $("#adm-rank-cap").textContent = `${scope} · ยอดเป็นบาทเสมอ · เดือนสูงสุด/ต่ำสุด (เดือนที่ไม่เบิกไม่นับ) และเกินแผน (รายการสะสมขอ > แผนปี) เป็นตัวเลขของทุกหน่วยจ่าย ไม่เปลี่ยนตามตัวกรอง · รูปแบบการเบิก (pattern) คิดจากทุกหน่วยจ่ายของแห่งนั้น ไม่เปลี่ยนตามตัวกรอง · กดชื่อ รพ.สต. เพื่อดูรายแห่ง`;
     const r = $("#adm-rank");
@@ -478,7 +485,7 @@ export function renderTab12(container, ctx) {
     box.innerHTML = `
       <p class="dash-back"><button type="button" class="btn btn-secondary btn-sm" id="adm-back">← กลับภาพรวมเครือข่าย</button></p>
       <h2>${esc(name)} <span class="muted small">${esc((d.pcu && d.pcu.code) || "")}</span></h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้รับจริง = ที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก · ใช้ไปรวมค่าประมาณจากคงเหลือ</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง ใช้ยอดเบิกแทน)</p>
       ${controlsHtml(d, ordered, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);
@@ -489,12 +496,12 @@ export function renderTab12(container, ctx) {
     // extra sections (pattern / top 3 / anomalies) sit between the charts and the unit-group card
     const extra = document.createElement("div");
     extra.id = "adm-extra";
-    extra.innerHTML = `${patternHtml(d)}${extremesHtml(d)}<div id="adm-anom-pcu"></div>`;
+    extra.innerHTML = `${patternHtml(d)}${extremesHtml(d)}<div id="adm-anom-pcu"></div>${pcuMismatchCardHtml(d)}`; // 2as: + mismatch
     const anchor = box.querySelector("#dash-groups").closest(".dash-card");
     anchor.parentNode.insertBefore(extra, anchor);
 
     const body = createBody(box, d, {
-      heat: true,
+      heat: true, staff: true, // 2as
       onRender: () => renderAnomalies(),
     });
     body.bind();

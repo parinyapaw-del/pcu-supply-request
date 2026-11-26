@@ -185,7 +185,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   byMonth: { "2026-11": {                                    // for the 2 shown rounds (also returned by pcuGetMonth)
       request: RequestObj | null,
       used_fy: { code: qty },        // Σ(op+pp) of this PCU's submitted/issued requests in the round's fy (fyMonths = Oct … Sep rounds, 2w), excluding that round
-      prev_lines: { code: {op,pp,stock,received,received_src:"pcu"|"issued"|"requested"} }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
+      prev_lines: { code: {op,pp,stock,received,received_src:"pcu"|"issued"|"requested"} (2as: by config.received_mode, missing → requested) }, // 2o: previous round's (prevMonth(month)) submitted/issued request,
                                      // rows with op+pp>0 OR stock set; stock null = no baseline; received = issued_total when the item's unit is done
                                      // (issue_status) and issued_total not null, else op+pp; {} if no request / draft. The trial round is an ordinary baseline.
       issue: null | IssueInfo        // 2c; null until >= 1 unit is marked done (PCU view, see below)
@@ -271,6 +271,12 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
   used_coverage: { items_with_used, items_total },   // codes with req > 0 that have ≥ 1 counted line whose used is not null (2an: was every code) · codes with req > 0 in fy
   got_src: { pcu, issuer },    // 2an: counted lines whose got came from the PCU's received report / from the dispenser's issued_total (by the view rule)
   item_src: { code: { round: [req_q, req_b, pcu_q, pcu_b, pcu_n, iss_q, iss_b, iss_n, n] } },
+  // 2as (brief 2as): ได้มาจริง = config.received_mode's figure only ("pcu" = received_reports.qty · "issuer" = issued_total, PCU view done units
+  // only) — got (V8 slots 2–3) carries no other source. ใช้ไป (slots 4–5) is now the ledger's, on ROUND M (not the round it was typed on):
+  // the round-M+1 line's used (typed / stock.js-derived) else stock(M) + ได้มาจริง(M) + adj(M+1) − stock(M+1); ได้มาจริง missing → ยอดเบิก and
+  // the figure goes to slots 6–7 (the "≈" part); negative / a count missing → nothing. Lines of nextMonth(last fy round) close the fy's last round.
+  ledger: { code: { round: [stock|null, req, recv|null, used|null, flag] } }, // flag 0 · 1 = ยอดเบิกแทนได้มาจริง · 2 = negative (unknown)
+  missing: { round: [requested lines, of which ได้มาจริง missing, lines with a คงเหลือ] }, received_mode: "pcu"|"issuer",
                                // 2aq: requested lines only (op+pp > 0) · n = lines · pcu_* = received_reports (qty 0 counts: pcu_n 1, pcu_q 0)
                                // · iss_* = issued_total not null (PCU view: DONE units only, Q78) · 2v links → new code · baht = qty × line price
                                // · kept apart from got (monthly[2..3] still = report → dispenser) · also in adminDashboard{pcu}
@@ -345,7 +351,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminSetRound` | `month, deadline_date: "YYYY-MM-DD"\|null, note?` | `{round}` (null clears the per-round override; `note` only touched when the key is present) |
 | `adminLockRound` | `month, locked:0\|1` | `{round}` |
 | `adminSetLimitMode` | `mode:"off"\|"warn"` (2z: `"enforce"` → `BAD_REQUEST`) | `{config}` |
-| `adminSetConfig` | `key, value` — keys: `stock_required`(0/1) `budget_op` `budget_pp` `budget_total` (number ≥ 0) `deadline_day`(int 1–31 \| null) · 2j `trial_month` (`"YYYY-MM"` \| `null`/`""` = no trial round; else `BAD_REQUEST`) · 2b-R R2 caps `r2_max_bytes` `r2_max_class_a` `r2_max_class_b` (int ≥ 1, numeric string ok \| `null`/`""` = default; else `BAD_REQUEST`) | `{config}` (effective caps included) |
+| `adminSetConfig` | `key, value` — keys: `stock_required`(0/1) `received_mode` ("pcu"|"issuer", 2as — a change recalcs every stock-mode B line from the previous fy on → `{config, recalced}`) `budget_op` `budget_pp` `budget_total` (number ≥ 0) `deadline_day`(int 1–31 \| null) · 2j `trial_month` (`"YYYY-MM"` \| `null`/`""` = no trial round; else `BAD_REQUEST`) · 2b-R R2 caps `r2_max_bytes` `r2_max_class_a` `r2_max_class_b` (int ≥ 1, numeric string ok \| `null`/`""` = default; else `BAD_REQUEST`) | `{config}` (effective caps included) |
 | `adminSetLimit` | `pcu, code, limit_year, limit_month?` (int ≥ 0 \| null; 2z: `limit_month` absent = keep the stored value — the admin UI no longer sends it) | `{limit}` (source `admin`) |
 | `adminResetLimit` | `pcu, code` | `{limit\|null}` recomputed per FORMAT.md rule from `plans[fy_current]` / `stats[fy_current-1]` (row removed if nothing) |
 | `adminLimitsUpload` | `rows:[{pcu_code,item_code,item_name?,limit_year,note?}], fy?, mode?:"merge"\|"replace", dry_run?:bool` | `{errors:[{row,pcu_code,item_code,error}], warnings:[...], changes:[{pcu,item_code,old:[m,y]\|null,new:[m,y]\|null}], added, updated, deleted, applied:bool}` — 2z (R11): a `limit_month` key (old files) is skipped (never read, never an error; `m` = the stored month, unchanged) and a pair whose resulting `limit_year` is null is removed · rules of `limit_upload_format.md` §2/§3 (`CLEAR` in merge mode; blank = untouched in merge). Valid rows are applied unless `dry_run`. Row number = index+2 unless row has `row`. A pair duplicated in the file gets one `errors` entry per row (rows that already carry another error are not listed twice). |
@@ -625,6 +631,8 @@ as §4.2 (staff view: prev received = report → issued_total → op+pp; baht on
                                                                // 2ak D2: top3 dropped (network + pcu view) — the UI ranks from network.items / monthly (calc_common.js)
     never: [code…],                                            // 2aa (Q12): active items of the fy's latest form (active page) no pcu requested (req 0) · form order
     item_src: { code: { round: S9 } }                          // 2aq: as pcuDashboard.item_src summed over every non-trial pcu (staff view) · n / pcu_n / iss_n = pcu lines
+    // 2as: network.items / monthly used = the ledger (round M, as pcuDashboard) · top level: received_mode,
+    // missing: { pcu: { round: [req lines, recv missing, stock lines] } }, recv_cmp: { pcu: [both, differ, |pcu − issuer| baht (price_snapshot), pcu only, issuer only] }
   },
   pcus: [ { code, name, req_baht, got_baht, plan_baht, pct_plan,          // pct_plan = Σ req_baht_on_plan / plan_baht (null when plan_baht = 0)
             units: { unit_group: [req_baht, got_baht, plan_baht, req_baht_on_plan] },   // all three unit keys

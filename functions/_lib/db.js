@@ -344,6 +344,10 @@ export function limitModeFor(cfg, fy) {
   return cfg.limit_mode === "off" ? "off" : "warn"; // 2z: off | warn only — a stored "enforce" (before 2z) reads as warn
 }
 
+// 2as: ได้มาจริง source of the whole network (config.received_mode) — no cross-source fallback; a missing figure = ยอดเบิก (noted)
+export const RECEIVED_MODES = ["pcu", "issuer"];
+export const receivedMode = (cfg) => (cfg && cfg.received_mode === "issuer" ? "issuer" : "pcu");
+
 // normalised, defaulted view of the settings the frontends need
 export function publicConfig(cfg, fallbackFy) {
   const fy = Number.isInteger(cfg.fy_current) ? cfg.fy_current : fallbackFy;
@@ -356,6 +360,7 @@ export function publicConfig(cfg, fallbackFy) {
     deadline_day: dd,
     fy_current: fy,
     trial_month: isMonth(cfg.trial_month) ? cfg.trial_month : null, // 2j: the practice round ("YYYY-MM") or null
+    received_mode: receivedMode(cfg), // 2as: whose figure is ได้มาจริง — "pcu" (the PCU's own report, default) | "issuer" (the dispenser)
   };
 }
 export function budgetConfig(cfg) {

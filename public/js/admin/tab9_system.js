@@ -130,6 +130,27 @@ export function renderTab9(container, ctx) {
   });
   container.appendChild(stCard);
 
+  // ---- 2as: ได้มาจริง mode (whole network) — config.received_mode ------------------------------------------------
+  const rmCard = el("div", { class: "admin-card", id: "t9-recv-card" });
+  rmCard.appendChild(el("h2", {}, "ได้มาจริง ใช้ตัวเลขของใคร"));
+  const rmOpt = (v, label) => {
+    const r = el("input", { type: "radio", name: "t9-recv-mode", value: v, checked: (b().config.received_mode || "pcu") === v });
+    rmCard.appendChild(el("label", { class: "admin-inline-check" }, [r, label]));
+    return r;
+  };
+  const rmRadios = [rmOpt("pcu", "รพ.สต. กรอก (ค่าตั้งต้น)"), rmOpt("issuer", "หน่วยจ่ายกรอก")];
+  rmCard.appendChild(el("p", { class: "admin-note" }, "ใช้ทั้งเครือข่าย · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือเดือนถัดไป · ถ้ายังไม่มีตัวเลขได้มาจริง ระบบใช้ยอดเบิกแทน (≈) · เปลี่ยนแล้วระบบคำนวณคงเหลือ/ใช้ไปของ รพ.สต. ที่ใช้โหมดคำนวณให้ใหม่ · ดูความต่างของ 2 แหล่งที่ แดชบอร์ด → \"ได้มาจริง: รพ.สต. กรอก เทียบ หน่วยจ่ายกรอก\""));
+  rmRadios.forEach((r) => r.addEventListener("change", async () => {
+    if (!r.checked) return;
+    const prev = b().config.received_mode || "pcu";
+    try {
+      const res = await ctx.adminCall("adminSetConfig", { key: "received_mode", value: r.value });
+      Object.assign(b().config, res.config);
+      toast(`ได้มาจริงใช้ตัวเลขที่${r.value === "issuer" ? "หน่วยจ่าย" : " รพ.สต. "}กรอกแล้ว${res.recalced ? ` (คำนวณใหม่ ${res.recalced} บรรทัด)` : ""}`);
+    } catch (err) { rmRadios.forEach((x) => { x.checked = x.value === prev; }); toast(errMessage(err), "err"); }
+  }));
+  container.appendChild(rmCard);
+
   // ---- trial round (brief 2j §3.7 / §5): config.trial_month + adminClearTrial{month} -----------------------------
   const trCard = el("div", { class: "admin-card", id: "t9-trial-card" });
   trCard.appendChild(el("h2", {}, "รอบทดลอง"));
@@ -412,5 +433,5 @@ export function renderTab9(container, ctx) {
   loadAudit(false);
   loadPdf();
 
-  return { onShow() { stCb.checked = !!b().config.stock_required; drawTrial(); loadPdf(); loadAudit(false); } };
+  return { onShow() { stCb.checked = !!b().config.stock_required; rmRadios.forEach((x) => { x.checked = x.value === (b().config.received_mode || "pcu"); }); drawTrial(); loadPdf(); loadAudit(false); } };
 }

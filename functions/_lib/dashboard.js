@@ -12,9 +12,9 @@
 // est = "ใช้ไป (ประมาณ)" for a line with a stock but no entered used = prev round stock + prev round received + adj − stock (> 0 only;
 // received = report → issued → requested, as stock.js) · network: stock_net (latest stock per pcu × item) + stock_filled per round.
 import { err } from "./http.js";
-import { DEFAULT_UNIT_BY_STEP, LIMITS_OFF_FROM_FY, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig } from "./db.js";
+import { DEFAULT_UNIT_BY_STEP, LIMITS_OFF_FROM_FY, formForFy, getConfigAll, linkMap, linkedCode, loadForm, publicConfig, receivedMode } from "./db.js";
 import { TRIAL_GROUP, UNITS } from "./auth.js";
-import { currentRound, fyExcelMonths, fyMonths, isMonth, monthFy, monthMinus, prevMonth } from "./time.js";
+import { currentRound, fyExcelMonths, fyMonths, isMonth, monthFy, monthMinus, nextMonth, prevMonth } from "./time.js";
 import { formPrice, loadPriceHistory, priceFor } from "./price.js";
 
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -141,12 +141,12 @@ async function pcuCore(DB, c, pcu, staff) {
     strictForm(DB, fy),
     DB.prepare(
       `SELECT r.month AS m, r.form_version_id AS fv, l.item_code AS c, COALESCE(l.op,0) + COALESCE(l.pp,0) AS q,
-              l.issued_total AS it, l.used AS u, l.price_snapshot AS ps, l.stock AS st, rr.qty AS rq, l.adj AS adj
+              l.issued_total AS it, l.used AS u, l.price_snapshot AS ps, l.stock AS st, rr.qty AS rq, l.adj AS adj, l.calc_from AS cf
          FROM requests r JOIN request_lines l ON l.request_id = r.id
          LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code
         WHERE r.pcu = ? AND r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT}
           AND (COALESCE(l.op,0) + COALESCE(l.pp,0) > 0 OR l.used IS NOT NULL OR l.stock IS NOT NULL)`
-    ).bind(pcu, all[0], all[11], trialArg).raw(),
+    ).bind(pcu, all[0], nextMonth(all[11]), trialArg).raw(), // 2as: + the round after the fy (its count closes the fy's last round)
     staff ? [] : DB.prepare(
       `SELECT r.month, s.dispense_unit FROM issue_status s JOIN requests r ON r.id = s.request_id
         WHERE r.pcu = ? AND r.month >= ? AND r.month <= ? AND r.status IN ${SENT}`
@@ -184,28 +184,31 @@ async function pcuCore(DB, c, pcu, staff) {
   const stockLatest = new Map(); // 2aa (Q15): code → {round, stock, got} of the latest round whose line has a stock
   const lm = linkMap(form); // 2v: lines of a linked old code count under the code that replaces it
   const gotSrc = { pcu: 0, issuer: 0 }; // 2an: lines whose got came from the PCU's report / the dispenser
-  const lineAt = new Map(); // 2an: code0|round → {st, recv, adj, u, price} (used estimate)
+  const byIssuer = receivedMode(cfg) === "issuer"; // 2as
+  const lineAt = new Map(); // 2as: code0|round → {st, q, recv (ได้มาจริง by the mode, null = not entered), adj, u, cf, price}
   const itemSrc = {}; // 2aq: code → round → S9 [req_q, req_b, pcu_q, pcu_b, pcu_n, iss_q, iss_b, iss_n, n] (requested lines only)
-  for (const [m, fv, code0, q, it, u, ps, st, rq, adj] of lineRes) {
+  const lastRound = all[11];
+  for (const [m, fv, code0, q, it, u, ps, st, rq, adj, cf] of lineRes) {
     const price = ps !== null && ps !== undefined ? ps : priceFor(hist, form.index.has(code0) ? form : formOf(fv), code0, m) ?? 0;
     // the dispenser's figure counts when entered — PCU view rule (Q78): DONE units only · staff view (2s): every unit
     const issOk = q > 0 && it !== null && it !== undefined && (staff || (() => {
       const ent = formOf(fv).index.get(code0);
       return !!(ent && done.has(m + "|" + ent.step.dispense_unit));
     })());
-    let got = 0, received = false;
-    if (q > 0 && rq !== null && rq !== undefined) { received = true; got = rq; gotSrc.pcu++; } // 2an: the PCU's own report wins
-    else if (issOk) { received = true; got = it; gotSrc.issuer++; }
-    lineAt.set(code0 + "|" + m, { st, recv: received ? got : q, adj: adj ?? 0, u, price });
+    const hasRq = q > 0 && rq !== null && rq !== undefined;
+    // 2as: ได้มาจริง = the figure of config.received_mode only (no cross-source fallback) · missing → ยอดเบิก stands in (noted)
+    const recv = q > 0 ? (byIssuer ? (issOk ? it : null) : (hasRq ? rq : null)) : 0;
+    lineAt.set(code0 + "|" + m, { st: st ?? null, q, recv, adj: adj ?? 0, u: u ?? null, cf, price });
+    if (m > lastRound) continue; // 2as: the next fy's first round only closes this fy's ledger
+    const received = q > 0 && recv !== null, got = received ? recv : 0;
+    if (received) gotSrc[byIssuer ? "issuer" : "pcu"]++;
     const code = linkedCode(lm, code0);
     if (q > 0) { // 2aq: the two sources side by side (a typed 0 counts as entered)
       const s = ((itemSrc[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0, 0]);
       s[0] += q; s[1] += q * price; s[8]++;
-      if (rq !== null && rq !== undefined) { s[2] += rq; s[3] += rq * price; s[4]++; }
+      if (hasRq) { s[2] += rq; s[3] += rq * price; s[4]++; }
       if (issOk) { s[5] += it; s[6] += it * price; s[7]++; }
     }
-    const used = u ?? 0;
-    if (u !== null && u !== undefined) withUsed.add(code);
     if (q > 0) {
       withReq.add(code); cum.set(code, (cum.get(code) || 0) + q); roundBaht.set(m, (roundBaht.get(m) || 0) + q * price);
       reqBaht.set(code, (reqBaht.get(code) || 0) + q * price);
@@ -217,21 +220,56 @@ async function pcuCore(DB, c, pcu, staff) {
       if (!cur || m > cur.round) stockLatest.set(code, { round: m, stock: st, got: g });
       else if (m === cur.round) { cur.stock += st; cur.got = cur.got === null && g === null ? null : (cur.got || 0) + (g || 0); } // 2v link pair
     }
-    if (!q && !got && !used) continue;
+    if (!q && !got) continue;
     const t = ((monthly[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0]);
-    const add = [q, q * price, got, got * price, used, used * price];
-    for (let i = 0; i < 6; i++) t[i] = i % 2 ? r2(t[i] + add[i]) : t[i] + add[i];
+    const add = [q, q * price, got, got * price];
+    for (let i = 0; i < 4; i++) t[i] = i % 2 ? r2(t[i] + add[i]) : t[i] + add[i];
   }
-  // 2an: ใช้ไป (ประมาณ) — a line with a stock and no entered used, whose previous round (same code, counted request) has a stock
-  for (const [key, cur] of lineAt) {
-    if (cur.st === null || cur.st === undefined || (cur.u !== null && cur.u !== undefined)) continue;
+  // 2as (Save's ledger): ใช้ไป of round M = what the round-M+1 sheet says — its used (typed, or stock.js-derived) — else
+  // คงเหลือ(M) + ได้มาจริง(M) + adj(M+1) − คงเหลือ(M+1), ยอดเบิก standing in for a missing ได้มาจริง (→ est slots = "≈", flag 1).
+  // Unknown (no row) when a count is missing · negative → unknown, flag 2. ledger[code][M] = [stock, req, recv|null, used|null, flag].
+  const ledger = {};
+  const ledKeys = new Set();
+  for (const key of lineAt.keys()) {
     const bar = key.lastIndexOf("|"), code0 = key.slice(0, bar), m = key.slice(bar + 1);
-    const prev = lineAt.get(code0 + "|" + prevMonth(m));
-    if (!prev || prev.st === null || prev.st === undefined) continue;
-    const e = prev.st + prev.recv + cur.adj - cur.st;
-    if (!(e > 0)) continue;
-    const t = ((monthly[linkedCode(lm, code0)] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0]);
-    t[6] += e; t[7] = r2(t[7] + e * cur.price);
+    if (m <= lastRound) ledKeys.add(key);
+    const pm = prevMonth(m);
+    if (pm >= all[0] && pm !== trial) ledKeys.add(code0 + "|" + pm);
+  }
+  for (const key of ledKeys) {
+    const bar = key.lastIndexOf("|"), code0 = key.slice(0, bar), m = key.slice(bar + 1);
+    const L = lineAt.get(key), N = lineAt.get(code0 + "|" + nextMonth(m));
+    const lq = L ? L.q : 0, lrecv = L ? L.recv : 0;
+    const assumedRecv = lq > 0 && lrecv === null;
+    let used = null, flag = 0;
+    if (N && N.u !== null) { used = N.u; if (N.cf === "stock" && assumedRecv) flag = 1; }
+    else if (L && L.st !== null && N && N.st !== null) {
+      const e = r2(L.st + (assumedRecv ? lq : lrecv) + N.adj - N.st);
+      if (e >= 0) { used = e; if (assumedRecv) flag = 1; } else flag = 2;
+    }
+    if (!L && used === null) continue;
+    const code = linkedCode(lm, code0);
+    const row = ((ledger[code] ||= {})[m] ||= [null, 0, null, null, 0]);
+    if (L && L.st !== null) row[0] = r2((row[0] || 0) + L.st);
+    row[1] += lq;
+    if (L && L.recv !== null && lq > 0) row[2] = (row[2] || 0) + L.recv;
+    if (used !== null) row[3] = r2((row[3] || 0) + used);
+    row[4] = Math.max(row[4], flag);
+    if (used === null) continue;
+    withUsed.add(code);
+    const price = L ? L.price : N.price;
+    const t = ((monthly[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0]);
+    const j = flag === 1 ? 6 : 4;
+    t[j] += used; t[j + 1] = r2(t[j + 1] + used * price);
+  }
+  // 2as: what the PCU has not entered yet, per round — [requested lines, of which ได้มาจริง missing, lines with a คงเหลือ]
+  const missing = {};
+  for (const [key, L] of lineAt) {
+    const m = key.slice(key.lastIndexOf("|") + 1);
+    if (m > lastRound) continue;
+    const t = (missing[m] ||= [0, 0, 0]);
+    if (L.q > 0) { t[0]++; if (L.recv === null) t[1]++; }
+    if (L.st !== null) t[2]++;
   }
 
   // ---- items ----
@@ -313,6 +351,7 @@ async function pcuCore(DB, c, pcu, staff) {
       used_coverage: { items_with_used: [...withUsed].filter((k) => withReq.has(k)).length, items_total: withReq.size },
       got_src: gotSrc,
       flags, stock_latest, limits, prev_items, spent: spentOut, item_src, // 2aq
+      ledger, missing, received_mode: byIssuer ? "issuer" : "pcu", // 2as
       plan_baht: r2Obj(planBahtU), req_baht_on_plan: r2Obj(onPlanU), // 2ak A4: {unit_group: baht} — % ตามแผน = Σ on_plan / Σ plan_baht
     },
     form, lm, prevRes, pricer, cum, roundBaht,
@@ -329,24 +368,36 @@ export async function pcuDashboard(ctx, p) {
 const LINES = `FROM requests r JOIN request_lines l ON l.request_id = r.id JOIN pcus p ON p.code = r.pcu
   LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code`;
 const LINES_WHERE = `r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL} AND (${Q} > 0 OR l.used IS NOT NULL)`;
-const GOT = `COALESCE(rr.qty, l.issued_total)`; // 2an: the PCU's report first, else the dispenser's figure (staff view)
+// 2as: ได้มาจริง = the figure of config.received_mode only (staff view: every unit's issued_total) — no cross-source fallback
+const GOT_OF = (mode) => (mode === "issuer" ? "l.issued_total" : "rr.qty");
 // V6 sums: qty over every line, baht over lines with a price_snapshot (the others are added in JS via priceFor). got = staff view.
-const V6_SQL = `SUM(${Q}), TOTAL(${Q} * l.price_snapshot),
-  SUM(CASE WHEN ${Q} > 0 THEN COALESCE(${GOT},0) ELSE 0 END), TOTAL(CASE WHEN ${Q} > 0 THEN ${GOT} * l.price_snapshot END),
-  SUM(COALESCE(l.used,0)), TOTAL(l.used * l.price_snapshot)`;
-// 2an: ใช้ไป (ประมาณ) per line (staff view, as pcuCore staff=true): stock + no entered used, previous round of the same pcu × code
-// (counted request, inside the fy, not the trial round) has a stock → prev stock + prev received (report → issued → requested) + adj − stock.
-// Baht only from price_snapshot (lines without one — normally none — add qty only).
-const EST_CTE = `WITH e AS (
-  SELECT r.pcu AS pcu, r.month AS month, l.item_code AS code, l.price_snapshot AS ps,
-         pl.stock + COALESCE(prr.qty, pl.issued_total, COALESCE(pl.op,0) + COALESCE(pl.pp,0)) + COALESCE(l.adj,0) - l.stock AS q
+// 2as: used (slots 4–5) comes from LEDGER_CTE (round M), so V6 carries 0 there.
+const V6_SQL = (mode) => `SUM(${Q}), TOTAL(${Q} * l.price_snapshot),
+  SUM(CASE WHEN ${Q} > 0 THEN COALESCE(${GOT_OF(mode)},0) ELSE 0 END), TOTAL(CASE WHEN ${Q} > 0 THEN ${GOT_OF(mode)} * l.price_snapshot END), 0, 0`;
+// 2as (Save's ledger, as pcuCore): ใช้ไป of round M per pcu × code = the round-M+1 line's used (typed / stock.js-derived), else
+// คงเหลือ(M) + ได้มาจริง(M) (missing → ยอดเบิก, a = 1 → the "≈" slots 6–7) + adj(M+1) − คงเหลือ(M+1); negative / a count missing → none.
+// Rows: the M+1 line drives (a used typed with no round-M line still counts) · M inside the fy, not the trial round.
+// Binds: [n.month > all0, n.month <= next(all11), trial, p.month >= all0, p.month <= all11, trial, trial]
+const LEDGER_CTE = (mode) => `WITH n AS (
+  SELECT r.pcu AS pcu, r.month AS month, substr(date(r.month || '-01', '-1 month'), 1, 7) AS pm, l.item_code AS code,
+         l.stock AS st, l.used AS u, COALESCE(l.adj,0) AS adj, l.calc_from AS cf, l.price_snapshot AS ps
     FROM requests r JOIN request_lines l ON l.request_id = r.id JOIN pcus p ON p.code = r.pcu
-    JOIN requests pr ON pr.pcu = r.pcu AND pr.month = substr(date(r.month || '-01', '-1 month'), 1, 7)
-     AND pr.status IN ${SENT} AND pr.month != ? AND pr.month >= ?
-    JOIN request_lines pl ON pl.request_id = pr.id AND pl.item_code = l.item_code
-    LEFT JOIN received_reports prr ON prr.request_id = pl.request_id AND prr.item_code = pl.item_code
-   WHERE r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL}
-     AND l.stock IS NOT NULL AND l.used IS NULL AND pl.stock IS NOT NULL)`;
+   WHERE r.month > ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL}
+     AND (l.used IS NOT NULL OR l.stock IS NOT NULL)),
+ pl AS (
+  SELECT r.pcu AS pcu, r.month AS month, l.item_code AS code, l.stock AS st, ${Q} AS q, ${GOT_OF(mode)} AS k, l.price_snapshot AS ps
+    FROM requests r JOIN request_lines l ON l.request_id = r.id JOIN pcus p ON p.code = r.pcu
+    LEFT JOIN received_reports rr ON rr.request_id = l.request_id AND rr.item_code = l.item_code
+   WHERE r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL}),
+ x AS (
+  SELECT n.pcu AS pcu, n.pm AS month, n.code AS code, COALESCE(pl.ps, n.ps) AS ps,
+         CASE WHEN n.u IS NOT NULL THEN n.u
+              WHEN pl.st IS NOT NULL AND n.st IS NOT NULL THEN pl.st + (CASE WHEN pl.q > 0 THEN COALESCE(pl.k, pl.q) ELSE 0 END) + n.adj - n.st END AS q,
+         CASE WHEN COALESCE(pl.q,0) > 0 AND pl.k IS NULL AND (n.u IS NULL OR n.cf = 'stock') THEN 1 ELSE 0 END AS a
+    FROM n LEFT JOIN pl ON pl.pcu = n.pcu AND pl.code = n.code AND pl.month = n.pm
+   WHERE n.pm != ?)`;
+const LEDGER_SUMS = `SUM(CASE WHEN a = 0 THEN q ELSE 0 END), TOTAL(CASE WHEN a = 0 THEN q * ps END),
+  SUM(CASE WHEN a = 1 THEN q ELSE 0 END), TOTAL(CASE WHEN a = 1 THEN q * ps END)`;
 
 const addTo = (map, k1, k2) => {
   let m = map.get(k1);
@@ -365,15 +416,16 @@ const rowsToMap = (rows, lm) => {
 // and the used estimate (2an; eq/eb stay 0 when !full — only the share flags read pi there)
 async function networkData(DB, c, formP, full) {
   const bind = [c.all[0], c.all[11], c.trialArg];
-  const estBind = [c.trialArg, c.all[0], ...bind];
+  const mode = receivedMode(c.cfg);
+  const ledBind = [c.all[0], nextMonth(c.all[11]), c.trialArg, ...bind, c.trialArg];
   const [piRes, riRes, prRes, nullRes, estPi, estRi, srcRes] = await Promise.all([
-    DB.prepare(`SELECT r.pcu, l.item_code, ${V6_SQL} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.pcu, l.item_code`).bind(...bind).raw(),
-    full ? DB.prepare(`SELECT r.month, l.item_code, ${V6_SQL} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.month, l.item_code`).bind(...bind).raw() : [],
+    DB.prepare(`SELECT r.pcu, l.item_code, ${V6_SQL(mode)} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.pcu, l.item_code`).bind(...bind).raw(),
+    full ? DB.prepare(`SELECT r.month, l.item_code, ${V6_SQL(mode)} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.month, l.item_code`).bind(...bind).raw() : [],
     full ? DB.prepare(`SELECT r.pcu, r.month, TOTAL(${Q} * l.price_snapshot) ${LINES} WHERE ${LINES_WHERE} GROUP BY r.pcu, r.month`).bind(...bind).raw() : [],
-    DB.prepare(`SELECT r.pcu, r.month, r.form_version_id, l.item_code, ${Q}, ${GOT}, l.used, rr.qty, l.issued_total ${LINES}
+    DB.prepare(`SELECT r.pcu, r.month, r.form_version_id, l.item_code, ${Q}, ${GOT_OF(mode)}, l.used, rr.qty, l.issued_total ${LINES}
                  WHERE ${LINES_WHERE} AND l.price_snapshot IS NULL`).bind(...bind).raw(),
-    full ? DB.prepare(`${EST_CTE} SELECT pcu, code, SUM(q), TOTAL(q * ps) FROM e WHERE q > 0 GROUP BY pcu, code`).bind(...estBind).raw() : [],
-    full ? DB.prepare(`${EST_CTE} SELECT month, code, SUM(q), TOTAL(q * ps) FROM e WHERE q > 0 GROUP BY month, code`).bind(...estBind).raw() : [],
+    full ? DB.prepare(`${LEDGER_CTE(mode)} SELECT pcu, code, ${LEDGER_SUMS} FROM x WHERE q >= 0 GROUP BY pcu, code`).bind(...ledBind).raw() : [],
+    full ? DB.prepare(`${LEDGER_CTE(mode)} SELECT month, code, ${LEDGER_SUMS} FROM x WHERE q >= 0 GROUP BY month, code`).bind(...ledBind).raw() : [],
     // 2aq: round × code S9 — requested lines only · the PCU's report and the dispenser's figure kept apart (COUNT = lines entered, 0 counts)
     full ? DB.prepare(`SELECT r.month, l.item_code, SUM(${Q}), TOTAL(${Q} * l.price_snapshot), TOTAL(rr.qty), TOTAL(rr.qty * l.price_snapshot), COUNT(rr.qty),
                               TOTAL(l.issued_total), TOTAL(l.issued_total * l.price_snapshot), COUNT(l.issued_total), COUNT(*)
@@ -382,7 +434,10 @@ async function networkData(DB, c, formP, full) {
   const lm = linkMap(await formP);
   const pi = rowsToMap(piRes, lm), ri = rowsToMap(riRes, lm);
   for (const [map, rows] of [[pi, estPi], [ri, estRi]]) {
-    for (const [a, code, q, b] of rows) { const t = addTo(map, a, linkedCode(lm, code)); t[6] += Number(q) || 0; t[7] += Number(b) || 0; }
+    for (const [a, code, uq, ub, eq, eb] of rows) {
+      const t = addTo(map, a, linkedCode(lm, code));
+      t[4] += Number(uq) || 0; t[5] += Number(ub) || 0; t[6] += Number(eq) || 0; t[7] += Number(eb) || 0;
+    }
   }
   const src = new Map(); // 2aq: round → code → S9
   for (const [m, code, ...v] of srcRes) {
@@ -402,8 +457,8 @@ async function networkData(DB, c, formP, full) {
     for (const [pcu, m, fv, code, q, it, u, rq, iss] of nullRes) {
       const f = form && form.index.has(code) ? form : forms.get(fv) || form;
       const price = priceFor(hist, f, code, m) ?? 0;
-      const got = q > 0 && it !== null && it !== undefined ? it : 0, used = u ?? 0;
-      const add = (t) => { t[1] += q * price; t[3] += got * price; t[5] += used * price; };
+      const got = q > 0 && it !== null && it !== undefined ? it : 0; // `it` = the mode's ได้มาจริง (GOT_OF)
+      const add = (t) => { t[1] += q * price; t[3] += got * price; }; // 2as: used baht is LEDGER_CTE's (price_snapshot only)
       add(addTo(pi, pcu, linkedCode(lm, code)));
       if (full) {
         add(addTo(ri, m, linkedCode(lm, code)));
@@ -527,7 +582,8 @@ async function adminNetwork(DB, c) {
   const { fy, cfg, trial, all, cur, elapsed } = c;
   const formP = strictForm(DB, fy);
   const sBind = [all[0], all[11], c.trialArg];
-  const [form, net, p90Res, planRes, pcuRes, prevMonRes, prevItemRes, monthRes, fyRes, stockRes, filledRes] = await Promise.all([
+  const mode = receivedMode(cfg);
+  const [form, net, p90Res, planRes, pcuRes, prevMonRes, prevItemRes, monthRes, fyRes, stockRes, filledRes, missRes, cmpRes] = await Promise.all([
     formP,
     networkData(DB, c, formP, true),
     p90Query(DB, c, null, formP),
@@ -550,6 +606,15 @@ async function adminNetwork(DB, c) {
     DB.prepare(`SELECT r.month, COUNT(DISTINCT r.pcu) FROM requests r JOIN request_lines l ON l.request_id = r.id JOIN pcus p ON p.code = r.pcu
                  WHERE r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL} AND l.stock IS NOT NULL
                  GROUP BY r.month`).bind(...sBind).raw(),
+    // 2as: what each PCU has not entered, per round — [requested lines, ได้มาจริง (the mode's) missing, lines with a คงเหลือ]
+    DB.prepare(`SELECT r.pcu, r.month, SUM(${Q} > 0), SUM(${Q} > 0 AND ${GOT_OF(mode)} IS NULL), SUM(l.stock IS NOT NULL) ${LINES}
+                 WHERE r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL}
+                 GROUP BY r.pcu, r.month`).bind(...sBind).raw(),
+    // 2as: ได้มาจริง — the PCU's report vs the dispenser's figure per PCU (requested lines): [both, differ, |diff| baht, pcu only, issuer only]
+    DB.prepare(`SELECT r.pcu, SUM(rr.qty IS NOT NULL AND l.issued_total IS NOT NULL), SUM(rr.qty IS NOT NULL AND l.issued_total IS NOT NULL AND rr.qty != l.issued_total),
+                       TOTAL(ABS(rr.qty - l.issued_total) * l.price_snapshot), SUM(rr.qty IS NOT NULL AND l.issued_total IS NULL), SUM(rr.qty IS NULL AND l.issued_total IS NOT NULL)
+                  ${LINES} WHERE r.month >= ? AND r.month <= ? AND r.month != ? AND r.status IN ${SENT} AND ${NOT_TRIAL} AND ${Q} > 0
+                 GROUP BY r.pcu`).bind(...sBind).raw(),
   ]);
   if (!form) throw err("NOT_FOUND", `ไม่พบแบบฟอร์มของปีงบ ${fy}`);
   const { pi, ri, pr, src } = net;
@@ -716,6 +781,9 @@ async function adminNetwork(DB, c) {
     },
     pcus, flags, info_new,
     stock_net: stockNet, stock_filled,
+    received_mode: mode, // 2as
+    missing: missRes.reduce((o, [pcu, m, a, b, d]) => (((o[pcu] ||= {})[m] = [a || 0, b || 0, d || 0]), o), {}), // 2as {pcu: {round: [req, recv_missing, stock]}}
+    recv_cmp: Object.fromEntries(cmpRes.map(([pcu, ...v]) => [pcu, v.map((x, i) => (i === 2 ? r2(Number(x) || 0) : Number(x) || 0))])), // 2as
   };
 }
 

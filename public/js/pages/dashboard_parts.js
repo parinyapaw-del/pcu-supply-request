@@ -11,6 +11,7 @@ import {
 } from "./dashboard_calc.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, pcuOverviewRows } from "./dash_overview.js"; // 2ao
+import { missingNoticeHtml } from "./dash_ledger.js"; // 2as
 
 export { esc };
 
@@ -264,7 +265,7 @@ export function kpiHtml(agg, data) {
         : "ตามที่แจ้งรับของ ถ้าไม่ได้แจ้งใช้ยอดผู้จ่าย (เฉพาะหน่วยที่จ่ายครบแล้ว)")}
       ${tile("ใช้ไป", `<strong>${fmt(totals.used)}</strong>`, [
         coverage ? `กรอกเอง ${esc(coverage.with)}/${esc(coverage.total)} รายการ` : "ตามที่ รพ.สต. กรอก",
-        totals.est > 0 ? `รวมค่าประมาณจากคงเหลือ ≈ ${fmt(totals.est)}` : "",
+        totals.est > 0 ? `≈ ${fmt(totals.est)} คิดด้วยยอดเบิกแทนได้มาจริง` : "",
       ].filter(Boolean).join(" · "))}
       ${pctTile}
     </div>${flagNote}`;
@@ -412,7 +413,7 @@ export function tableHtml(agg, data, { heat } = {}) {
         ${rounds.map((_, i) => roundCell(r, i)).join("")}
         <td class="num strong">${cell(r.cum.req)}</td>
         <td class="num">${cell(r.cum.got)}</td>
-        <td class="num"${r.est > 0 ? ` title="${esc(`รวมค่าประมาณจากคงเหลือ ${fmt(r.est)}`)}"` : ""}>${r.est > 0 ? "≈ " : ""}${cell(r.cum.used)}</td>
+        <td class="num"${r.est > 0 ? ` title="${esc(`ในนี้ ${fmt(r.est)} คิดด้วยยอดเบิกแทนได้มาจริง (ยังไม่กรอก)`)}"` : ""}>${r.est > 0 ? "≈ " : ""}${cell(r.cum.used)}</td>
         <td class="num">${r.plan != null ? fmt(r.plan) : dash}</td>
         <td class="num">${esc(pctText(r.pct))}</td>
         <td class="num">${avg == null ? dash : cell(avg)}</td>
@@ -423,7 +424,7 @@ export function tableHtml(agg, data, { heat } = {}) {
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
   const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ≈ ใช้ไปมีค่าประมาณ (คงเหลือรอบก่อน + ได้รับ − คงเหลือรอบนี้)</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป · ≈ ได้มาจริงยังไม่กรอก ใช้ยอดเบิกแทน</p>
     ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">
@@ -474,6 +475,7 @@ export function controlsHtml(data, groups, { mode = true } = {}) {
 /** The per-item body of the PCU dashboard (KPI, charts, unit groups, top 10, table). */
 export function bodyShellHtml() {
   return `<div id="dash-body">
+        <div id="dash-missing"></div>
         <div id="dash-kpi"></div>
         <div id="dash-spent"></div>
         <div id="dash-bars"></div>
@@ -500,7 +502,7 @@ export function bodyShellHtml() {
  * `onRender(agg)` runs after every body render (the admin view hangs its extra sections there).
  * `heat` = heatmap table (admin per-PCU view); `hiddenLink` = link to #/hidden in the never-requested card (PCU page only).
  */
-export function createBody(box, data, { onRender, heat = false, hiddenLink = false, xlsx = null } = {}) {
+export function createBody(box, data, { onRender, heat = false, hiddenLink = false, xlsx = null, staff = false } = {}) {
   let agg = null;
   const $ = (id) => box.querySelector(id);
   // 2ao: combined per-item table — follows the mode toggle + unit filter · 2aq: + ขอเบิก / ได้รับ (รพ.สต.) / จ่ายจริง (หน่วยจ่าย),
@@ -543,6 +545,7 @@ export function createBody(box, data, { onRender, heat = false, hiddenLink = fal
 
   function renderBody() {
     agg = aggregate(data, ui.mode, ui.unit);
+    $("#dash-missing").innerHTML = missingNoticeHtml(data, { staff }); // 2as
     $("#dash-kpi").innerHTML = kpiHtml(agg, data);
     $("#dash-spent").innerHTML = spentHtml(agg.rows, data);
     overview.render();

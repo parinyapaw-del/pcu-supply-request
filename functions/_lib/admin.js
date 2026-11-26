@@ -2,8 +2,9 @@
 import { err, assertLimitValue, isStr, jparse, phoneParam } from "./http.js";
 import {
   SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, hiddenDiffStatements, hiddenAuditDetail, insertStatements,
-  formForFy, latestForm, limitModeFor, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
+  formForFy, latestForm, limitModeFor, linkMap, loadForm, priceMap, publicConfig, RECEIVED_MODES, receivedMode, TABLES, withLinkedRows,
 } from "./db.js";
+import { recalcAllStock } from "./stock.js";
 import {
   BACKUP_LOCK_MIN, BACKUP_MAX_FAIL, DEFAULT_PIN, PCU_GROUPS, PIN_LENGTH, PIN_RE, UNITS, constantTimeEq, envAdmins, hashSecret, lookupUser, makeStaffToken, newSalt,
   verifyGoogleIdToken,
@@ -527,6 +528,8 @@ export async function adminSetConfig(ctx, p) {
   } else if (key === "trial_month") { // 2j: the practice round, "YYYY-MM" or null (= no trial round)
     if (value === null || value === "" || value === undefined) value = null;
     else if (!isMonth(value)) throw err("BAD_REQUEST", "trial_month ต้องเป็นเดือนรูปแบบ YYYY-MM หรือว่าง");
+  } else if (key === "received_mode") { // 2as: whose figure is ได้มาจริง (whole network)
+    if (!RECEIVED_MODES.includes(value)) throw err("BAD_REQUEST", "received_mode ต้องเป็น pcu (รพ.สต. กรอก) หรือ issuer (หน่วยจ่ายกรอก)");
   } else if (R2_CAP_KEYS.includes(key)) { // 2b-R cost guard caps; null = default
     if (value === null || value === "" || value === undefined) value = null;
     else {
@@ -536,8 +539,11 @@ export async function adminSetConfig(ctx, p) {
   } else {
     throw err("BAD_REQUEST", "ไม่อนุญาตให้แก้ค่านี้: " + key);
   }
+  const before = key === "received_mode" ? receivedMode(await getConfigAll(DB)) : null;
   await DB.batch([configStmt(DB, key, value), auditStmt(DB, who.email, who.role, "adminSetConfig", "", "", `${key}=${JSON.stringify(value)}`)]);
-  return { config: await configResult(DB) };
+  // 2as: the stock-mode B lines follow the new ได้มาจริง rule (from the first round of the previous fy — the window PCUs still edit)
+  const recalced = before !== null && before !== value ? await recalcAllStock(DB, fyMonths(monthFy(currentRound()) - 1)[0]) : 0;
+  return { config: await configResult(DB), ...(before !== null ? { recalced } : {}) };
 }
 
 // ---- limits ------------------------------------------------------------------------------------------------------------------------------------
