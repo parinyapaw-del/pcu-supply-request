@@ -47,6 +47,26 @@ function clearMirror(pcu, month) {
   store.safeRemove(mirrorKey(pcu, month));
 }
 
+// 2at: the practice page (month "practice") lives on this device only — the whole request is kept in localStorage,
+// nothing is ever sent to the server, and it never affects a real round. Cleared with clearPractice().
+export const PRACTICE_MONTH = "practice";
+const PRACTICE_PREFIX = STORAGE_PREFIX + "practice:";
+const isPracticeSession = (session) => session.month === PRACTICE_MONTH;
+function savePractice(session) {
+  store.setJSON(PRACTICE_PREFIX + session.pcu, session.request);
+}
+export function clearPractice(pcu) {
+  store.safeRemove(PRACTICE_PREFIX + pcu);
+  clearMirror(pcu, PRACTICE_MONTH);
+  const s = sessions.get(key(pcu, PRACTICE_MONTH));
+  if (s) {
+    s.request = blankRequest(pcu, PRACTICE_MONTH);
+    s.dirtyLines.clear();
+    s.dirtyMeta = false;
+    notify(s, "saved");
+  }
+}
+
 function blankRequest(pcu, month) {
   return {
     pcu,
@@ -97,6 +117,7 @@ function rememberServerQty(session, serverReq) {
 //   the server, but lines that are dirty / in flight locally are kept — a refresh must never eat typed values.
 export function initSession(pcu, month, serverRequest) {
   const existing = sessions.get(key(pcu, month));
+  if (month === PRACTICE_MONTH && !serverRequest && !existing) serverRequest = store.getJSON(PRACTICE_PREFIX + pcu, null);
   const request = serverRequest ? JSON.parse(JSON.stringify(serverRequest)) : blankRequest(pcu, month);
   request.lines = request.lines || {};
 
@@ -297,6 +318,16 @@ function doSave(session) {
     session.saveTimer = null;
   }
   if (session.conflict || (!session.dirtyLines.size && !session.dirtyMeta)) return Promise.resolve();
+  if (isPracticeSession(session)) { // 2at: device only — keep it, never call the server
+    savePractice(session);
+    session.dirtyLines.clear();
+    session.dirtyMeta = false;
+    clearMirror(session.pcu, session.month);
+    session.lastSavedAt = new Date();
+    session.lastOutcome = "ok";
+    notify(session, "saved");
+    return Promise.resolve();
+  }
   session.saving = true;
   notify(session, "saving");
   session.savePromise = runSave(session).finally(() => {
@@ -383,7 +414,7 @@ async function runSave(session) {
       session.lastOutcome = "offline";
       notify(session, "offline");
       scheduleRetry(session);
-    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED" || err.code === "ITEM_LOCKED" || err.code === "COL_CLOSED" || err.code === "NO_ORDER") && fixRefusedQty(session, err)) {
+    } else if (err instanceof ApiError && (err.code === "LINE_LOCKED" || err.code === "ITEM_CANCELLED" || err.code === "ITEM_LOCKED" || err.code === "COL_CLOSED" || err.code === "NO_ORDER" || err.code === "PAST_DEADLINE") && fixRefusedQty(session, err)) {
       // 2ad: the server keeps the requested quantity of these lines (issue recorded / item cancelled) — the stored op/pp are back on
       // screen, the rest of each line (คงเหลือ / ใช้ไป) and every other dirty line go out again right away.
       session.lastOutcome = "ok";
@@ -462,6 +493,16 @@ export async function sendRequest(pcu, month) {
     throw new ApiError("NETWORK", "ยังบันทึกขึ้น server ไม่สำเร็จ — ตรวจสอบอินเทอร์เน็ตแล้วลองใหม่");
   }
   const r = session.request;
+  if (isPracticeSession(session)) { // 2at: a practice "send" only marks the local copy as sent
+    const now = new Date().toISOString();
+    r.status = "submitted";
+    r.submitted_at = now;
+    r.first_submitted_at = r.first_submitted_at || now;
+    r.submit_count = (r.submit_count || 0) + 1;
+    savePractice(session);
+    notify(session, "saved");
+    return { submitted: true, over_limit: [], request: r, practice: true };
+  }
   try {
     const data = await call(
       "saveLines",
@@ -517,7 +558,7 @@ export async function setNoOrder(pcu, month, on) {
  */
 export async function reloadSession(pcu, month) {
   const session = getSession(pcu, month);
-  if (!session) return null;
+  if (!session || isPracticeSession(session)) return null;
   const data = await call("pcuGetMonth", { month }, { token: getPcuToken() });
   session.dirtyLines.clear();
   session.dirtyMeta = false;

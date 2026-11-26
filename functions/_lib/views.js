@@ -1,6 +1,6 @@
 // views.js — shared read-side builders: RequestObj, RoundInfo, per-month PCU view, issue summaries, limit checks.
 import { LIMITS_OFF_FROM_FY, formForFy, loadForm, priceMap } from "./db.js";
-import { computeDeadline, fyMonths, monthFy, prevMonth } from "./time.js";
+import { computeDeadline, fyMonths, isPastDeadline, monthFy, prevMonth } from "./time.js";
 import { UNITS } from "./auth.js";
 import { baselineFor } from "./stock.js";
 
@@ -130,6 +130,7 @@ export function roundInfo(month, row, deadlineDay, trialMonth) {
   return {
     month, fy: monthFy(month), deadline_date: d.deadline_date, deadline_source: d.deadline_source,
     trial: !!trialMonth && month === trialMonth,
+    past_deadline: isPastDeadline(d.deadline_date, !!trialMonth && month === trialMonth), // 2at: requested qty closes, คงเหลือ/ใช้ไป stay open
     locked: !!(row && row.locked), locked_at: (row && row.locked_at) || null, locked_by: (row && row.locked_by) || null,
     note: (row && row.note) || null,
   };

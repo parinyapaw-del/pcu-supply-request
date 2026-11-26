@@ -65,7 +65,7 @@ export const sendUi = { missing: new Set(), month: null };
 /** @returns {Promise<boolean>} true when the request was sent (status "submitted"). */
 export async function trySend(app, month) {
   const code = pcuCode(app);
-  const { missing, planOvers } = collectIssues(app, month);
+  const { missing } = collectIssues(app, month);
 
   if (missing.length) {
     sendUi.month = month;
@@ -76,10 +76,8 @@ export async function trySend(app, month) {
   }
 
   try {
-    await sync.sendRequest(code, month);
-    const notes = [];
-    if (planOvers.length) notes.push(`${planOvers.length} รายการยอดรวมปีนี้จะเกินแผน (ส่งได้ตามปกติ)`);
-    toast(["บันทึกและส่งใบเบิกแล้ว", ...notes].join(" · "));
+    const res = await sync.sendRequest(code, month);
+    toast(res && res.practice ? "ทดลองส่งแล้ว — ไม่ได้ส่งจริง" : "บันทึกและส่งใบเบิกแล้ว"); // 2at: no "เกินแผน" note to the PCU
     return true;
   } catch (err) {
     if (err instanceof ApiError && err.code === "INCOMPLETE") {
@@ -90,7 +88,7 @@ export async function trySend(app, month) {
       const first = miss[0] && findStepOf(app, miss[0]);
       if (first) gotoItem(month, first, miss[0], "stock");
     } else if (err instanceof ApiError && err.code === "CONFLICT") {
-      await alertDialog("รอบนี้ปิดรับแล้ว", `<p>${esc(err.message || "รอบนี้ปิดรับแล้ว แก้ไขไม่ได้")}</p>`);
+      await alertDialog("ส่งไม่ได้", `<p>${esc(err.message || "รอบนี้ปิดรับแล้ว")}</p>`);
       try {
         const d = await sync.reloadSession(code, month);
         const r = app.boot.rounds.find((x) => x.month === month);

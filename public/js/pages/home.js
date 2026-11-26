@@ -70,7 +70,11 @@ function cardHtml(app, round) {
   const n = itemsRequested(request);
   const notice = (app.boot.issue_notices || []).find((x) => x.month === round.month);
   const submitted = !!request && (request.status === "submitted" || request.status === "issued") && !request.no_order;
-  const primaryLabel = submitted ? "แก้ไขใบเบิก" : started ? "กรอกต่อ" : "เริ่มกรอก";
+  // 2at: past the deadline a sent request only takes คงเหลือ (and ได้มาจริง on its own page); one never sent is view-only
+  const past = !locked && !!round.past_deadline;
+  const sentAny = !!request && (request.status === "submitted" || request.status === "issued");
+  const primaryLabel = past ? "กรอกคงเหลือ" : submitted ? "แก้ไขใบเบิก" : started ? "กรอกต่อ" : "เริ่มกรอก";
+  const viewOnly = locked || (past && !sentAny);
   const hasIssueBtn = !!(issue && issue.units_done > 0) || !!notice;
 
   return `
@@ -82,18 +86,18 @@ function cardHtml(app, round) {
     ${note ? `<div class="admin-note-box"><strong>ข้อความจากผู้ดูแล:</strong> ${esc(note)}</div>` : ""}
     <p class="muted deadline-line">${locked ? "รอบนี้ปิดรับแล้ว" : esc(deadlineText(round))}</p>
     ${round.trial ? `<p class="trial-note">${esc(trialNote(round))}</p>` : ""}
-    ${request && request.no_order ? `<p>แจ้ง "ไม่เบิก" เดือนนี้แล้ว${locked ? "" : " · เปลี่ยนใจได้จนปิดรอบ"}</p>`
+    ${request && request.no_order ? `<p>แจ้ง "ไม่เบิก" เดือนนี้แล้ว${locked || past ? "" : " · เปลี่ยนใจได้จนถึงกำหนดส่ง"}</p>`
       : started ? `<p>ขอเบิกแล้ว ${n} รายการ · ขั้นตอน ${prog.n}/${prog.total}${prog.label ? ` (${esc(prog.label)})` : ""}</p>` : ""}
     ${notice ? `<p class="card-notice" role="status" data-notice="${esc(notice.month)}">พัสดุจ่ายของแล้ว — ครบ ${esc(notice.complete)} · ไม่ครบ ${esc(notice.incomplete)} รายการ</p>` : ""}
     <div class="round-card-actions">
-      ${locked
+      ${viewOnly
         ? `<button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>`
         : `<button type="button" class="btn btn-primary" data-fill="${esc(round.month)}" data-step="${esc(startStep)}">${primaryLabel}</button>`}
       <button type="button" class="btn btn-secondary" data-print="${esc(round.month)}">ดู/พิมพ์/ดาวน์โหลด</button>
       ${canReport(request) ? receivedBtnHtml(round.month) : ""}
       ${hasIssueBtn ? `<a class="btn btn-secondary" href="#/issue?month=${esc(round.month)}" data-issue="${esc(round.month)}">ดูการจ่าย${notice ? ' <span class="badge badge-info badge-new">ใหม่</span>' : ""}</a>` : ""}
     </div>
-    ${locked ? "" : `<p class="noorder-line">${request && request.no_order
+    ${locked || past ? "" : `<p class="noorder-line">${request && request.no_order
       ? `<button type="button" class="btn btn-link" data-noorder="off" data-month="${esc(round.month)}">ยกเลิก "ไม่เบิก"</button>`
       : `<button type="button" class="btn btn-link" data-noorder="on" data-month="${esc(round.month)}">เดือนนี้ไม่เบิก</button>`}</p>`}
   </div>`;
@@ -285,6 +289,7 @@ export async function renderHome(container, app) {
     ${noticesHtml(app)}
     <p class="muted fy-line">${fyLineHtml(selectedFy, F, hasPrevFy)}</p>
     <div class="round-cards">${cardsHtml(app, selectedFy, F)}</div>
+    <p class="practice-entry"><a class="btn btn-secondary" href="#/fill?month=practice">ทดลองกรอก</a> <span class="muted small">ฝึกกรอกได้ตลอด ไม่ส่งจริง</span></p>
     <div class="dash-entry"><a class="btn btn-primary btn-lg" href="#/dashboard">📊 แดชบอร์ดการเบิก</a></div>
     <p class="home-links"><a href="#/hidden">ตั้งค่ารายการที่ไม่เบิก</a> · <a href="#/pin">เปลี่ยน PIN</a> · <a href="#/feedback">ความคิดเห็นของฉัน</a></p>
   `;

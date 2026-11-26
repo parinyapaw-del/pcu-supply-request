@@ -17,7 +17,7 @@ export { esc };
 
 export const SERIES = [
   { key: "req", label: "ขอเบิก", cls: "req" },
-  { key: "got", label: "ได้รับจริง", cls: "got" },
+  { key: "got", label: "ได้มาจริง", cls: "got" },
   { key: "used", label: "ใช้ไป", cls: "used" },
 ];
 export const MIXED_UNITS = "หน่วยนับรวม (ต่างชนิด)";
@@ -98,7 +98,7 @@ export function barChart(agg) {
     const aria = `${fullRound(m)}: ` + rows.map((r) => `${r.label} ${r.value}`).join(", ");
     hits += `<rect class="dash-hit" data-i="${i}" x="${g.L + g.gw * i}" y="${g.T}" width="${g.gw}" height="${g.ph}" tabindex="0" role="img" aria-label="${esc(aria)}"/>`;
   });
-  const label = summaryLabel("กราฟแท่งรายรอบ ขอเบิก ได้รับจริง ใช้ไป", SERIES.map((s) => `${s.label}รวม ${fmt(totals[s.key])} ${unitWord()}`));
+  const label = summaryLabel("กราฟแท่งรายเดือน ขอเบิก ได้มาจริง ใช้ไป", SERIES.map((s) => `${s.label}รวม ${fmt(totals[s.key])} ${unitWord()}`));
   const svg = `<svg class="dash-svg" viewBox="0 0 ${g.W} ${g.H}" role="group" aria-label="${esc(label)}">
     <title>${esc(label)}</title>${ax.svg}${bars}${hits}</svg>`;
   return { svg, tips, table: tableForBars(agg) };
@@ -260,12 +260,12 @@ export function kpiHtml(agg, data) {
   return `
     <div class="dash-kpis">
       ${tile("ขอเบิก", `<strong>${fmt(totals.req)}</strong>`, `สะสมปีงบ ${esc(data.fy)}`)}
-      ${tile("ได้รับจริง", `<strong>${fmt(totals.got)}</strong>`, (data.pcu || data.network)
-        ? "ตามที่ รพ.สต. แจ้งรับ ถ้าไม่ได้แจ้งใช้ยอดที่ผู้จ่ายบันทึก"
-        : "ตามที่แจ้งรับของ ถ้าไม่ได้แจ้งใช้ยอดผู้จ่าย (เฉพาะหน่วยที่จ่ายครบแล้ว)")}
+      ${tile("ได้มาจริง", `<strong>${fmt(totals.got)}</strong>`, (data.pcu || data.network)
+        ? "ตามที่ รพ.สต. กรอก ถ้ายังไม่กรอกใช้จ่ายจริง"
+        : "ตามที่กรอก ถ้ายังไม่กรอกใช้จ่ายจริง (เฉพาะหน่วยที่จ่ายครบแล้ว)")}
       ${tile("ใช้ไป", `<strong>${fmt(totals.used)}</strong>`, [
         coverage ? `กรอกเอง ${esc(coverage.with)}/${esc(coverage.total)} รายการ` : "ตามที่ รพ.สต. กรอก",
-        totals.est > 0 ? `≈ ${fmt(totals.est)} คิดด้วยยอดเบิกแทนได้มาจริง` : "",
+        totals.est > 0 ? `ประมาณ ${fmt(totals.est)} (ยังไม่มีได้มาจริง)` : "",
       ].filter(Boolean).join(" · "))}
       ${pctTile}
     </div>${flagNote}`;
@@ -285,7 +285,7 @@ export function groupRowsHtml(rows) {
       <span class="dash-group-head"><strong>${esc(r.group)}</strong><span class="muted small">${esc(r.items)} รายการ</span>
         <span class="dash-group-val"><strong>${fmt(r.req)}</strong> ${unitWord()} · ${Math.round(r.share * 100)}%</span></span>
       <span class="dash-hbar" aria-hidden="true"><span class="dash-f-req" style="width:${maxShare > 0 ? ((r.share / maxShare) * 100).toFixed(1) : 0}%"></span></span>
-      <span class="muted small">ได้รับจริง ${fmt(r.got)} · ใช้ไป ${fmt(r.used)}</span>
+      <span class="muted small">ได้มาจริง ${fmt(r.got)} · ใช้ไป ${fmt(r.used)}</span>
     </button></li>`)
     .join("")}</ul>`;
 }
@@ -328,7 +328,7 @@ export function spentHtml(rows, data) {
   // 2an: was labelled "ใช้ไปสะสม" — it is the value of what was received (else requested), not the used figure
   return `<div class="dash-card dash-spent"><div class="dash-kpi-label">มูลค่าของที่เบิกสะสมปีงบ ${esc(data.fy)}</div>
     <div class="dash-kpi-value"><strong>${fmt(total)}</strong> <span class="muted small">บาท</span></div>
-    <p class="muted small dash-caption">ใช้ยอดได้รับจริงถ้ามี ไม่งั้นใช้ยอดขอ · คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
+    <p class="muted small dash-caption">ใช้ยอดได้มาจริงถ้ามี ไม่งั้นใช้ยอดขอ · คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
 }
 
 export function limitCardHtml(rows, data) {
@@ -413,7 +413,7 @@ export function tableHtml(agg, data, { heat } = {}) {
         ${rounds.map((_, i) => roundCell(r, i)).join("")}
         <td class="num strong">${cell(r.cum.req)}</td>
         <td class="num">${cell(r.cum.got)}</td>
-        <td class="num"${r.est > 0 ? ` title="${esc(`ในนี้ ${fmt(r.est)} คิดด้วยยอดเบิกแทนได้มาจริง (ยังไม่กรอก)`)}"` : ""}>${r.est > 0 ? "≈ " : ""}${cell(r.cum.used)}</td>
+        <td class="num"${r.est > 0 ? ` title="${esc(`ในนี้ ${fmt(r.est)} เป็นยอดประมาณ (ยังไม่มีได้มาจริง)`)}"` : ""}>${r.est > 0 ? "ประมาณ " : ""}${cell(r.cum.used)}</td>
         <td class="num">${r.plan != null ? fmt(r.plan) : dash}</td>
         <td class="num">${esc(pctText(r.pct))}</td>
         <td class="num">${avg == null ? dash : cell(avg)}</td>
@@ -424,7 +424,7 @@ export function tableHtml(agg, data, { heat } = {}) {
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
   const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป · ≈ ได้มาจริงยังไม่กรอก คิดด้วยยอดเบิกแทน (อาจไม่ถูกต้อง)</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือเดือนถัดไป · “ประมาณ” = บางเดือนยังไม่มีได้มาจริง</p>
     ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">
@@ -432,7 +432,7 @@ export function tableHtml(agg, data, { heat } = {}) {
         <thead><tr>
           <th scope="col" class="dash-name">รายการ</th>
           ${rounds.map((m) => `<th scope="col" class="num" title="${esc(fullRound(m))}">${esc(shortRound(m))}</th>`).join("")}
-          <th scope="col" class="num">สะสมขอเบิก</th><th scope="col" class="num">ได้รับจริง</th><th scope="col" class="num">ใช้ไป</th>
+          <th scope="col" class="num">สะสมขอเบิก</th><th scope="col" class="num">ได้มาจริง</th><th scope="col" class="num">ใช้ไป</th>
           <th scope="col" class="num">แผนปี</th><th scope="col" class="num">% แผน</th>
           <th scope="col" class="num">เฉลี่ย/เดือน</th><th scope="col" class="num">คาดทั้งปี</th>
         </tr></thead>
@@ -510,7 +510,7 @@ export function createBody(box, data, { onRender, heat = false, hiddenLink = fal
   let ovRows = null;
   const overview = mountOverview($("#dash-overview"), {
     title: "ภาพรวมและคงเหลือต่อรายการ",
-    caption: "ต่อรายการ: ขอเบิก · ได้รับ (ที่ รพ.สต. กรอก) · จ่ายจริง (ที่หน่วยจ่ายบันทึก) · ใช้ไป · คงเหลือล่าสุดที่กรอก (ระบุรอบ · ได้เพิ่มในรอบนั้น = รวม) · พอใช้อีกกี่เดือน · เรียงได้ที่หัวคอลัมน์ · แสดง 10 รายการแรก",
+    caption: "ต่อรายการ: ขอเบิก · ได้มาจริง (รพ.สต. กรอก) · จ่ายจริง (หน่วยจ่ายบันทึก) · ใช้ไป · คงเหลือล่าสุดที่กรอก (ระบุรอบ · ได้เพิ่มในรอบนั้น = รวม) · พอใช้อีกกี่เดือน · เรียงได้ที่หัวคอลัมน์ · แสดง 10 รายการแรก",
     page: 10,
     collapsible: true,
     srcNote: "รอบที่กรอกแล้ว / รอบที่ขอเบิก",

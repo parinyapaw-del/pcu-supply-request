@@ -72,9 +72,9 @@ export async function renderReceived(container, app, params) {
     const mism = all.filter((r) => lineOf(r.code).mismatch === true).length;
     box.innerHTML = `
       <h2>รายงานของได้จริง ${esc(title)}</h2>
-      <p class="muted small">ไม่บังคับ · กรอกจำนวนที่ได้รับจริงรวม (OP+PP) ต่อรายการ · ช่องว่าง = ยังไม่แจ้ง (ต่างจาก 0) · ลบตัวเลขออกแล้วบันทึก = ยกเลิกการแจ้ง ·
-        แจ้งแล้วยอดขอของรายการนั้นจะคงไว้ตามเดิม</p>
-      <p class="rcv-summary" id="rcv-summary">แจ้งแล้ว ${reported}/${all.length} รายการ${mism ? ` · <span class="badge badge-warn">ไม่ตรง ${mism}</span>` : ""}</p>
+      <p class="muted small">ไม่บังคับ · กรอกจำนวนที่ได้มาจริงรวม (OP+PP) ต่อรายการ · ช่องว่าง = ยังไม่กรอก (ต่างจาก 0) · ลบตัวเลขออกแล้วบันทึก = ยกเลิกการแจ้ง ·
+        กรอกแล้วยอดขอของรายการนั้นจะคงไว้ตามเดิม</p>
+      <p class="rcv-summary" id="rcv-summary">กรอกแล้ว ${reported}/${all.length} รายการ</p>
       <div class="rcv-tools">
         <label class="field-label rcv-date-label">วันที่รับ <input type="date" id="rcv-date" value="${esc(todayBkk())}" max="${esc(todayBkk())}"></label>
         <button type="button" class="btn btn-secondary" id="rcv-fill">ได้ครบตามขอ</button>
@@ -85,18 +85,17 @@ export async function renderReceived(container, app, params) {
           const l = lineOf(r.code), got = issued[r.code];
           const has = l.rcv_qty !== undefined;
           const zero = req(l) <= 0; // reported, requested 0 by now → remove only
-          return `<div class="rcv-row${l.mismatch ? " rcv-mismatch" : ""}" data-code="${esc(r.code)}">
+          return `<div class="rcv-row" data-code="${esc(r.code)}">
             <div class="rcv-name">${esc(r.name)} <span class="muted small">${esc(r.unit)}</span></div>
             <div class="rcv-nums">
               <span class="rcv-cell"><span class="rcv-lbl">ขอ</span><strong>${formatInt(req(l))}</strong></span>
-              ${anyIssued ? `<span class="rcv-cell"><span class="rcv-lbl">ผู้จ่ายบันทึก</span>${got ? `<strong>${formatInt(got.total)}</strong>` : '<span class="muted">—</span>'}</span>` : ""}
-              <label class="rcv-cell"><span class="rcv-lbl">รพ.สต. แจ้ง</span>
-                <input type="number" inputmode="numeric" min="0" step="1" class="num-input rcv-qty" data-qty="${esc(r.code)}" value="${has ? esc(l.rcv_qty) : ""}"${zero ? " readonly" : ""} aria-label="ได้รับจริง ${esc(r.name)}"></label>
-              <span class="badge badge-warn rcv-flag"${l.mismatch ? "" : " hidden"}>ไม่ตรง</span>
+              ${anyIssued ? `<span class="rcv-cell"><span class="rcv-lbl">จ่ายจริง</span>${got ? `<strong>${formatInt(got.total)}</strong>` : '<span class="muted">—</span>'}</span>` : ""}
+              <label class="rcv-cell"><span class="rcv-lbl">ได้มาจริง</span>
+                <input type="number" inputmode="numeric" min="0" step="1" class="num-input rcv-qty" data-qty="${esc(r.code)}" value="${has ? esc(l.rcv_qty) : ""}"${zero ? " readonly" : ""} aria-label="ได้มาจริง ${esc(r.name)}"></label>
             </div>
             <input type="text" class="rcv-note" data-note="${esc(r.code)}" maxlength="200" placeholder="หมายเหตุ (ถ้ามี)" value="${esc(l.rcv_note || "")}"${zero ? " readonly" : ""}>
-            ${has ? `<div class="muted small rcv-meta">แจ้งแล้ว · รับวันที่ ${esc(formatThaiYmd(l.rcv_date))}</div>` : ""}
-            ${zero ? `<div class="muted small rcv-zero">ยอดขอเป็น 0 แล้ว — ลบการแจ้งได้อย่างเดียว <button type="button" class="btn btn-link" data-rcv-clear="${esc(r.code)}">ลบการแจ้ง</button></div>` : ""}
+            ${has ? `<div class="muted small rcv-meta">กรอกแล้ว · รับวันที่ ${esc(formatThaiYmd(l.rcv_date))}</div>` : ""}
+            ${zero ? `<div class="muted small rcv-zero">ยอดขอเป็น 0 แล้ว — ลบยอดที่กรอกได้อย่างเดียว <button type="button" class="btn btn-link" data-rcv-clear="${esc(r.code)}">ลบการแจ้ง</button></div>` : ""}
           </div>`;
         }).join("")}</div>`).join("")}
       <div class="summary-actions rcv-actions">
@@ -162,7 +161,7 @@ export async function renderReceived(container, app, params) {
       const list = changes();
       if (!list.length) { toast("ไม่มีอะไรเปลี่ยน"); return; }
       const bad = list.find((x) => x.qty !== null && !(Number.isInteger(x.qty) && x.qty >= 0 && x.qty <= 99999));
-      if (bad) { await alertDialog("ตัวเลขไม่ถูกต้อง", "<p>จำนวนที่ได้รับต้องเป็นเลขจำนวนเต็ม 0–99999</p>"); return; }
+      if (bad) { await alertDialog("ตัวเลขไม่ถูกต้อง", "<p>ได้มาจริงต้องเป็นเลขจำนวนเต็ม 0–99999</p>"); return; }
       const date = box.querySelector("#rcv-date").value || todayBkk();
       ev.currentTarget.disabled = true;
       try {

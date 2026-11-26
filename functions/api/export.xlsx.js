@@ -3,13 +3,14 @@ import { ApiError, errorBody, jsonResponse } from "../_lib/http.js";
 import { ensureSchema, getDb } from "../_lib/db.js";
 import { requireStaff } from "../_lib/auth.js";
 import { buildExport, parseExportScope } from "../_lib/export.js";
-import { setDevMonth } from "../_lib/time.js";
+import { setDevMonth, setDevDate } from "../_lib/time.js";
 
 const STATUS = { AUTH_REQUIRED: 401, AUTH_EXPIRED: 401, FORBIDDEN: 403, BAD_REQUEST: 400, NOT_FOUND: 404 };
 
 export async function onRequestGet({ request, env }) {
   try {
     setDevMonth(env.DEV_FAKE_GOOGLE === "1" ? request.headers.get("x-dev-month") : null);
+    setDevDate(env.DEV_FAKE_GOOGLE === "1" ? request.headers.get("x-dev-date") : null);
     const url = new URL(request.url);
     const auth = request.headers.get("authorization") || "";
     const token = url.searchParams.get("token") || (/^Bearer\s+(.+)$/i.exec(auth) || [])[1] || "";

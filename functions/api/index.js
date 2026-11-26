@@ -11,7 +11,7 @@ import * as pdf from "../_lib/pdf.js";
 import * as issue from "../_lib/issue.js";
 import { adminDashboard, issueShortage, pcuDashboard } from "../_lib/dashboard.js";
 import { adminSaveLines } from "../_lib/admin_entry.js";
-import { nowIso, setDevMonth } from "../_lib/time.js";
+import { nowIso, setDevMonth, setDevDate } from "../_lib/time.js";
 import * as feedback from "../_lib/feedback.js";
 import * as notices from "../_lib/notices.js";
 
@@ -182,6 +182,7 @@ async function devAction(action, ctx, p) {
 export async function onRequestPost({ request, env }) {
   try {
     setDevMonth(env.DEV_FAKE_GOOGLE === "1" ? request.headers.get("x-dev-month") : null);
+    setDevDate(env.DEV_FAKE_GOOGLE === "1" ? request.headers.get("x-dev-date") : null);
     const body = await readJson(request);
     const action = typeof body.action === "string" ? body.action : "";
     if (!action) throw err("BAD_REQUEST", "ต้องระบุ action");

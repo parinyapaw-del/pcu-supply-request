@@ -43,7 +43,7 @@ export function piecesHint(v, pack) {
   if (v === null || v === undefined || !pack) return null;
   const n = Number(v);
   if (!Number.isFinite(n) || Number.isInteger(n)) return null;
-  return `≈ ${Math.round(n * pack.n).toLocaleString("en-US")} ${pack.piece}`;
+  return `ประมาณ ${Math.round(n * pack.n).toLocaleString("en-US")} ${pack.piece}`; // 2at: the word, not ≈
 }
 
 /** A value typed in pieces → the stored figure in request units (2 decimals). */

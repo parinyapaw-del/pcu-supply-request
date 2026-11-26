@@ -23,10 +23,10 @@ function marksHtml(shot, meta) {
 }
 
 function shotHtml(shot, shots, imgBase) {
-  const meta = shots[shot.img];
+  const meta = shot.img ? shots[shot.img] : null; // 2at: a text-only block has no image
   const size = meta ? ` width="${meta.w}" height="${meta.h}"` : "";
   return `<figure class="help-shot">
-    <div class="help-imgwrap"><img src="${esc(imgBase + shot.img)}" alt="${esc(shot.alt || "")}" loading="lazy"${size}>${marksHtml(shot, meta)}</div>
+    ${shot.img ? `<div class="help-imgwrap"><img src="${esc(imgBase + shot.img)}" alt="${esc(shot.alt || "")}" loading="lazy"${size}>${marksHtml(shot, meta)}</div>` : ""}
     ${shot.steps && shot.steps.length ? `<ol class="help-steps">${shot.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
   </figure>`;
 }

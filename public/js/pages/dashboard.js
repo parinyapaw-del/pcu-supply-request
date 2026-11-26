@@ -88,7 +88,7 @@ export async function renderDashboard(container, app) {
     const empty = isEmpty(data);
     box.innerHTML = `
       ${headHtml}
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(data.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่างและรอบทดลอง) · ใช้ไปที่มีเครื่องหมาย ≈ คำนวณจากคงเหลือ 2 รอบติดกัน</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(data.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่างและรอบทดลอง) · ใช้ไปที่ขึ้น “ประมาณ” คำนวณจากคงเหลือ 2 เดือนติดกัน</p>
       ${controlsHtml(data, groups)}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(data.fy)} — เมื่อส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : bodyShellHtml()}`;
 

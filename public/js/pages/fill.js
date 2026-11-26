@@ -8,15 +8,16 @@ import * as sync from "../sync.js";
 import * as store from "../store.js";
 import { formatInt, formatMoney, formatMonthKeyThai, nowTimeHHMM } from "../format.js";
 import {
-  esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
+  esc, pcuCode, roundOf, monthData, isEditable, isLocked, isQtyOpen, isPastDeadline, isSent, isPractice, realMonthOf, PRACTICE, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
   alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow, showDialog,
 } from "./common.js";
-import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
+import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
 import { availableOf, deriveFields } from "../stock_calc.js";
-import { formatQty, packOf, piecesHint, piecesToUnits, qtyWarn, round2, usedWarn } from "../units.js";
+import { formatQty, packOf, piecesHint, qtyWarn, round2 } from "../units.js";
 
 let unsubStatus = null;
+let currentFillMonth = null; // 2at: the autosave line says "เก็บในเครื่อง" on the practice page
 const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
 
 function hiddenSet(app) {
@@ -46,7 +47,8 @@ function stepLabel(step) {
 
 // 2p: price of an item in the shown round = boot.prices[round][code] (only listed when it differs from the form) ?? form price.
 function priceOf(app, month, item) {
-  const p = app.boot.prices && app.boot.prices[month] ? app.boot.prices[month][item.code] : null;
+  const m = realMonthOf(app, month); // 2at: the practice page uses the current round's prices
+  const p = app.boot.prices && app.boot.prices[m] ? app.boot.prices[m][item.code] : null;
   return p !== null && p !== undefined ? Number(p) : item.price;
 }
 
@@ -97,7 +99,7 @@ function qtyLocked(app, month, code) {
 // Mirrors the server's notices.lockedCodes (from_month <= month) — keep the two in step.
 function itemLock(app, month, code) {
   const l = app.boot.item_locks && app.boot.item_locks[code];
-  return l && month >= l.from_month ? l : null;
+  return l && realMonthOf(app, month) >= l.from_month ? l : null;
 }
 // OP/PP (`field`) of a line are typed in unless: the page is read-only · the line is qty-locked · a "ไม่เบิก" month (table row + card).
 // 2ak A2: an admin item lock only stops raising (server ITEM_LOCKED, API.md §4) — a field with a stored quantity stays open to be lowered
@@ -117,7 +119,7 @@ function colClosed(app, code, field) {
 }
 const COL_LABEL = { op: "OP", pp: "PP" };
 const colClosedTitle = (field) => `ช่อง ${COL_LABEL[field]} ปิด — รายการนี้เบิกเป็น ${COL_LABEL[field]} ไม่ได้`;
-const qtyEditableOf = (app, month, code, editable, field) => editable && !qtyLocked(app, month, code) && !isNoOrder(app, month)
+const qtyEditableOf = (app, month, code, editable, field) => editable && isQtyOpen(app, month) && !qtyLocked(app, month, code) && !isNoOrder(app, month)
   && ((!itemLock(app, month, code) && !colClosed(app, code, field)) || lockedCap(app, month, code, field) > 0);
 const qtyInputHtml = (app, month, item, line, editable, field) =>
   inputHtml(field, line[field], qtyEditableOf(app, month, item.code, editable, field), colClosed(app, item.code, field) ? colClosedTitle(field) : "");
@@ -146,6 +148,7 @@ export async function renderFill(container, app, stepCode, params) {
   const codes = steps.map((s) => s.code).concat("summary");
   if (!codes.includes(stepCode)) stepCode = codes[0];
   const editable = isEditable(app, month);
+  currentFillMonth = month;
 
   if (sendUi.month !== month) sendUi.missing = new Set();
   if (unsubStatus) { unsubStatus(); unsubStatus = null; }
@@ -170,7 +173,7 @@ export async function renderFill(container, app, stepCode, params) {
   }
   wrap.appendChild(content);
   wrap.appendChild(renderNav(app, month, stepCode, codes));
-  if (editable && !isNoOrder(app, month)) { // 2af: "เดือนนี้ไม่เบิก" at the end of every fill page
+  if (isQtyOpen(app, month) && !isPractice(month) && !isNoOrder(app, month)) { // 2af (2at: until the deadline; not on the practice page): "เดือนนี้ไม่เบิก" at the end of every fill page
     const foot = document.createElement("p");
     foot.className = "noorder-foot";
     foot.innerHTML = `<button type="button" class="btn btn-link" data-noorder="on">เดือนนี้ไม่เบิก</button> <span class="muted small">— ส่งใบเปล่าสถานะ "ไม่เบิก" (ยกเลิกได้จนปิดรอบ)</span>`;
@@ -254,6 +257,13 @@ function renderBanners(app, month, stepIssued) {
     parts.push('<div class="notice notice-error"><strong>รอบนี้ปิดรับแล้ว</strong> — ดูใบเบิกได้อย่างเดียว แก้ไขไม่ได้</div>');
   } else if (!isActiveRound(app, month)) {
     parts.push('<div class="notice notice-info">เดือนเก่า — ดูอย่างเดียว</div>');
+  } else if (isPastDeadline(app, month)) { // 2at: like a closed round, but คงเหลือ / ใช้ไป / ได้มาจริง stay open on a sent request
+    parts.push(isSent(app, month)
+      ? `<div class="notice notice-info" id="fill-deadline-banner"><strong>เลยกำหนดส่งแล้ว</strong> — ยอดขอแก้ไม่ได้ · กรอกคงเหลือได้ · <a href="#/received">รายงานของได้จริง</a></div>`
+      : '<div class="notice notice-info" id="fill-deadline-banner"><strong>เลยกำหนดส่งแล้ว</strong> — ดูอย่างเดียว</div>');
+  }
+  if (isPractice(month)) {
+    parts.push(`<div class="notice notice-trial" id="fill-practice-banner"><strong>ทดลองกรอก</strong> — เก็บในเครื่องนี้เท่านั้น ไม่ส่งจริง ไม่มีผลกับใบเบิก · <button type="button" class="btn btn-secondary btn-sm" data-practice-clear>ล้างข้อมูลทดลอง</button></div>`);
   }
   if (request && request.no_order) { // 2af
     parts.push(`<div class="notice notice-info" id="fill-noorder-banner"><strong>เดือนนี้แจ้ง "ไม่เบิก" แล้ว</strong> — ยอดขอว่างทั้งหมด ไม่มีการจ่ายของ · คงเหลือยังกรอกได้${isEditable(app, month) ? ` · <button type="button" class="btn btn-secondary btn-sm" data-noorder="off">ยกเลิก ไม่เบิก</button>` : ""}</div>`);
@@ -269,7 +279,7 @@ function renderBanners(app, month, stepIssued) {
   const negRows = isEditable(app, month) ? negativeCalcRows(app, month) : [];
   if (negRows.length) {
     // 2o §3.4: a recalc (the received amount changed after this request was keyed) left คงเหลือ blank
-    parts.push(`<div class="notice notice-trial" id="fill-recalc-banner"><strong>ยอดได้รับเปลี่ยน</strong> มี ${negRows.length} รายการที่คงเหลือคำนวณติดลบ —
+    parts.push(`<div class="notice notice-info" id="fill-recalc-banner">มี ${negRows.length} รายการที่ยังคำนวณคงเหลือไม่ได้ (ยอดรอบก่อนเปลี่ยน) —
       <a href="#" data-jump="${esc(negRows[0].stepCode)}" data-code="${esc(negRows[0].code)}">ไปที่รายการแรก</a>
       ${negRows.length > 1 ? `<details class="recalc-list"><summary>ดูทุกรายการ</summary><ul class="jump-list">${negRows.map((r) => `<li><a href="#" data-jump="${esc(r.stepCode)}" data-code="${esc(r.code)}">${esc(r.name)} (${esc(r.code)})</a></li>`).join("")}</ul></details>` : ""}</div>`);
   }
@@ -282,6 +292,11 @@ function renderBanners(app, month, stepIssued) {
     });
   });
   wireNoOrder(host, app, month);
+  const clr = host.querySelector("[data-practice-clear]");
+  if (clr) clr.addEventListener("click", () => {
+    sync.clearPractice(pcuCode(app));
+    renderFill(document.getElementById("app"), app, "", null);
+  });
   return host;
 }
 
@@ -291,7 +306,7 @@ function refreshStatusChip(app, month) {
   const session = sync.getSession(pcuCode(app), month);
   const st = requestStatus(requestOf(app, month), roundOf(app, month), session && session.conflict);
   const round = roundOf(app, month);
-  el.innerHTML = `<span class="muted">${esc(roundTitle(month, round))}${round && !round.trial ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, month)}${adminEntryTagHtml(requestOf(app, month))} <span class="badge ${st.cls}">${esc(st.label)}</span>` +
+  el.innerHTML = `<span class="muted">${esc(roundTitle(month, round))}${round && !round.trial && !round.practice ? ` · ปีงบ ${esc(round.fy)}` : ""} · สถานะ</span>${trialBadgeHtml(round)}${currentRoundTagHtml(app, month)}${adminEntryTagHtml(requestOf(app, month))} <span class="badge ${st.cls}">${esc(st.label)}</span>` +
     st.extra.map((e) => ` <span class="badge ${e.cls}">${esc(e.label)}</span>`).join("");
 }
 
@@ -375,6 +390,7 @@ function renderNav(app, month, stepCode, codes) {
         : st.qtyRefusedCode === "ITEM_LOCKED" ? "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin"
         : st.qtyRefusedCode === "COL_CLOSED" ? "รายการนี้ปิดช่อง OP/PP ไว้ — ขอเบิกในช่องนั้นไม่ได้ (ยอดขอคงไว้ตามเดิม)"
         : st.qtyRefusedCode === "NO_ORDER" ? 'เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กด "ยกเลิก ไม่เบิก" ก่อนจึงกรอกยอดขอได้'
+        : st.qtyRefusedCode === "PAST_DEADLINE" ? "เลยกำหนดส่งแล้ว — ยอดขอคงไว้ตามเดิม (คงเหลือบันทึกแล้ว)"
         : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
     }
@@ -411,7 +427,7 @@ function updateAutosaveStatus(st) {
     el.textContent = "ยังไม่ขึ้น server — จะลองใหม่อัตโนมัติ";
     el.classList.add("autosave-offline");
   } else if (st.state === "conflict") {
-    el.textContent = "รอบนี้ปิดรับแล้ว — แก้ไขไม่ได้";
+    el.textContent = "แก้ไขไม่ได้แล้ว";
     el.classList.add("autosave-offline");
   } else if (st.state === "error") {
     el.textContent = "บันทึกไม่สำเร็จ — ลองแก้ค่าอีกครั้ง";
@@ -419,7 +435,7 @@ function updateAutosaveStatus(st) {
   } else if (st.state === "pending") {
     el.textContent = "รอบันทึก…";
   } else if (st.lastSavedAt) {
-    el.textContent = `บันทึกบน server แล้ว ${nowTimeHHMM(st.lastSavedAt)}`;
+    el.textContent = `${isPractice(currentFillMonth) ? "เก็บในเครื่องแล้ว" : "บันทึกบน server แล้ว"} ${nowTimeHHMM(st.lastSavedAt)}`;
   } else {
     el.textContent = "";
   }
@@ -431,7 +447,7 @@ function renderStepForm(app, month, step, editable) {
   const box = document.createElement("div");
   box.className = "step-form";
 
-  box.appendChild(buildStockModeSwitch(app, month, step));
+  if (!isPractice(month)) box.appendChild(buildStockModeSwitch(app, month, step)); // a PCU setting on the server
   box.appendChild(buildItemSearch(app, month, step));
 
   if (!stockRequired(app) && editable) {
@@ -674,9 +690,14 @@ function patchForEdit(modeB, base, line, field, value) {
   return Object.assign(patch, deriveFields(base, { ...line, ...patch }));
 }
 
+// 2at: which figure stands for "what came in" last round — ได้มาจริง (PCU) / จ่ายจริง (dispenser) / none yet (the requested qty stands in)
+const hasActual = (base) => base.received_src === "pcu" || base.received_src === "issued";
+const inLabel = (base) => (base.received_src === "issued" ? "จ่ายจริง" : hasActual(base) || base.received_src === undefined ? "ได้มาจริง" : "ยอดขอ");
 function calcHintText(base, line) {
   const adj = Number(line.adj) || 0;
-  return `ยกมา ${formatQty(base.stock)} + ได้รับ ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${formatQty(round2(availableOf(base, line)))}`;
+  const est = base.received_src !== undefined && !hasActual(base);
+  return `ยกมา ${formatQty(base.stock)} + ${inLabel(base)} ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${est ? "ประมาณ " : ""}${formatQty(round2(availableOf(base, line)))}`
+    + (est ? " · ยังไม่มีข้อมูลได้มาจริง ยอดนี้อาจยังไม่ถูก" : "");
 }
 
 // Mode-B block under the item name: ยกมา hint, "± ปรับยอด" link + input, message slot (filled by refreshRowCalc).
@@ -717,12 +738,12 @@ function refreshRowCalc(app, month, item) {
     const usedEl = root.querySelector('input[data-field="used"]');
     if (stockEl) {
       stockEl.classList.toggle("calc-field", stockComputed);
-      stockEl.classList.toggle("input-warn", st === "surplus");
+      stockEl.classList.toggle("input-warn", false); // 2at: no yellow
       if (line.stock != null) stockEl.classList.remove("input-error");
     }
     if (usedEl) {
       usedEl.classList.toggle("calc-field", usedComputed);
-      usedEl.classList.toggle("input-error", st === "neg");
+      usedEl.classList.toggle("input-error", false); // 2at: no red — the note under the row says why
     }
     root.querySelectorAll("[data-calc-tag]").forEach((tag) => { tag.hidden = !(tag.dataset.calcTag === "stock" ? stockComputed : usedComputed); });
     root.querySelectorAll("[data-pcs-hint]").forEach((h) => { h.textContent = pcsHintText(item, h.dataset.pcsHint, line[h.dataset.pcsHint]); }); // 2ao
@@ -735,9 +756,9 @@ function refreshRowCalc(app, month, item) {
       const editable = !!stockEl && !stockEl.disabled;
       if (st === "neg") {
         const pk = packOf(item);
-        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatQty(line.used)} ${esc(item.unit || "")} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} — ตรวจสอบยอดใช้ไป${pk ? ` (ถ้านับเป็น${esc(pk.piece)} ให้หาร ${esc(pk.n.toLocaleString("en-US"))})` : ""} หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
+        msg.innerHTML = `<div class="ghost-line calc-note">ยังคำนวณคงเหลือไม่ได้ — ใช้ไปมากกว่ายอดที่มี (${formatQty(round2(availableOf(base, line)))})${pk ? ` · นับเป็น${esc(item.unit || "หน่วย")} (${esc(pk.n.toLocaleString("en-US"))} ${esc(pk.piece)})` : ""}</div>`;
       } else if (st === "surplus") {
-        msg.innerHTML = `<div class="calc-warn">คงเหลือ ${formatQty(line.stock)} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} (บันทึกคงเหลือ ไม่คำนวณใช้ไป)
+        msg.innerHTML = `<div class="ghost-line calc-note">คงเหลือมากกว่ายอดที่มี (${formatQty(round2(availableOf(base, line)))}) — ยังคำนวณใช้ไปไม่ได้
           ${editable ? `<button type="button" class="btn btn-secondary btn-sm" data-put-extra>ใส่เป็นยอดรับเพิ่ม</button>` : ""}</div>`;
       } else {
         msg.innerHTML = "";
@@ -801,7 +822,7 @@ function buildStockModeSwitch(app, month, step) {
 function hintHtml(app, month, item) {
   const data = monthData(app, month);
   const lines = [];
-  if (roundUsesCurrentFy(app, month)) {
+  if (roundUsesCurrentFy(app, month) && !isPractice(month)) {
     const plan = app.boot.plans && app.boot.plans[item.code];
     const planTotal = plan ? (Number(plan[0]) || 0) + (Number(plan[1]) || 0) : 0;
     const used = (data.used_fy && data.used_fy[item.code]) || 0;
@@ -814,8 +835,9 @@ function hintHtml(app, month, item) {
     if (prev.received === undefined) {
       html += `<div class="ghost-line">รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}</div>`; // old server without 2o fields
     } else {
-      const src = prev.received_src === "pcu" ? "ตามที่แจ้งรับ" : prev.received_src === "issued" ? "จ่ายจริง" : "ตามที่ขอ"; // 2ar
-      html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ไม่ได้กรอกคงเหลือ" : `คงเหลือ ${formatQty(prev.stock)}`} · ได้รับ ${formatInt(Number(prev.received) || 0)} (${src})${opPp}</div>`;
+      // 2at: one name per figure — ได้มาจริง (PCU) · จ่ายจริง (dispenser) · none yet: say so, no blame
+      const got = hasActual(prev) ? `${inLabel(prev)} ${formatInt(Number(prev.received) || 0)}` : "ยังไม่มีข้อมูลได้มาจริง";
+      html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ยังไม่มีคงเหลือ" : `คงเหลือ ${formatQty(prev.stock)}`} · ${got}${opPp}</div>`;
     }
   }
   return html;
@@ -887,74 +909,19 @@ function unitCellHtml(app, item) {
   return `${esc(item.unit || "")}<div class="pack-note">${esc(`${pk.n.toLocaleString("en-US")} ${pk.piece}/${item.unit || "หน่วย"}`)}</div>`;
 }
 
-// 2ao: "ยอดขอสูงผิดปกติ" — the note under the row (stays while it is true) + a one-time confirm per (round, item, qty)
-const QTY_OK_KEY = "pcu_qty_ok_v1";
-function qtyOkSet() {
-  try { return new Set(JSON.parse(localStorage.getItem(QTY_OK_KEY) || "[]")); } catch { return new Set(); }
-}
-const qtyOkKey = (app, month, code, q) => `${pcuCode(app)}|${month}|${code}|${q}`;
+// 2ao: a quantity far above this PCU's usual one → 2at: only a gray "ตรวจหน่วย" line under the row (no popup)
 function qtyWarnOf(app, month, item, line) {
-  return qtyWarn((app.boot.unit_hist || {})[item.code], month, lineTotal(line));
+  return qtyWarn((app.boot.unit_hist || {})[item.code], realMonthOf(app, month), lineTotal(line));
 }
-function qtyWarnText(app, month, item, line, w) {
+// 2at: one short neutral line (Save: no blame, no worry, little to read) — the unit the sheet counts in
+function qtyWarnText(app, month, item) {
   const pk = packOf(item);
   const unit = item.unit || "หน่วย";
-  const q = lineTotal(line);
-  return `ขอ ${formatInt(q)} ${unit} (${formatMoney(q * priceOf(app, month, item))} บาท) สูงกว่าที่เคยขอมาก (ปกติไม่เกิน ${formatQty(round2(w.base))} ${unit}/เดือน)`
-    + ` — รายการนี้นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit}) ถ้านับเป็น${pk.piece} ให้หาร ${pk.n.toLocaleString("en-US")} ก่อนกรอก` : ""}`;
+  return `ตรวจหน่วย: นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit})` : ""}`;
 }
-async function confirmQtyWarn(app, month, item, input) {
-  const line = sync.getLine(pcuCode(app), month, item.code);
-  const w = qtyWarnOf(app, month, item, line);
-  if (!w) return;
-  const key = qtyOkKey(app, month, item.code, lineTotal(line));
-  const ok = qtyOkSet();
-  if (ok.has(key)) return;
-  const v = await showDialog({
-    title: "ตรวจหน่วยก่อน — ยอดขอสูงผิดปกติ",
-    html: `<p><strong>${esc(item.name)}</strong></p><p>${esc(qtyWarnText(app, month, item, line, w))}</p><p>ยอดนี้ถูกต้องไหม?</p>`,
-    buttons: [{ label: "แก้ยอด", value: "fix" }, { label: "ยืนยัน ยอดถูกต้อง", value: "ok", primary: true }],
-  });
-  if (v === "ok") {
-    ok.add(key);
-    try { localStorage.setItem(QTY_OK_KEY, JSON.stringify([...ok].slice(-300))); } catch { /* ignore */ }
-  } else if (input && document.body.contains(input)) {
-    input.focus();
-    input.select();
-  }
-}
-// 2ao: ใช้ไป more than ยกมา + ได้รับ (only with last round's คงเหลือ) — maybe counted in pieces: say how to convert (2ap: no switch)
-let usedAsking = false;
-async function confirmUsedWarn(app, month, item, input) {
-  if (usedAsking || !isModeB(app)) return;
-  const line = sync.getLine(pcuCode(app), month, item.code);
-  const base = baselineOf(app, month, item.code);
-  const w = usedWarn(base, line);
-  if (!w) return;
-  const pk = packOf(item);
-  const unit = item.unit || "หน่วย";
-  const asUnits = pk ? piecesToUnits(Number(line.used), pk) : null;
-  usedAsking = true;
-  try {
-    const v = await showDialog({
-      title: "ใช้ไปมากกว่าของที่มี — ตรวจหน่วย",
-      html: `<p><strong>${esc(item.name)}</strong> นับเป็น “${esc(unit)}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${esc(pk.piece)}/${esc(unit)})` : ""}</p>
-        <p>กรอกใช้ไป ${esc(formatQty(line.used))} ${esc(unit)} แต่มีของ ${esc(formatQty(round2(w.avail)))} ${esc(unit)} (ยกมา + ได้รับ)</p>
-        ${asUnits !== null && asUnits <= w.avail ? `<p>ถ้านับเป็น${esc(pk.piece)}: ${esc(formatQty(line.used))} ${esc(pk.piece)} = ${esc(formatQty(asUnits))} ${esc(unit)} — แก้ยอดเป็น ${esc(formatQty(asUnits))}</p>` : ""}`,
-      buttons: [{ label: "แก้ยอด", value: "fix", primary: true }, { label: "ยอดถูกต้อง", value: "ok" }],
-    });
-    if (v === "fix" && input && document.body.contains(input)) {
-      input.focus();
-      input.select();
-    }
-  } finally {
-    usedAsking = false;
-  }
-}
-
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
 // 2ad (H5): the reason ใช้ไป is disabled + what to do instead
-const NO_BASE_TITLE = "ใช้ไปกรอกไม่ได้ เพราะรอบก่อนไม่มียอดคงเหลือ (ยกมา) — กรอกคงเหลือเองได้";
+const NO_BASE_TITLE = "ยังไม่เคยมีข้อมูลคงเหลือ — ยังคำนวณไม่ได้ (กรอกคงเหลือเองได้)";
 
 // ใช้ไป input (mode B): disabled when the row has no baseline (Q13).
 function usedInputHtml(app, month, item, line, editable) {
@@ -1022,7 +989,7 @@ function buildItemTr(app, month, item, editable) {
     <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "pp")}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
     <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
-    <td class="col-action">${editable ? hideBtnHtml(app, item) : ""}</td>`;
+    <td class="col-action">${editable && isQtyOpen(app, month) && !isPractice(month) ? hideBtnHtml(app, item) : ""}</td>`;
   return tr;
 }
 
@@ -1057,7 +1024,7 @@ function buildItemCard(app, month, item, editable) {
     <div class="item-card-head">
       <span class="item-seq">${esc(item.seq)}</span>
       <span class="item-name">${esc(item.name)}</span>
-      ${editable ? hideBtnHtml(app, item) : ""}
+      ${editable && isQtyOpen(app, month) && !isPractice(month) ? hideBtnHtml(app, item) : ""}
     </div>
     <div class="item-card-meta">หน่วย: <span data-unit-cell class="unit-inline">${unitCellHtml(app, item, editable)}</span> · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
     ${rowNoteHtml(app, month, item, editable)}${stockFlagHtml(app, item)}
@@ -1084,17 +1051,17 @@ function refreshStepTotals(app, month, step) {
 // Over the annual plan = light-yellow row + note, never blocks (2ad · the yearly ceiling is retired from fy 2570, 2ak E1).
 function refreshRowLimit(app, month, item) {
   const line = sync.getLine(pcuCode(app), month, item.code);
-  const plan = roundUsesCurrentFy(app, month) ? planStatus(app, month, item, lineTotal(line)) : null;
+  const plan = null; // 2at: "เกินแผน" is not shown to the PCU (admin still sees it)
   document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
     if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-plan-over", !!plan);
   });
   const qw = item.active !== false ? qtyWarnOf(app, month, item, line) : null; // 2ao
   document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
-    if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-qty-warn", !!qw);
+    if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-qty-warn", false);
   });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
     box.innerHTML = (plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "")
-      + (qw ? `<div class="limit-line limit-unit" data-qty-warn>⚠ ${esc(qtyWarnText(app, month, item, line, qw))}</div>` : "");
+      + (qw ? `<div class="ghost-line" data-qty-warn>${esc(qtyWarnText(app, month, item))}</div>` : "");
   });
 }
 
@@ -1170,9 +1137,8 @@ function wireStepEvents(app, month, step, editable) {
       const item = items.find((it) => it.code === code);
       if (!item || input.disabled) return;
       const f = input.dataset.field;
-      if (f === "op" || f === "pp") confirmQtyWarn(app, month, item, input);
-      else if (f === "used") confirmUsedWarn(app, month, item, input);
-      else if (f === "stock") { const line = sync.getLine(pcuCode(app), month, code); input.value = qtyStr(item, f, line.stock); }
+      // 2at: no popups for high amounts / ใช้ไป — the gray line under the row is enough
+      if (f === "stock") { const line = sync.getLine(pcuCode(app), month, code); input.value = qtyStr(item, f, line.stock); }
     });
 
     input.addEventListener("keydown", (ev) => {
@@ -1337,7 +1303,8 @@ function renderSummary(app, month, steps) {
   box.className = "summary-page";
   const request = requestOf(app, month);
   // 2ad: an issued request can still be changed (other lines, คงเหลือ) and re-sent until the round closes
-  const editable = isEditable(app, month);
+  const editable = isQtyOpen(app, month); // 2at: send / ไม่เบิก only up to the deadline (คงเหลือ after it autosaves on the item pages)
+  const practice = isPractice(month);
   const round = roundOf(app, month);
 
   let grandOp = 0, grandPp = 0, grandQty = 0, grandMoney = 0;
@@ -1347,7 +1314,7 @@ function renderSummary(app, month, steps) {
     return { code: step.code, title: stepLabel(step), t, issued: isStepIssued(app, month, step) };
   });
   const lockedSteps = stepRows.filter((s) => s.issued);
-  const { missing, planOvers } = collectIssues(app, month);
+  const { missing } = collectIssues(app, month); // 2at: "เกินแผน" is not shown to the PCU
 
   box.innerHTML = `
     <h2>สรุปยอด${editable ? "ก่อนส่ง" : ""}</h2>
@@ -1369,14 +1336,6 @@ function renderSummary(app, month, steps) {
       ${missing.length === 0 ? '<p class="muted">กรอกครบทุกรายการแล้ว</p>' : `<ul class="jump-list">${missing.map((m) => `<li><a href="#" data-jump="${esc(m.stepCode)}" data-code="${esc(m.code)}">${esc(m.name)} (${esc(m.code)})</a></li>`).join("")}</ul>`}
     </div>` : ""}
 
-    ${planOvers.length ? `
-    <div class="summary-section summary-plan" id="plan-box">
-      <h3>รายการที่ยอดรวมปีนี้จะเกินแผน (${planOvers.length})</h3>
-      <p class="small">แจ้งให้ทราบเท่านั้น — ส่งใบเบิกได้ตามปกติ</p>
-      <ul class="jump-list">${planOvers.map((o) => `<li><a href="#" data-jump="${esc(o.stepCode)}" data-code="${esc(o.code)}" data-field="op">${esc(o.name)} (${esc(o.code)})</a>
-        <div class="small">${esc(o.plan.message)}</div></li>`).join("")}</ul>
-    </div>` : ""}
-
     <div class="summary-section">
       <label class="field-label">ชื่อผู้กรอก (ไม่บังคับ, ไม่พิมพ์ในใบเบิก)
         <input type="text" id="submitter-name" maxlength="120" value="${esc(request ? request.submitter_name || "" : "")}" ${editable ? "" : "disabled"}>
@@ -1385,7 +1344,9 @@ function renderSummary(app, month, steps) {
     </div>
 
     <div class="summary-actions">
-      ${editable && request && request.no_order
+      ${practice
+        ? `<button type="button" class="btn btn-primary" id="btn-save">ลองกดส่ง</button>`
+        : editable && request && request.no_order
         ? `<button type="button" class="btn btn-secondary" data-noorder="off">ยกเลิก ไม่เบิก</button>`
         : editable
         ? `<button type="button" class="btn btn-primary" id="btn-save">บันทึก</button>
@@ -1393,8 +1354,8 @@ function renderSummary(app, month, steps) {
            <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf; = send + download, spec §4.4). Not in 2a. -->`
         : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์/ดาวน์โหลดใบเบิก</button>`}
     </div>
-    <p class="muted send-hint">${editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
-    ${round && editable && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}
+    <p class="muted send-hint">${practice ? "ทดลองเท่านั้น — ไม่ส่งจริง" : isPastDeadline(app, month) ? "เลยกำหนดส่งแล้ว" : editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
+    ${round && editable && !practice && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}
   `;
 
   box.querySelectorAll("[data-jump]").forEach((a) => {
@@ -1417,11 +1378,11 @@ function renderSummary(app, month, steps) {
   wireNoOrder(box, app, month);
   if (saveBtn) {
     saveBtn.addEventListener("click", async () => {
-      saveBtn.disabled = true; printBtn.disabled = true;
+      saveBtn.disabled = true; if (printBtn) printBtn.disabled = true;
       try {
         if (await trySend(app, month)) await renderFill(document.getElementById("app"), app, "summary", null);
       } finally {
-        saveBtn.disabled = false; printBtn.disabled = false;
+        saveBtn.disabled = false; if (printBtn) printBtn.disabled = false;
       }
     });
   }

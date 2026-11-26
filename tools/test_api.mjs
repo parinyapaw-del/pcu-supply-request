@@ -62,7 +62,7 @@ let devMonth = CAL;
 async function api(action, params = {}, token, opts = {}) {
   const res = await fetch(BASE + "/api", {
     method: "POST",
-    headers: { "content-type": opts.json ? "application/json" : "text/plain;charset=utf-8", "x-dev-month": opts.month || devMonth },
+    headers: { "content-type": opts.json ? "application/json" : "text/plain;charset=utf-8", "x-dev-month": opts.month || devMonth, ...(opts.date ? { "x-dev-date": opts.date } : {}) },
     body: JSON.stringify({ action, token, ...params }),
   });
   return res.json();
@@ -4311,7 +4311,7 @@ async function main() {
     eq([!!U.usedWarn({ stock: 3, received: 0 }, { used: 210 }), !!U.usedWarn({ stock: 3, received: 2 }, { used: 5 }), !!U.usedWarn(null, { used: 210 }), !!U.usedWarn({ stock: null }, { used: 210 })],
       [true, false, false, false], "2ao usedWarn: used > ยกมา + ได้รับ · no last-round คงเหลือ → no warning");
     eq([U.piecesToUnits(40, { n: 100 }), U.unitsToPieces(0.4, { n: 100 }), U.piecesHint(0.4, { n: 100, piece: "ชิ้น" }), U.piecesHint(2, { n: 100, piece: "ชิ้น" }), U.formatQty(0.4), U.formatQty(1200)],
-      [0.4, 40, "≈ 40 ชิ้น", null, "0.4", "1,200"], "2ao pieces ⇄ units · hint only on a fraction · formatQty");
+      [0.4, 40, "ประมาณ 40 ชิ้น", null, "0.4", "1,200"], "2ao pieces ⇄ units · hint only on a fraction · formatQty");
 
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
     await mustOk("adminLockRound", { month: PREV, locked: 0 }, ADM2);
@@ -4422,6 +4422,43 @@ async function main() {
     const pdfLib = await import(new URL("../functions/_lib/pdf.js", import.meta.url));
     const bundle = { pcuRow: { code: P, name: "x", print_name: "x" }, reqRow: { form_version_id: 1 }, lines: [{ item_code: X.code, op: 2, pp: 0 }], form: null, requester: null };
     eq(await pdfLib.contentKeyOf({ ...bundle, hidden: [X.code] }), await pdfLib.contentKeyOf({ ...bundle, hidden: [] }), "2ap: contentKeyOf ignores the hidden list");
+  }
+  section("2at: past the deadline — requested qty closes, คงเหลือ / ใช้ไป / ได้มาจริง stay open · not sent = closed · admin unaffected");
+  {
+    const B0 = await mustOk("adminBootstrap", {}, ADM2);
+    const P = B0.pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    const T = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    const pb = await mustOk("pcuBootstrap", {}, T);
+    const locked = new Set(Object.keys(pb.item_locks || {}));
+    const items = pb.form.steps.filter((x) => x.active !== false).flatMap((x) => x.rows)
+      .filter((r) => r.type === "item" && r.active !== false && !locked.has(r.code) && !(r.closed_cols || []).length)
+      .filter((r) => !((pb.byMonth[CUR] || {}).request || { lines: {} }).lines[r.code]);
+    const [X, Y] = items;
+    const dl = pb.rounds.find((r) => r.month === CUR).deadline_date;
+    const after = new Date(Date.parse(dl + "T00:00:00Z") + 86400000).toISOString().slice(0, 10);
+    const on = { date: dl }, late = { date: after };
+    const sv = (lines, extra = {}, opts = on) => api("saveLines", { month: CUR, lines: Object.fromEntries(Object.entries(lines).map(([c, v]) => [c, { stock: null, op: null, pp: null, updated_at: new Date().toISOString(), ...v }])), ...extra }, T, opts);
+    eq((await api("pcuBootstrap", {}, T, on)).data.rounds.find((r) => r.month === CUR).past_deadline, false, "deadline day itself: past_deadline false");
+    eq((await api("pcuBootstrap", {}, T, late)).data.rounds.find((r) => r.month === CUR).past_deadline, true, "day after: past_deadline true");
+    eq((await api("pcuBootstrap", {}, T)).data.rounds.find((r) => r.month === CUR).past_deadline, false, "X-Dev-Month only (no X-Dev-Date) → no deadline lock");
+    const had = ((pb.byMonth[CUR] || {}).request || {}).status;
+    if (!had || had === "draft") {
+      ok((await sv({ [X.code]: { op: 1, stock: 3 } })).ok, "on the deadline day: draft save ok");
+      expectErr(await sv({ [X.code]: { op: 1, stock: 4 } }, {}, late), "CONFLICT", "past deadline, never sent → CONFLICT");
+      expectErr(await api("pcuNoOrder", { month: CUR }, T, late), "CONFLICT", "past deadline: ไม่เบิก → CONFLICT");
+    }
+    ok((await sv({ [X.code]: { op: 2, stock: 3 } }, { send: true })).ok, "send on the deadline day ok");
+    const s1 = await sv({ [X.code]: { op: 2, stock: 5 } }, {}, late);
+    ok(s1.ok && s1.data.request.lines[X.code].stock === 5, "past deadline, sent: คงเหลือ still saves");
+    const s2 = await sv({ [X.code]: { op: 9, stock: 5 } }, {}, late);
+    expectErr(s2, "PAST_DEADLINE", "past deadline: raising the requested qty → PAST_DEADLINE");
+    eq(s2.error && s2.error.items, [{ code: X.code, op: 2, pp: null }], "PAST_DEADLINE.items carry the stored op/pp");
+    expectErr(await sv({ [Y.code]: { op: 1 } }, {}, late), "PAST_DEADLINE", "past deadline: a new requested line → PAST_DEADLINE");
+    expectErr(await sv({ [X.code]: { op: 2, stock: 5 } }, { send: true }, late), "PAST_DEADLINE", "past deadline: re-send → PAST_DEADLINE");
+    const r1 = await api("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 2 }] }, T, late);
+    ok(r1.ok, "past deadline: ได้มาจริง (pcuReceivedSave) still saves" + (r1.ok ? "" : ` (${r1.error.code})`));
+    const a1 = await api("adminSaveLines", { pcu: P, month: CUR, lines: { [Y.code]: { op: 1, pp: 0 } } }, ADM2, late);
+    ok(a1.ok, "past deadline: admin keying (adminSaveLines) unaffected" + (a1.ok ? "" : ` (${a1.error.code})`));
   }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);

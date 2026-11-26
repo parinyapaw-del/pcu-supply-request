@@ -158,7 +158,11 @@ async function route() {
     } else if (path === "fill") {
       const stepCode = segments[1] || "";
       app.monthKey = params.get("month") || app.boot.rounds[0].month;
-      await loadOlderMonth(app, app.monthKey); // no-op for current/previous month
+      if (app.monthKey === sync.PRACTICE_MONTH) { // 2at: device-only practice page (never loaded from / sent to the server)
+        if (!sync.getSession(app.boot.pcu.code, app.monthKey)) sync.initSession(app.boot.pcu.code, app.monthKey, null);
+      } else {
+        await loadOlderMonth(app, app.monthKey); // no-op for current/previous month
+      }
       await renderFill(container, app, stepCode, params);
     } else if (path === "print") {
       if (!isAdminPrint) {

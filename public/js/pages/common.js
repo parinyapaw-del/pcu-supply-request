@@ -43,6 +43,7 @@ export { shortMonthKeyThai };
 // Brief 2j: a round is named after the month the supplies are for -> "ขอเบิก พฤศจิกายน 2569".
 // 2w: the trial round has no month — it is just "ทดลอง" (pass the RoundInfo, or `true`, as `trial`).
 export function roundTitle(monthKey, trial) {
+  if (monthKey === PRACTICE) return "ทดลองกรอก";
   if (trial === true || (trial && trial.trial)) return "ทดลอง";
   return `ขอเบิก ${monthLabel(monthKey)}`;
 }
@@ -57,7 +58,15 @@ export function pcuCode(app) {
   return app.boot.pcu.code;
 }
 
+// 2at: the practice page — the fill page on this device only (sync.js keeps it local, never sent, no effect on any round).
+// Its prices / items are those of the current round; it never closes.
+export const PRACTICE = "practice";
+export const isPractice = (month) => month === PRACTICE;
+// The real month a practice page borrows prices / item locks from (the current round).
+export const realMonthOf = (app, month) => (month === PRACTICE ? currentRoundMonth(app) : month);
+
 export function roundOf(app, month) {
+  if (month === PRACTICE) return { month: PRACTICE, practice: true, trial: false, locked: false, past_deadline: false, deadline_date: null, fy: (roundOf(app, currentRoundMonth(app)) || {}).fy };
   const r = app.boot.rounds.find((x) => x.month === month);
   if (r) return r;
   return (app.older && app.older[month] && app.older[month].round) || null;
@@ -112,6 +121,7 @@ export function isTrialMonth(app, month) {
 // "กรุณาส่งภายใน …" (trial round: "กรอกภายใน …").
 export function deadlineText(round) {
   if (!round || !round.deadline_date) return "";
+  if (round.past_deadline) return `เลยกำหนดส่งแล้ว (${formatThaiYmd(round.deadline_date)})`;
   return `${round.trial ? "กรอกภายใน" : "กรุณาส่งภายใน"} ${formatThaiYmd(round.deadline_date)}`;
 }
 
@@ -121,7 +131,18 @@ export function trialNote(round) {
 
 // Months shown on the home page as editable rounds (current + previous).
 export function isActiveRound(app, month) {
-  return app.boot.rounds.some((r) => r.month === month);
+  return month === PRACTICE || app.boot.rounds.some((r) => r.month === month);
+}
+
+// 2at: past the round's deadline (server RoundInfo.past_deadline) — the requested quantities are closed, a sent request keeps
+// คงเหลือ / ใช้ไป open (ได้มาจริง is on its own page), a request never sent is read-only.
+export function isPastDeadline(app, month) {
+  const r = roundOf(app, month);
+  return !!(r && r.past_deadline);
+}
+export function isSent(app, month) {
+  const req = requestOf(app, month);
+  return !!req && (req.status === "submitted" || req.status === "issued");
 }
 
 export function isLocked(app, month) {
@@ -132,7 +153,11 @@ export function isLocked(app, month) {
 
 // Editable = an active round (current/previous), not locked, server has not refused (CONFLICT).
 export function isEditable(app, month) {
-  return isActiveRound(app, month) && !isLocked(app, month);
+  return isActiveRound(app, month) && !isLocked(app, month) && !(isPastDeadline(app, month) && !isSent(app, month));
+}
+// 2at: the requested quantities (OP / PP), "ไม่เบิก" and sending are open only up to the deadline.
+export function isQtyOpen(app, month) {
+  return isEditable(app, month) && !isPastDeadline(app, month);
 }
 
 // Ceilings/plans in the bootstrap are for fy_current — only meaningful for rounds of that fiscal year.
@@ -177,6 +202,8 @@ export function formForRequest(app, request) {
 export function requestStatus(request, round, conflict) {
   const locked = !!(round && round.locked) || !!conflict;
   const base = (() => {
+    const unsent = !request || request.status === "not_started" || request.status === "draft";
+    if (unsent && round && round.past_deadline) return { label: "ไม่ได้ส่ง", cls: "badge-muted", extra: [] }; // 2at: plain fact, no warning colour
     if (!request || request.status === "not_started") return { label: "ยังไม่เริ่ม", cls: "badge-muted", extra: [] };
     if (request.no_order) return { label: "ไม่เบิก", cls: "badge-info", extra: [] }; // 2af
     if (request.status === "issued") return { label: "จ่ายแล้ว", cls: "badge-success", extra: [] };

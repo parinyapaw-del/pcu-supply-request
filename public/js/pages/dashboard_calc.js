@@ -276,7 +276,7 @@ export function buildCsv(data, rows) {
   const rounds = data.rounds || [];
   const elapsed = num(data.elapsed);
   const head = ["รหัส", "รายการ", "หน่วย", "หน่วยจ่าย", ...rounds.map((r) => `ขอเบิก ${shortRound(r)}`),
-    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้รับจริง", "ใช้ไป", "ใช้ไป (ประมาณจากคงเหลือ)", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
+    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้มาจริง", "ใช้ไป", "ใช้ไป (ประมาณจากคงเหลือ)", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
   const r2 = (x) => Math.round(x * 100) / 100;
   return buildCsvText(head, rows.map((r) => {
     const avg = avgPerMonth(r.cq, elapsed);

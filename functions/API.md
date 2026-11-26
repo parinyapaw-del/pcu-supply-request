@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `COL_CLOSED{items}` (2al, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `COL_CLOSED{items}` (2al, §4) · `PAST_DEADLINE{items}` (2at, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - **Rounds (brief 2j).** A round is keyed by the month the supplies are *for* ("ขอเบิกเดือน X"); it is filled and submitted during the month
@@ -109,6 +109,11 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   - **2af**: request with `no_order = 1` and a line's `op+pp` changed to > 0 → `NO_ORDER{items:[{code,op,pp}]}` "เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กดยกเลิก … ก่อน"
     (stock / used stay editable; `send:true` on such a request keeps `no_order`).
   - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`, also for `NO_ORDER`).
+  - **2at deadline lock** (PCU `saveLines` only; `adminSaveLines` unaffected): the day after the round's `deadline_date` (Bangkok; the deadline day
+    itself is open; never the trial round) — a request never sent (none / `draft`) → `CONFLICT` "เลยกำหนดส่งแล้ว — ใบนี้ยังไม่ได้ส่ง" (client goes
+    read-only); a sent request keeps `stock/used/adj` open, but any `op`/`pp` change → `PAST_DEADLINE{items:[{code,op,pp}]}` (client restores like
+    `NO_ORDER`), `send:true` → `PAST_DEADLINE{items:[]}`. `pcuNoOrder` / `pcuNoOrderCancel` → `CONFLICT`. `pcuReceivedSave` (ได้มาจริง) has no deadline.
+    No unlock / edit request for the PCU (Save 2026-11-26).
   - the round lock (`CONFLICT`) and the month window are unchanged.
 - `send:true`, in order: round locked → `CONFLICT` · `config.stock_required=1` → every non-hidden **active** item of the latest form needs `stock`
   else `INCOMPLETE{missing}`. **2z (Q10): the ceiling never blocks.** **2ad: the effective mode is `off` for every round of fy ≥ 2570**
@@ -386,6 +391,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `devReset`, `devPutBackup{key}`, `devListBackups`, `devListFiles{prefix}`, `devPrintToken{pcu,month,doc_date?,supply_month?,phone?}`, `devSetRequestMonth{pcu,month,new_month}`, `devRerunMigration{v}`, `devRequester{op:"clear_snapshot",pcu,month | op:"old_log",pcu}` (2x fixtures: a request sent before 2x / a 2020 log row) (public, only if `env.DEV_FAKE_GOOGLE==="1"`, else `FORBIDDEN`) | – | tests only: `devReset` drops every table and recreates the schema → `{ok:true}`; `devPutBackup` writes a dummy `backup/YYYY-MM-DD.json` to R2 (to test the 90-day prune); `devListBackups` → `{keys,sizes}`; `devListFiles` → `{keys}` of R2 objects under `prefix` (2b: `pdf/`); `devPrintToken` → `{token,content_key}` a fresh print token for a sent request; `devSetRequestMonth` (2b-R) back-dates a request → `{id}`: moves `requests.id`/`month` and re-points `request_lines`, `issue_status`, `pdf_files.request_id` (R2 objects and `pdf_files.r2_key` stay as stored) · `NOT_FOUND` (no request) · `CONFLICT` (target exists) · `BAD_REQUEST` (month); `devRerunMigration` (2o) deletes `schema_version` rows ≥ `v` (int ≥ 2) and re-runs those migrations on the live tables → `{schema_version}`. None of the dev actions is counted in `usage_counters` |
 | header `X-Dev-PDF: pending\|fail` | – | only honoured in PDF mock mode (`DEV_FAKE_GOOGLE==="1"` and no `CF_BR_TOKEN`) on `requestPdf`/`adminRequestPdf`: simulates a Browser Rendering 429 (`pending`, `retry_after` 2) or an error (`PDF_FAILED`) |
 | header `X-Dev-Month: YYYY-MM` | – | only honoured when `DEV_FAKE_GOOGLE==="1"` (POST /api and the export): overrides "the current Bangkok month" (= calMonth; currentRound = the month after it) so tests do not depend on the real date |
+| header `X-Dev-Date: YYYY-MM-DD` | – | 2at, only honoured when `DEV_FAKE_GOOGLE==="1"`: "today" for the deadline lock (`RoundInfo.past_deadline`, §4 saveLines). Absent while `X-Dev-Month` is sent → no deadline lock (the suite keys the previous round freely) |
 
 All mutating admin/PCU actions (except autosave) append to `audit_log` in the same D1 batch.
 
@@ -416,7 +422,8 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   users: [ ...adminUsersList ] , users_source: "table"|"env"           // admin only
   feedback_new: <int>                                                  // admin only (2ab) — feedback rows with status "new" (Feedback tab badge)
 }
-RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, locked:bool, locked_at, locked_by, note }   // fy = monthFy(month); trial = month === config.trial_month
+RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, past_deadline:bool, locked:bool, locked_at, locked_by, note }   // fy = monthFy(month); trial = month === config.trial_month
+// 2at past_deadline = !trial && today (Bangkok; dev: X-Dev-Date, none while only X-Dev-Month is pinned) > deadline_date — see saveLines (§4)
 ```
 `deadline_date` = `rounds.deadline_date` if set, else `config.deadline_day` (clamped to the month length) **of the submission month `prevMonth(month)`**,
 else the last day of `prevMonth(month)` (2j: round 2026-11 → `2026-10-31`; round 2026-10 → `2026-09-30`). `deadline_source` = `round|config|month_end`.

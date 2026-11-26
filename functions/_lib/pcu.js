@@ -7,7 +7,7 @@ import {
 import {
   PIN_LOCK_MIN, PIN_MAX_FAIL, PIN_RE, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
 } from "./auth.js";
-import { bangkokDate, currentMonth, currentRound, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
+import { bangkokDate, computeDeadline, currentMonth, isPastDeadline, currentRound, fyMonths, isDate, isMonth, monthFy, nextMonth, nowIso, prevMonth } from "./time.js";
 import {
   getLines, getRequestRow, getRoundRows, issueSummary, lineQtyLocked, overLimitItems, pcuMonthView, requestObj, requestId, requestedQty, roundInfo, REQ_COLS,
   firstRequester, priceStampStmts, sendRequestStmt,
@@ -317,11 +317,17 @@ export async function saveLines(ctx, p) {
   const fy = monthFy(month);
   const [reqRow, roundRow, latest] = await Promise.all([
     getRequestRow(DB, pcu.code, month),
-    DB.prepare(`SELECT locked FROM rounds WHERE month = ?`).bind(month).first(),
+    DB.prepare(`SELECT locked, deadline_date FROM rounds WHERE month = ?`).bind(month).first(),
     formForFy(DB, fy, cfg.fy_current),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
   if (roundRow && roundRow.locked) throw err("CONFLICT", "รอบนี้ปิดรับแล้ว แก้ไขไม่ได้");
+  // 2at: past the deadline a sent request keeps its requested quantities (คงเหลือ / ใช้ไป still change, ได้มาจริง via pcuReceivedSave);
+  // one never sent is closed (admin keys it from paper). Admin's adminSaveLines is not affected.
+  const pastDl = pastDeadlineOf(month, roundRow, cfg);
+  const wasSentNow = !!reqRow && reqRow.status !== "draft";
+  if (pastDl && !wasSentNow) throw err("CONFLICT", "เลยกำหนดส่งแล้ว — ใบนี้ยังไม่ได้ส่ง");
+  if (pastDl && (p.send === true || p.send === 1 || p.send === "1")) throw err("PAST_DEADLINE", "เลยกำหนดส่งแล้ว — ส่งใหม่ไม่ได้", { items: [] });
   if (!latest) throw err("NOT_FOUND", "ยังไม่มีแบบฟอร์มในระบบ");
   const bound = reqRow && reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null;
   for (const l of parsed) {
@@ -342,6 +348,13 @@ export async function saveLines(ctx, p) {
   const base = parsed.some((l) => l.calc_from) ? await baselineFor(DB, pcu.code, month) : {};
   for (const l of parsed) Object.assign(l, computeLine(base[l.code], l));
 
+  if (pastDl) {
+    const changed = parsed.filter((l) => { const e = existing.get(l.code); return (e ? e.op ?? null : null) !== l.op || (e ? e.pp ?? null : null) !== l.pp; });
+    if (changed.length) {
+      throw err("PAST_DEADLINE", "เลยกำหนดส่งแล้ว — ยอดขอแก้ไม่ได้ (กรอกคงเหลือ/ใช้ไปได้)",
+        { items: changed.map((l) => { const e = existing.get(l.code); return { code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null }; }) });
+    }
+  }
   const locks = parsed.length ? await lockedCodes(DB, pcu.code, month) : new Set();
   checkQtyRules(parsed, existing, reqRow, latest, locks);
 
@@ -359,6 +372,11 @@ export async function saveLines(ctx, p) {
 
   const [row2, lines2] = await Promise.all([getRequestRow(DB, pcu.code, month), getLines(DB, id)]);
   return { saved_at: now, status: row2.status, submitted, over_limit: overLimit, request: requestObj(row2, lines2, false), recalc, stale };
+}
+
+// 2at: same rule as roundInfo.past_deadline (the trial round never closes by date)
+function pastDeadlineOf(month, roundRow, cfg) {
+  return isPastDeadline(computeDeadline(month, roundRow, cfg.deadline_day).deadline_date, !!cfg.trial_month && month === cfg.trial_month);
 }
 
 // 2al: the item's closed qty column (form item `closed_cols`, "op" | "pp") takes no new / higher quantity — lowering a stored one is fine
@@ -509,10 +527,12 @@ async function noOrderContext(ctx, month) {
   if (month > cur) throw err("BAD_REQUEST", "ยังไม่ถึงรอบเดือนนี้");
   const [reqRow, roundRow] = await Promise.all([
     getRequestRow(DB, pcu.code, month),
-    DB.prepare(`SELECT locked FROM rounds WHERE month = ?`).bind(month).first(),
+    DB.prepare(`SELECT locked, deadline_date FROM rounds WHERE month = ?`).bind(month).first(),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
   if (roundRow && roundRow.locked) throw err("CONFLICT", "รอบนี้ปิดรับแล้ว เปลี่ยนแปลงไม่ได้");
+  const cfg = publicConfig(await getConfigAll(DB), monthFy(cur));
+  if (pastDeadlineOf(month, roundRow, cfg)) throw err("CONFLICT", "เลยกำหนดส่งแล้ว — เปลี่ยนแปลงไม่ได้"); // 2at
   return { reqRow, id: requestId(pcu.code, month) };
 }
 

@@ -14,6 +14,16 @@ export const isMonth = (m) => typeof m === "string" && MONTH_RE.test(m);
 let devMonth = null;
 export const setDevMonth = (m) => { devMonth = isMonth(m) ? m : null; };
 export const currentMonth = (d) => (!d && devMonth ? devMonth : bangkokDate(d || new Date()).slice(0, 7));
+// 2at: "today" for the deadline lock. Dev/test: `X-Dev-Date` (YYYY-MM-DD) pins it; with only X-Dev-Month pinned it is null =
+// no deadline lock (the suite keys the previous round freely unless a case sends X-Dev-Date). Production: the Bangkok date.
+let devDate = null;
+export const setDevDate = (d) => { devDate = typeof d === "string" && /^20\d\d-\d\d-\d\d$/.test(d) ? d : null; };
+export const deadlineToday = () => (devDate || (devMonth ? null : bangkokDate()));
+// 2at: a round is past its deadline the day after deadline_date (the deadline day itself is still open). The trial round never is.
+export const isPastDeadline = (deadlineDate, trial) => {
+  const t = deadlineToday();
+  return !trial && !!t && !!deadlineDate && t > deadlineDate;
+};
 
 export function prevMonth(m) {
   let [y, mo] = m.split("-").map(Number);
