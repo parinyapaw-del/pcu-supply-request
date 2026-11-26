@@ -270,6 +270,10 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // baht = qty × prices_prev(fy−1) (fallback: price in the latest form of fy−1, else of fy) · null when this pcu has no actual_prev row in fy−1
   used_coverage: { items_with_used, items_total },   // codes with req > 0 that have ≥ 1 counted line whose used is not null (2an: was every code) · codes with req > 0 in fy
   got_src: { pcu, issuer },    // 2an: counted lines whose got came from the PCU's received report / from the dispenser's issued_total (by the view rule)
+  item_src: { code: { round: [req_q, req_b, pcu_q, pcu_b, pcu_n, iss_q, iss_b, iss_n, n] } },
+                               // 2aq: requested lines only (op+pp > 0) · n = lines · pcu_* = received_reports (qty 0 counts: pcu_n 1, pcu_q 0)
+                               // · iss_* = issued_total not null (PCU view: DONE units only, Q78) · 2v links → new code · baht = qty × line price
+                               // · kept apart from got (monthly[2..3] still = report → dispenser) · also in adminDashboard{pcu}
            // 2ak A6: the UI shows coverage = requested items with has_used / requested items (both sides of the ratio over the same set)
   flags: [ {code, rule:"pace", cum_qty, plan_qty, elapsed} ]
            // rule 2 only (Q25): cum_qty (Σ req of fy) > plan_qty × elapsed/12 × 1.2 · elapsed = rounds of `rounds` ≤ currentRound
@@ -619,7 +623,8 @@ as §4.2 (staff view: prev received = report → issued_total → op+pp; baht on
     req_baht_on_plan: { unit_group: number },                  // Σ req_baht of the (pcu,item) pairs with plan > 0
     bottom3: { qty:[code…], baht:[code…] },                    // 2aa (Q12): the 3 smallest by fy-to-date req qty / req baht, all units (only items requested > 0; ties in item order)
                                                                // 2ak D2: top3 dropped (network + pcu view) — the UI ranks from network.items / monthly (calc_common.js)
-    never: [code…]                                             // 2aa (Q12): active items of the fy's latest form (active page) no pcu requested (req 0) · form order
+    never: [code…],                                            // 2aa (Q12): active items of the fy's latest form (active page) no pcu requested (req 0) · form order
+    item_src: { code: { round: S9 } }                          // 2aq: as pcuDashboard.item_src summed over every non-trial pcu (staff view) · n / pcu_n / iss_n = pcu lines
   },
   pcus: [ { code, name, req_baht, got_baht, plan_baht, pct_plan,          // pct_plan = Σ req_baht_on_plan / plan_baht (null when plan_baht = 0)
             units: { unit_group: [req_baht, got_baht, plan_baht, req_baht_on_plan] },   // all three unit keys

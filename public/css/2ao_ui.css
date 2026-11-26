@@ -8,3 +8,12 @@
 td .t10-pack-row input.t10-in.t10-in-pack { display: block; width: 100%; min-width: 4.5em; box-sizing: border-box; margin-top: 2px; }
 .t10-pack-hint { margin-top: 2px; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
 .t2b-qtywarn { margin-left: 4px; white-space: nowrap; }
+/* 2aq: folded overview card (PCU dashboard) · heat map รายการทั้งหมด (admin network) */
+.ov-fold > .ov-sum { cursor: pointer; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; list-style: revert; }
+.ov-fold > .ov-sum h3 { display: inline; margin: 0; }
+.ov-fold[open] > .ov-sum { margin-bottom: 6px; }
+.ov-fold > .ov-sum:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.ov-more-row { margin-top: 8px; }
+.hm-head { margin-bottom: 8px; }
+.hm-tbl .hm-none { white-space: nowrap; }
+.hm-part { font-size: 0.7rem; }

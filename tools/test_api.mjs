@@ -4203,6 +4203,52 @@ async function main() {
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }
   // ------------------------------------------------------------------------------------------------------------------------
+  section("2aq: item_src — the PCU's received report and the dispenser's figure kept apart (0 = entered · none = no data)");
+  {
+    for (const m of [CUR, PREV]) await mustOk("adminLockRound", { month: m, locked: 0 }, ADM2);
+    const b0 = await mustOk("adminBootstrap", {}, ADM2);
+    const FYD = 2570;
+    const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
+    const [X, Y, Z] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const P = b0.pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-29T06:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const S0 = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const sv = (D, c, m) => ((D.item_src || {})[c] || {})[m] || S0;
+    const nsv = (N, c, m) => ((N.network.item_src || {})[c] || {})[m] || S0;
+    const N0 = await mustOk("adminDashboard", { fy: FYD }, ADM2);
+    ok(N0.network && typeof N0.network.item_src === "object", "2aq: network payload has item_src");
+
+    // PREV: X req 5 (report 0 · issued 5) · Y req 4 (nothing entered) · Z req 2 (report 2) · CUR Z stock only (not counted in item_src)
+    ok((await api("saveLines", { month: PREV, lines: L({ [X.code]: { op: 5 }, [Y.code]: { op: 4 }, [Z.code]: { op: 2 } }), send: true }, TP)).ok, "2aq setup: PREV sent");
+    ok((await api("saveLines", { month: CUR, lines: L({ [Z.code]: { stock: 3 } }), send: true }, TP)).ok, "2aq setup: CUR sent (stock only)");
+    await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: 0 }, { code: Z.code, qty: 2 }] }, TP);
+    await mustOk("issueLines", { pcu: P, month: PREV, lines: { [X.code]: { issued_total: 5 } } }, ADM2);
+
+    const V = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
+    const px = sv(V, X.code, PREV)[1] / 5;
+    eq([sv(V, X.code, PREV)[0], sv(V, X.code, PREV)[2], sv(V, X.code, PREV)[4], sv(V, X.code, PREV)[5], sv(V, X.code, PREV)[7], sv(V, X.code, PREV)[8]], [5, 0, 1, 5, 1, 1],
+      "2aq staff: X report 0 counts as entered (pcu_n 1, pcu_q 0) · issued 5 kept apart");
+    ok(Math.abs(sv(V, X.code, PREV)[6] - 5 * px) < 0.01 && sv(V, X.code, PREV)[3] === 0, "2aq staff: baht = qty × line price (iss 5 × price · pcu 0)");
+    eq([sv(V, Y.code, PREV)[4], sv(V, Y.code, PREV)[7], sv(V, Y.code, PREV)[8]], [0, 0, 1], "2aq staff: Y nothing entered → pcu_n 0 · iss_n 0 · n 1");
+    eq([sv(V, Z.code, PREV)[2], sv(V, Z.code, PREV)[4], sv(V, Z.code, CUR)], [2, 1, S0], "2aq staff: Z report 2 · stock-only CUR line not in item_src");
+    eq((V.monthly[X.code] || {})[PREV][2], 0, "2aq: combined got unchanged (report 0 wins over issued 5, as 2an)");
+
+    const PV = await mustOk("pcuDashboard", { fy: FYD }, TP);
+    eq([sv(PV, X.code, PREV)[4], sv(PV, X.code, PREV)[7]], [1, 0], "2aq PCU view: own report counts · dispenser figure waits for the unit (Q78)");
+
+    const N1 = await mustOk("adminDashboard", { fy: FYD }, ADM2);
+    const d = (c, i) => nsv(N1, c, PREV)[i] - nsv(N0, c, PREV)[i];
+    eq([d(X.code, 0), d(X.code, 2), d(X.code, 4), d(X.code, 5), d(X.code, 7), d(X.code, 8)], [5, 0, 1, 5, 1, 1], "2aq network delta X: req 5 · pcu 0 (1 line) · iss 5 (1 line)");
+    eq([d(Y.code, 4), d(Y.code, 7), d(Y.code, 8), d(Z.code, 2), d(Z.code, 4)], [0, 0, 1, 2, 1], "2aq network delta Y none entered · Z report 2");
+    ok(Math.abs(d(X.code, 6) - 5 * px) < 0.01, "2aq network iss baht from price_snapshot");
+
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+  }
+  // ------------------------------------------------------------------------------------------------------------------------
   section("2ao: decimal คงเหลือ / ใช้ไป · form item pack · unit_hist (ยอดสูงผิดปกติ) · show-N-times announcements");
   {
     const U = await import("../public/js/units.js");

@@ -15,6 +15,7 @@ import {
 import { mountShortage } from "./shortage.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, networkOverviewRows, pcuOverviewRows } from "../pages/dash_overview.js"; // 2ao
+import { mount as mountHeat } from "../pages/dash_heat.js"; // 2aq
 
 const ANOM_PAGE = 30;
 const STOCK_NET_PAGE = 10;
@@ -240,7 +241,7 @@ export function renderTab12(container, ctx) {
       ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
-        <div id="adm-kpi"></div><div id="adm-bars"></div><div id="adm-cum"></div>
+        <div id="adm-kpi"></div><div id="adm-bars"></div><div id="adm-heat"></div><div id="adm-cum"></div>
         <div id="adm-top3"></div>
         <div class="dash-card"><h3>แยกตามหน่วยจ่าย</h3>
           <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ — แสดงทุกหน่วยจ่ายเสมอ กดแถวเพื่อกรองทั้งหน้า</p><div id="adm-groups"></div></div>
@@ -291,6 +292,7 @@ export function renderTab12(container, ctx) {
     $("#adm-bars").innerHTML = chartCardHtml("dash-bars-card", "ยอดรายรอบ (ทั้งเครือข่าย)", `${esc(scope)} · ${ui.mode === "baht" ? "บาท" : "จำนวน"}${esc(mixed)}`,
       legendHtml(SERIES.map((s) => ({ cls: s.cls, label: s.label }))), bars);
     attachTips($("#dash-bars-card"), bars.tips);
+    renderHeat();
 
     const line = lineChart(agg, d);
     const legend = SERIES.filter((s) => s.key !== "used" || line.hasUsed).map((s) => ({ cls: s.cls, label: `${s.label}สะสม`, shape: "line" }));
@@ -320,6 +322,24 @@ export function renderTab12(container, ctx) {
     renderAnomalies();
   }
 
+  // 2aq: heat map รายการทั้งหมด (item × round) — ใบเบิก / รพ.สต. กรอกรับ / หน่วยจ่ายจ่าย, follows the unit filter
+  let heatView = null;
+  function renderHeat() {
+    const host = box.querySelector("#adm-heat");
+    if (!host) return;
+    if (!heatView || heatView.host !== host) {
+      const view = mountHeat(host, {
+        getData: () => ({ src: (ts.overview.network || {}).item_src || {}, items: ts.overview.items, rounds: ts.overview.rounds || [] }),
+        getUnit: () => ui.unit,
+        scope: () => (ui.unit === "all" ? "ทุกหน่วยจ่าย" : `หน่วยจ่าย ${ui.unit}`),
+      });
+      heatView = { host, view };
+      view.render(true);
+      return;
+    }
+    heatView.view.render();
+  }
+
   // 2ao: "ภาพรวมต่อรายการ" — network total by default; the picker loads adminDashboard{fy, pcu} (cached) and shows that PCU's items
   let ovView = null;
   function renderOverviewCard() {
@@ -336,8 +356,9 @@ export function renderTab12(container, ctx) {
         <span class="muted small ov-status" role="status"></span></div>`;
       const view = mountOverview(host, {
         title: "ภาพรวมต่อรายการ",
-        caption: "ได้รับจริง · ใช้ไป · คงเหลือ · พอใช้อีกกี่เดือน — รวมเครือข่าย (คงเหลือ = รวมของแต่ละแห่งที่กรอกแล้ว · เฉลี่ยใช้ไปหารด้วยจำนวนรอบที่ผ่านไป) หรือเลือกดูทีละ รพ.สต. (เฉลี่ยเฉพาะรอบที่มีตัวเลขใช้ไป)",
+        caption: "ขอเบิก · ได้รับ (ที่ รพ.สต. กรอก) · จ่ายจริง (ที่หน่วยจ่ายบันทึก) · ใช้ไป · คงเหลือ · พอใช้อีกกี่เดือน — รวมเครือข่าย (คงเหลือ = รวมของแต่ละแห่งที่กรอกแล้ว · เฉลี่ยใช้ไปหารด้วยจำนวนรอบที่ผ่านไป) หรือเลือกดูทีละ รพ.สต. (เฉลี่ยเฉพาะรอบที่มีตัวเลขใช้ไป)",
         headHtml: picker,
+        srcNote: "รวมเครือข่าย: แห่ง × รอบที่กรอกแล้ว / ที่ขอเบิก · รายแห่ง: รอบที่กรอกแล้ว / รอบที่ขอเบิก",
         getRows: () => {
           const p = ts.ovPcu && ts.ovCache[key(ts.ovPcu)];
           return p ? pcuOverviewRows(p) : networkOverviewRows(ts.overview);

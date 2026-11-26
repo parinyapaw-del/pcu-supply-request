@@ -7,7 +7,7 @@ import { downloadCsvFile } from "../csv.js";
 import { esc } from "../esc.js";
 import {
   aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact,
-  top3Rows, spentSum, limitStatus, notYetRequested, stockRows, avgPerMonth, buildCsv,
+  top3Rows, spentSum, limitStatus, notYetRequested, avgPerMonth, buildCsv,
 } from "./dashboard_calc.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, pcuOverviewRows } from "./dash_overview.js"; // 2ao
@@ -330,26 +330,6 @@ export function spentHtml(rows, data) {
     <p class="muted small dash-caption">ใช้ยอดได้รับจริงถ้ามี ไม่งั้นใช้ยอดขอ · คิดจากราคากลางในระบบ อาจไม่ตรงกับราคาที่ได้รับจริง</p></div>`;
 }
 
-export function stockCardHtml(data) {
-  const all = stockRows(data, ui.unit);
-  const hasAny = Object.keys(data.stock_latest || {}).length > 0;
-  const list = all.slice(0, ui.stockLimit);
-  const body = list.map((r) => `<tr>
-      <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</div></th>
-      <td>${esc(shortRound(r.round))}</td>
-      <td class="num">${formatQty(r.stock)}</td>
-      <td class="num">${r.got == null ? '<span class="muted">รอจ่าย</span>' : formatQty(r.got)}</td>
-      <td class="num strong">${r.total == null ? '<span class="muted">–</span>' : formatQty(r.total)}</td></tr>`).join("");
-  const more = all.length > list.length ? `<button type="button" class="btn btn-secondary dash-stock-more">แสดงเพิ่ม (เหลืออีก ${all.length - list.length} รายการ)</button>` : "";
-  return `<div class="dash-card" id="dash-stock-card"><h3>คงเหลือ (stock)</h3>
-    <p class="muted small dash-caption">ต่อรายการ ใช้รอบล่าสุดที่กรอกคงเหลือ (ระบุรอบในแต่ละแถว) · ของเดิม + ได้เพิ่ม = รวม · เฉพาะรายการที่กรอกคงเหลือแล้ว</p>
-    ${!hasAny ? `<p class="muted">ยังไม่ได้กรอกคงเหลือ</p>` : !all.length ? `<p class="muted">ไม่มีรายการในหน่วยจ่ายนี้</p>` : `
-    <div class="table-scroll dash-table-wrap"><table class="dash-table dash-table-sm">
-      <caption class="sr-only">คงเหลือล่าสุดต่อรายการ</caption>
-      <thead><tr><th scope="col" class="dash-name">รายการ</th><th scope="col">รอบ</th><th scope="col" class="num">ของเดิม</th><th scope="col" class="num">ได้เพิ่ม</th><th scope="col" class="num">รวม</th></tr></thead>
-      <tbody>${body}</tbody></table></div>${more}`}</div>`;
-}
-
 export function limitCardHtml(rows, data) {
   const st = limitStatus(rows, data.limits);
   if (!st.over.length && !st.near.length) return "";
@@ -499,7 +479,6 @@ export function bodyShellHtml() {
         <div id="dash-bars"></div>
         <div id="dash-cum"></div>
         <div id="dash-overview"></div>
-        <div id="dash-stock"></div>
         <div id="dash-limit"></div>
         <div id="dash-never"></div>
         <div class="dash-card"><h3>แยกตามหน่วยจ่าย</h3>
@@ -524,11 +503,15 @@ export function bodyShellHtml() {
 export function createBody(box, data, { onRender, heat = false, hiddenLink = false, xlsx = null } = {}) {
   let agg = null;
   const $ = (id) => box.querySelector(id);
-  // 2ao: combined per-item table (ได้รับจริง · ใช้ไป · คงเหลือ · พอใช้อีก ~เดือน) — follows the mode toggle + unit filter
+  // 2ao: combined per-item table — follows the mode toggle + unit filter · 2aq: + ขอเบิก / ได้รับ (รพ.สต.) / จ่ายจริง (หน่วยจ่าย),
+  // the คงเหลือ card merged in (ได้เพิ่ม → รวม under คงเหลือ), folded card showing the first 10 rows
   let ovRows = null;
   const overview = mountOverview($("#dash-overview"), {
-    title: "ภาพรวมต่อรายการ",
-    caption: "ต่อรายการ: ได้รับจริง · ใช้ไป · คงเหลือล่าสุดที่กรอก (ระบุรอบ) · พอใช้อีกกี่เดือน · เรียงได้ที่หัวคอลัมน์",
+    title: "ภาพรวมและคงเหลือต่อรายการ",
+    caption: "ต่อรายการ: ขอเบิก · ได้รับ (ที่ รพ.สต. กรอก) · จ่ายจริง (ที่หน่วยจ่ายบันทึก) · ใช้ไป · คงเหลือล่าสุดที่กรอก (ระบุรอบ · ได้เพิ่มในรอบนั้น = รวม) · พอใช้อีกกี่เดือน · เรียงได้ที่หัวคอลัมน์ · แสดง 10 รายการแรก",
+    page: 10,
+    collapsible: true,
+    srcNote: "รอบที่กรอกแล้ว / รอบที่ขอเบิก",
     getRows: () => ovRows || (ovRows = pcuOverviewRows(data)),
     getMode: () => ui.mode,
     getUnit: () => ui.unit,
@@ -558,18 +541,10 @@ export function createBody(box, data, { onRender, heat = false, hiddenLink = fal
     if (more) more.addEventListener("click", () => { ui.limit += ROW_PAGE; renderTable(); });
   }
 
-  function renderStock() {
-    const host = $("#dash-stock");
-    host.innerHTML = stockCardHtml(data);
-    const more = host.querySelector(".dash-stock-more");
-    if (more) more.addEventListener("click", () => { ui.stockLimit += STOCK_PAGE; renderStock(); });
-  }
-
   function renderBody() {
     agg = aggregate(data, ui.mode, ui.unit);
     $("#dash-kpi").innerHTML = kpiHtml(agg, data);
     $("#dash-spent").innerHTML = spentHtml(agg.rows, data);
-    renderStock();
     overview.render();
     $("#dash-limit").innerHTML = limitCardHtml(agg.rows, data);
     $("#dash-never").innerHTML = neverCardHtml(agg.rows, data, { hiddenLink });

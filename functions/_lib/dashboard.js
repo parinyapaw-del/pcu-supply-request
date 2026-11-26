@@ -185,20 +185,25 @@ async function pcuCore(DB, c, pcu, staff) {
   const lm = linkMap(form); // 2v: lines of a linked old code count under the code that replaces it
   const gotSrc = { pcu: 0, issuer: 0 }; // 2an: lines whose got came from the PCU's report / the dispenser
   const lineAt = new Map(); // 2an: code0|round → {st, recv, adj, u, price} (used estimate)
+  const itemSrc = {}; // 2aq: code → round → S9 [req_q, req_b, pcu_q, pcu_b, pcu_n, iss_q, iss_b, iss_n, n] (requested lines only)
   for (const [m, fv, code0, q, it, u, ps, st, rq, adj] of lineRes) {
     const price = ps !== null && ps !== undefined ? ps : priceFor(hist, form.index.has(code0) ? form : formOf(fv), code0, m) ?? 0;
+    // the dispenser's figure counts when entered — PCU view rule (Q78): DONE units only · staff view (2s): every unit
+    const issOk = q > 0 && it !== null && it !== undefined && (staff || (() => {
+      const ent = formOf(fv).index.get(code0);
+      return !!(ent && done.has(m + "|" + ent.step.dispense_unit));
+    })());
     let got = 0, received = false;
     if (q > 0 && rq !== null && rq !== undefined) { received = true; got = rq; gotSrc.pcu++; } // 2an: the PCU's own report wins
-    else if (q > 0 && it !== null && it !== undefined) {
-      if (staff) received = true; // staff view (2s): every unit, no need to wait for done
-      else { // PCU view rule (Q78): figures of DONE units only
-        const ent = formOf(fv).index.get(code0);
-        received = !!(ent && done.has(m + "|" + ent.step.dispense_unit));
-      }
-      if (received) { got = it; gotSrc.issuer++; }
-    }
+    else if (issOk) { received = true; got = it; gotSrc.issuer++; }
     lineAt.set(code0 + "|" + m, { st, recv: received ? got : q, adj: adj ?? 0, u, price });
     const code = linkedCode(lm, code0);
+    if (q > 0) { // 2aq: the two sources side by side (a typed 0 counts as entered)
+      const s = ((itemSrc[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0, 0]);
+      s[0] += q; s[1] += q * price; s[8]++;
+      if (rq !== null && rq !== undefined) { s[2] += rq; s[3] += rq * price; s[4]++; }
+      if (issOk) { s[5] += it; s[6] += it * price; s[7]++; }
+    }
     const used = u ?? 0;
     if (u !== null && u !== undefined) withUsed.add(code);
     if (q > 0) {
@@ -297,6 +302,8 @@ async function pcuCore(DB, c, pcu, staff) {
   for (const [code, v] of stockLatest) stock_latest[code] = v;
   const spentOut = {};
   for (const [code, b] of spent) if (b > 0) spentOut[code] = r2(b);
+  const item_src = {};
+  for (const [code, byM] of Object.entries(itemSrc)) item_src[code] = Object.fromEntries(Object.entries(byM).map(([m, t]) => [m, t.map(r2)]));
 
   const fys = fysFrom(cfg, trial, monthRes, fyRes);
   return {
@@ -305,7 +312,7 @@ async function pcuCore(DB, c, pcu, staff) {
       // 2an: items_with_used counts requested items only (it was every item with a used figure, e.g. 93 of 48)
       used_coverage: { items_with_used: [...withUsed].filter((k) => withReq.has(k)).length, items_total: withReq.size },
       got_src: gotSrc,
-      flags, stock_latest, limits, prev_items, spent: spentOut,
+      flags, stock_latest, limits, prev_items, spent: spentOut, item_src, // 2aq
       plan_baht: r2Obj(planBahtU), req_baht_on_plan: r2Obj(onPlanU), // 2ak A4: {unit_group: baht} — % ตามแผน = Σ on_plan / Σ plan_baht
     },
     form, lm, prevRes, pricer, cum, roundBaht,
@@ -359,19 +366,31 @@ const rowsToMap = (rows, lm) => {
 async function networkData(DB, c, formP, full) {
   const bind = [c.all[0], c.all[11], c.trialArg];
   const estBind = [c.trialArg, c.all[0], ...bind];
-  const [piRes, riRes, prRes, nullRes, estPi, estRi] = await Promise.all([
+  const [piRes, riRes, prRes, nullRes, estPi, estRi, srcRes] = await Promise.all([
     DB.prepare(`SELECT r.pcu, l.item_code, ${V6_SQL} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.pcu, l.item_code`).bind(...bind).raw(),
     full ? DB.prepare(`SELECT r.month, l.item_code, ${V6_SQL} ${LINES} WHERE ${LINES_WHERE} GROUP BY r.month, l.item_code`).bind(...bind).raw() : [],
     full ? DB.prepare(`SELECT r.pcu, r.month, TOTAL(${Q} * l.price_snapshot) ${LINES} WHERE ${LINES_WHERE} GROUP BY r.pcu, r.month`).bind(...bind).raw() : [],
-    DB.prepare(`SELECT r.pcu, r.month, r.form_version_id, l.item_code, ${Q}, ${GOT}, l.used ${LINES}
+    DB.prepare(`SELECT r.pcu, r.month, r.form_version_id, l.item_code, ${Q}, ${GOT}, l.used, rr.qty, l.issued_total ${LINES}
                  WHERE ${LINES_WHERE} AND l.price_snapshot IS NULL`).bind(...bind).raw(),
     full ? DB.prepare(`${EST_CTE} SELECT pcu, code, SUM(q), TOTAL(q * ps) FROM e WHERE q > 0 GROUP BY pcu, code`).bind(...estBind).raw() : [],
     full ? DB.prepare(`${EST_CTE} SELECT month, code, SUM(q), TOTAL(q * ps) FROM e WHERE q > 0 GROUP BY month, code`).bind(...estBind).raw() : [],
+    // 2aq: round × code S9 — requested lines only · the PCU's report and the dispenser's figure kept apart (COUNT = lines entered, 0 counts)
+    full ? DB.prepare(`SELECT r.month, l.item_code, SUM(${Q}), TOTAL(${Q} * l.price_snapshot), TOTAL(rr.qty), TOTAL(rr.qty * l.price_snapshot), COUNT(rr.qty),
+                              TOTAL(l.issued_total), TOTAL(l.issued_total * l.price_snapshot), COUNT(l.issued_total), COUNT(*)
+                         ${LINES} WHERE ${LINES_WHERE} AND ${Q} > 0 GROUP BY r.month, l.item_code`).bind(...bind).raw() : [],
   ]);
   const lm = linkMap(await formP);
   const pi = rowsToMap(piRes, lm), ri = rowsToMap(riRes, lm);
   for (const [map, rows] of [[pi, estPi], [ri, estRi]]) {
     for (const [a, code, q, b] of rows) { const t = addTo(map, a, linkedCode(lm, code)); t[6] += Number(q) || 0; t[7] += Number(b) || 0; }
+  }
+  const src = new Map(); // 2aq: round → code → S9
+  for (const [m, code, ...v] of srcRes) {
+    const k = linkedCode(lm, code);
+    if (!src.has(m)) src.set(m, new Map());
+    const t = src.get(m).get(k) || [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (let i = 0; i < 9; i++) t[i] += Number(v[i]) || 0;
+    src.get(m).set(k, t);
   }
   const pr = new Map();
   for (const [pcu, m, b] of prRes) { if (!pr.has(pcu)) pr.set(pcu, new Map()); pr.get(pcu).set(m, Number(b) || 0); }
@@ -380,7 +399,7 @@ async function networkData(DB, c, formP, full) {
     const hist = await loadPriceHistory(DB, c.fy);
     const forms = new Map();
     for (const fv of new Set(nullRes.filter((r) => form && !form.index.has(r[3]) && r[2]).map((r) => r[2]))) forms.set(fv, await loadForm(DB, fv));
-    for (const [pcu, m, fv, code, q, it, u] of nullRes) {
+    for (const [pcu, m, fv, code, q, it, u, rq, iss] of nullRes) {
       const f = form && form.index.has(code) ? form : forms.get(fv) || form;
       const price = priceFor(hist, f, code, m) ?? 0;
       const got = q > 0 && it !== null && it !== undefined ? it : 0, used = u ?? 0;
@@ -388,12 +407,14 @@ async function networkData(DB, c, formP, full) {
       add(addTo(pi, pcu, linkedCode(lm, code)));
       if (full) {
         add(addTo(ri, m, linkedCode(lm, code)));
+        const s = q > 0 && src.get(m) && src.get(m).get(linkedCode(lm, code)); // 2aq: baht of lines without a price_snapshot
+        if (s) { s[1] += q * price; s[3] += (rq ?? 0) * price; s[6] += (iss ?? 0) * price; }
         if (!pr.has(pcu)) pr.set(pcu, new Map());
         pr.get(pcu).set(m, (pr.get(pcu).get(m) || 0) + q * price);
       }
     }
   }
-  return { pi, ri, pr };
+  return { pi, ri, pr, src };
 }
 
 // rule 1 rows [pcu, code, round, qty, p90_m]: qty of the pcu × item in a round > its stats p90_m (stats of fy−1 = the data year).
@@ -531,7 +552,7 @@ async function adminNetwork(DB, c) {
                  GROUP BY r.month`).bind(...sBind).raw(),
   ]);
   if (!form) throw err("NOT_FOUND", `ไม่พบแบบฟอร์มของปีงบ ${fy}`);
-  const { pi, ri, pr } = net;
+  const { pi, ri, pr, src } = net;
 
   // ---- items: active items of the fy's latest form + every code with data (looked up in the bound versions when missing) ----
   const dataCodes = new Set();
@@ -674,11 +695,19 @@ async function adminNetwork(DB, c) {
   for (const e of Object.values(stockNet)) { e.baht = r2(e.baht); e.pcus.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); }
   const stock_filled = Object.fromEntries(filledRes.map(([m, n]) => [m, n]));
 
+  const itemSrc = {}; // 2aq: {code: {round: S9}} — codes in item order
+  const srcCodes = new Set();
+  for (const byCode of src.values()) for (const k of byCode.keys()) srcCodes.add(k);
+  for (const code of [...srcCodes].sort(cmp)) {
+    const o = {};
+    for (const m of c.rounds) { const t = src.get(m) && src.get(m).get(code); if (t) o[m] = t.map(r2); }
+    if (Object.keys(o).length) itemSrc[code] = o;
+  }
   const netCodes = [...netItems.keys()];
   return {
     fy, fys: fysFrom(cfg, trial, monthRes, fyRes), rounds: c.rounds, elapsed, items,
     network: {
-      monthly, items: netItemsOut,
+      monthly, items: netItemsOut, item_src: itemSrc, // 2aq
       plan_baht: Object.fromEntries(Object.entries(planBaht).map(([u, v]) => [u, r2(v)])),
       req_baht_on_plan: Object.fromEntries(Object.entries(onPlan).map(([u, v]) => [u, r2(v)])),
       bottom3: { qty: bottom3((k) => netItems.get(k)[0], netCodes, ord), baht: bottom3((k) => netItems.get(k)[1], netCodes, ord) },
