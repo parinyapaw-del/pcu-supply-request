@@ -1013,15 +1013,13 @@ async function main() {
     eq((await files(`pdf/${P}/`)).length, 2, "two R2 objects after the change");
     eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 200, "the older version stays downloadable by its key");
 
-    // --- hidden items are part of the sheet → part of the key
+    // --- 2ap: hidden items only declutter the fill page — not part of the sheet, not part of the key
     await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
     const p4 = await mustOk("requestPdf", { month: CUR }, TP);
-    ok(p4.content_key !== p3.content_key && p4.content_key !== p1.content_key, "hiding an item changes the content_key");
+    eq(p4.content_key, p3.content_key, "2ap: hiding an item keeps the content_key (cache hit)");
     await mustOk("adminSetHidden", { pcu: P, codes: [] }, ADM2);
-    eq((await mustOk("requestPdf", { month: CUR }, TP)).content_key, p3.content_key, "un-hiding returns to the cached key");
-    // 2b-R retention: the latest month keeps the newest 2 versions → storing the hidden variant (3rd version) pruned v1
-    eq((await files(`pdf/${P}/`)).sort(), [`pdf/${P}/${CUR}/${p3.content_key}.pdf`, `pdf/${P}/${CUR}/${p4.content_key}.pdf`].sort(), "two objects (v2 + hidden variant; v1 pruned by the 2-version rule)");
-    eq((await get(p1.url, { authorization: "Bearer " + ADM2 })).status, 404, "pruned v1 is no longer downloadable");
+    eq((await mustOk("requestPdf", { month: CUR }, TP)).content_key, p3.content_key, "un-hiding keeps the cached key");
+    eq((await files(`pdf/${P}/`)).sort(), [`pdf/${P}/${CUR}/${p1.content_key}.pdf`, `pdf/${P}/${CUR}/${p3.content_key}.pdf`].sort(), "2ap: still two objects (v1 + v2, no hidden variant)");
 
     // --- printData (public, print token)
     const dt = await mustOk("devPrintToken", { pcu: P, month: CUR });
@@ -1043,16 +1041,15 @@ async function main() {
         pcuRow: { code: pd.pcu.code, name: pd.pcu.name, print_name: pd.pcu.print_name },
         reqRow: { form_version_id: adm.form_version_id, submitted_at: pd.request.submitted_at },
         lines: Object.entries(pd.request.lines).map(([item_code, l]) => ({ item_code, op: l.op, pp: l.pp, stock: l.stock })),
-        hidden: pd.hidden,
       };
       const ls = {};
       for (const l of bundle.lines) {
         if ((Number(l.op) || 0) + (Number(l.pp) || 0) > 0) ls[l.item_code] = [Number(l.op) || 0, Number(l.pp) || 0];
       }
-      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, hidden: [...pd.hidden].sort(), lines: ls, dd: null, sm: null, rq: null, ph: null };
+      const fields = { v: adm.form_version_id ?? null, pn: pd.pcu.print_name || pd.pcu.name, lines: ls, dd: null, sm: null, rq: null, ph: null };
       const keyFor = (lv) => sha256Hex(stableStringify(lv === undefined ? fields : { lv, ...fields }));
       const local = await pdfLib.contentKeyOf(bundle);
-      eq(pdfLib.LAYOUT_VERSION, 4, "pdf.js exports LAYOUT_VERSION = 4 (brief 2x)");
+      eq(pdfLib.LAYOUT_VERSION, 5, "pdf.js exports LAYOUT_VERSION = 5 (2ap)");
       ok(local === (await keyFor(pdfLib.LAYOUT_VERSION)) && local !== (await keyFor(pdfLib.LAYOUT_VERSION + 1)) && local !== (await keyFor(undefined)),
         "contentKeyOf hashes lv: LAYOUT_VERSION (key changes with lv; differs from the pre-2g key without lv)");
       eq(dt.content_key, local, "server content key = contentKeyOf() under node (same LAYOUT_VERSION + same fields)");
@@ -1064,7 +1061,8 @@ async function main() {
     }
     await mustOk("adminSetHidden", { pcu: P, codes: [CSI.code] }, ADM2);
     const dt2 = await mustOk("devPrintToken", { pcu: P, month: CUR });
-    eq((await mustOk("printData", { k: dt2.token })).hidden, [CSI.code], "printData.hidden lists the PCU's hidden items");
+    eq(dt2.content_key, dt.content_key, "2ap: hiding does not change the print token's content key");
+    eq((await mustOk("printData", { k: dt2.token })).hidden, [], "2ap: printData.hidden is always [] (hidden items print their quantity)");
     await mustOk("adminSetHidden", { pcu: P, codes: [] }, ADM2);
     expectErr(await api("printData", { k: dt.token.slice(0, -3) + "AAA" }), "AUTH_EXPIRED", "printData with a tampered token");
     expectErr(await api("printData", {}), "AUTH_EXPIRED", "printData without k");
@@ -1094,7 +1092,7 @@ async function main() {
     // --- audit
     const au = (await mustOk("adminAuditLog", { limit: 500 }, ADM2)).entries.filter((e) => e.action === "pdf_create");
     ok(au.some((e) => e.actor === P && e.role === "pcu" && e.pcu === P && e.month === CUR), "audit: pdf_create by the PCU");
-    ok(au.length === 3, `audit: one pdf_create per stored file (${au.length})`);
+    ok(au.length === 2, `audit: one pdf_create per stored file (${au.length})`);
 
     // --- admin renders for a PCU that never asked; PCU then hits the cache
     const qa = await mustOk("adminRequestPdf", { pcu: Q, month: CUR }, DSP2);
@@ -3312,7 +3310,7 @@ async function main() {
     await mustOk("adminUsersAdd", { email: DSP, role: "dispenser", units: ["พัสดุ"] }, ADM2);
     const DT = (await mustOk("adminLoginGoogle", { id_token: "dev:" + DSP })).token;
     const pdfLib = await import(new URL("../functions/_lib/pdf.js", import.meta.url));
-    eq(pdfLib.LAYOUT_VERSION, 4, "2x: LAYOUT_VERSION = 4");
+    eq(pdfLib.LAYOUT_VERSION, 5, "2x/2ap: LAYOUT_VERSION = 5");
     const tt = (s) => `2026-11-20T10:00:${String(s).padStart(2, "0")}.000Z`;
 
     // guards
@@ -4315,6 +4313,25 @@ async function main() {
     const a3o = (await mustOk("adminAnnouncementSave", { id: a3.id, text: a3e.text, show_limit: null }, ADM2)).announcement;
     eq(a3o.show_limit, null, "2ao: show_limit null = shown until it expires (as before)");
     for (const a of [a3, plain]) await mustOk("adminAnnouncementDelete", { id: a.id }, ADM2);
+  }
+
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2ap: hidden items never change a figure · audit names the codes");
+  {
+    const B0 = await mustOk("adminBootstrap", {}, ADM2);
+    const P = B0.pcus.filter((x) => x.group !== "ทดลอง")[0].code;
+    const st = B0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
+    const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const before = B0.hidden[P] || [];
+    await mustOk("adminSetHidden", { pcu: P, codes: [...before.filter((c) => c !== X.code && c !== Y.code), X.code, Y.code] }, ADM2);
+    const lastHid = async () => (await mustOk("adminAuditLog", { limit: 20 }, ADM2)).entries.find((e) => e.action === "adminSetHidden" && e.pcu === P);
+    ok(/\+.*\b/.test((await lastHid()).detail) && (await lastHid()).detail.includes(X.code) && (await lastHid()).detail.includes(Y.code), "2ap: adminSetHidden audit lists the added codes");
+    await mustOk("adminSetHidden", { pcu: P, codes: before.filter((c) => c !== X.code && c !== Y.code) }, ADM2);
+    const d2 = (await lastHid()).detail;
+    ok(d2.includes(" -") && d2.includes(X.code), `2ap: un-hiding lists the removed codes (${d2})`);
+    const pdfLib = await import(new URL("../functions/_lib/pdf.js", import.meta.url));
+    const bundle = { pcuRow: { code: P, name: "x", print_name: "x" }, reqRow: { form_version_id: 1 }, lines: [{ item_code: X.code, op: 2, pp: 0 }], form: null, requester: null };
+    eq(await pdfLib.contentKeyOf({ ...bundle, hidden: [X.code] }), await pdfLib.contentKeyOf({ ...bundle, hidden: [] }), "2ap: contentKeyOf ignores the hidden list");
   }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);

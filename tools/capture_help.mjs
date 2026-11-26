@@ -327,14 +327,10 @@ const SHOTS = (c) => [
   { img: "unit_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`,
     actions: [{ type: [`tr[data-code="P1-14"] input[data-field="op"]`, "900"], replace: true }, { waitFor: ".dialog-box" }],
     clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 }, marks: { fix: ".dialog-box .btn-secondary", ok: ".dialog-box .btn-primary" } },
-  { img: "unit_2.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`,
-    actions: [{ click: `tr[data-code="P1-14"] [data-pcs-toggle]` }, { type: [`tr[data-code="P1-14"] input[data-field="stock"]`, "40"] }],
-    clip: { from: `tr[data-code="P1-13"]`, to: `tr[data-code="P1-14"]`, pad: 0 },
-    marks: { toggle: `tr[data-code="P1-14"] [data-pcs-toggle]`, stock: `tr[data-code="P1-14"] input[data-field="stock"]`, hint: `tr[data-code="P1-14"] [data-pcs-hint="stock"]` } },
   { img: "dashboard_3.png", role: "pcu", url: "index.html#/dashboard", clip: { from: "#dash-overview", to: "#dash-overview", pad: 8, maxH: 700 },
     marks: { search: ".ov-search", sort: ".ov-sort" } },
   { img: "announce_2.png", role: "pcu", url: "index.html#/home", // a "show 3 times" announcement exists only for this image
-    before: async (t) => { t.ann = (await api("adminAnnouncementSave", { text: "ระบบมีการเปลี่ยนแปลง (ข้อความตัวอย่าง)\n• เตือนเมื่อยอดขอสูงผิดปกติ\n• กรอกคงเหลือ/ใช้ไปเป็นชิ้นได้", show_limit: 3 }, t.admin.token)).announcement; },
+    before: async (t) => { t.ann = (await api("adminAnnouncementSave", { text: "ระบบมีการเปลี่ยนแปลง (ข้อความตัวอย่าง)\n• เตือนเมื่อยอดขอสูงผิดปกติ\n• คงเหลือ/ใช้ไป ใส่ทศนิยมได้", show_limit: 3 }, t.admin.token)).announcement; },
     after: async (t) => { await api("adminAnnouncementDelete", { id: t.ann.id }, t.admin.token); },
     actions: [{ waitFor: ".dialog-box" }], clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 }, marks: { text: ".announce-pop", ok: ".dialog-box .btn-primary" } },
   // last on purpose: it turns the demo unit's open round into "ไม่เบิก" (clears its draft), which no other image may show

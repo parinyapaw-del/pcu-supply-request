@@ -72,14 +72,14 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `pcuSetPhone` (2x R8) | `phone:string` (`^[0-9+\- ]{0,30}$` after trim; `""` clears) | `{phone|null}` — the PCU's default "โทร" number (`pcus.phone`, "จำเป็นค่าเริ่มต้น" on the print page; the admin sets it too via `adminPcuEdit`) · writes only on change · non-string / other chars / > 30 → `BAD_REQUEST` · audit `pcuSetPhone` |
 | `pcuSetStockMode` (2o) | `mode:'A'\|'B'` | `{stock_mode}` — stored in `pcus.stock_mode` (A = กรอกคงเหลือเอง, B = คำนวณคงเหลือจากยอดใช้ไป); switching never touches line values · other mode → `BAD_REQUEST` · audit `pcuSetStockMode` (detail = mode) |
 | `pcuDashboard` (2q) | `fy?` (int or digit string; default `config.fy_current`) | the PCU's own dashboard — §4.2 · loaded when `#/dashboard` opens (not part of `pcuBootstrap`) · `fy` not an integer 1–9999 → `BAD_REQUEST` · no form version of exactly that fy → `NOT_FOUND` · admin / dispenser token → `FORBIDDEN` |
-| `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
+| `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` — 2ap: display only (the fill page drops a hidden row only while it has no OP/PP in the round shown; sheet, totals, dashboards, issue sheet never look at it) · audit detail `count=N +added -removed` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
 | `pcuAnnouncementSeen` (2ao) | `id:int` | `{id, seen, show_limit\|null}` — counts one home-page popup of a "show N times" announcement for this PCU (`announcement_views` upsert, n+1). Already at `show_limit`, switched off, or a plain announcement (show_limit null) → no write, current count returned · no audit row · bad id → `BAD_REQUEST` · unknown → `NOT_FOUND` · staff token → `FORBIDDEN` |
 | `pcuReceivedSave` (2af) | `month, lines:[{code, qty:int\|null, received_date?:"YYYY-MM-DD", note?:string}]` (≤ 400) | `{changed, request:RequestObj(PCU view, + issued), issue}` — "รายงานของได้จริง", see rules below |
 | `pcuNoOrder` (2af) | `month` | `{request, cleared}` — "เดือนนี้ไม่เบิก", see rules below |
 | `pcuNoOrderCancel` (2af) | `month` | `{request}` — back to `draft` (`no_order` 0) · not "ไม่เบิก" → `BAD_REQUEST` · round locked → `CONFLICT` · audit `pcuNoOrderCancel` |
 | `requestPdf` | `month, doc_date?, supply_month?, phone?` | §6b — PDF of this PCU's own request (`token.pcu`): `{status:"ready",url,filename,content_key}` or `{status:"pending",retry_after}`; 2h/2x print options §6b |
-| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[code], doc_date, supply_month, requester_name, phone}` for `print.html` (2p: `form` item prices = the printed prices; 2x: `requester_name` = §6b rule, `phone` = the print option) |
+| `printData` (public, print token) | `k` | §6b — `{pcu:{code,name,print_name,group}, month, form, request:RequestObj(+lines, PCU shape), hidden:[] (2ap: always empty — hidden items print their quantity), doc_date, supply_month, requester_name, phone}` for `print.html` (2p: `form` item prices = the printed prices; 2x: `requester_name` = §6b rule, `phone` = the print option) |
 | `issueLines`, `issueAll`, `issueDone`, `issueItem`, `issueDoneAll`, `issueExcept`, `adminItemIssue` | – | staff actions (admin or dispenser), not PCU — §5.3 |
 
 `saveLines` rules
@@ -205,6 +205,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   unit_hist: { code: [p90, {month: qty}] }  // 2ao: p90 of this PCU's monthly op+pp in fy−1 (stats, linked codes count) + op+pp of each sent
                                            // (submitted/issued) request of the round's fy — fill page "ยอดสูงผิดปกติ" check (public/js/units.js qtyWarn:
                                            // base = max(p90, other months) · warn when op+pp > 3 × base · no base → no warning). Read only.
+                                           // 2ap: p90 = 0 when the item's unit changed since fy−1 (prices_prev(fy−1) vs the form price differ ≥ 5×, e.g. LAB-04 อัน → กล่อง)
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
@@ -352,7 +353,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminSetRequestRequester` (2x R7, admin only) | `pcu, month, name` (1–80 chars) | `{requester_name}` — overrides the name printed on ONE sent request (`requests.requester_name`; changes its PDF content key) · no sent request → `NOT_FOUND` · blank / > 80 → `BAD_REQUEST` · writes only on change · audit `adminSetRequestRequester` detail = JSON `[before, after]` |
 | `adminSetPin` | `pcu, pin` (5 digits) | `{ok:true}` (new salt, `pin_version++`, clears fail/lock, `pin_custom=1`) |
 | `adminUnlockPin` | `pcu` | `{ok:true}` |
-| `adminSetHidden` | `pcu, codes` (full replacement) | `{hidden}` |
+| `adminSetHidden` | `pcu, codes` (full replacement) | `{hidden}` (2ap: audit detail `count=N +added -removed`) |
 | `adminSetBackupPassword` | `password` (≥ 8) — **Google admin only** | `{ok:true}` (`backup_version++` invalidates backup sessions) |
 | `adminUsersList` | – | `{users:[{email,role,units,added_at,added_by}], source:"table"\|"env"}` |
 | `adminUsersAdd` | `email, role:"admin"\|"dispenser", units:["พัสดุ"\|"จ่ายกลาง"\|"LAB"]` (dispenser needs ≥ 1; upsert; demoting the last admin → `CONFLICT`) | `{users}` |
@@ -739,7 +740,7 @@ next to `month` (`printOptsOf`). Absent / `null` / `""` → `null` (that header 
 any other type → `BAD_REQUEST`. `filename` is unchanged (still the round month).
 
 Algorithm (`functions/_lib/pdf.js`): request must be `submitted`/`issued` → `content_key = sha256(stableStringify({lv:LAYOUT_VERSION, v:form_version_id,
-pn:print_name, hidden:sorted codes, lines:{code:[op,pp]} (op+pp>0), (stock is not hashed — the sheet prints only OP/PP, so a 2o stock recalc keeps the key), dd:doc_date|null, sm:supply_month|null, rq:requester name printed|null, ph:phone|null (2x),
+pn:print_name, lines:{code:[op,pp]} (op+pp>0) (2ap: the PCU's hidden items are no longer hashed — hiding never changes the sheet; LAYOUT_VERSION 5), (stock is not hashed — the sheet prints only OP/PP, so a 2o stock recalc keeps the key), dd:doc_date|null, sm:supply_month|null, rq:requester name printed|null, ph:phone|null (2x),
 pr:{code: printed price} — 2p, only lines whose printed price (price_print ?? price_snapshot) differs from the bound form's price; the key is omitted when empty, so every
 sheet sent before 2p keeps its key}))` → each distinct option set is
 its own key / file (retention §6b.1 unchanged; `submitted_at` dropped from the key in 2h — a resend with identical content reuses the file) → row in `pdf_files(request_id, content_key)` ⇒ `ready` at once (no R2 call) →

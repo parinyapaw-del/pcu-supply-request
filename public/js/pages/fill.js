@@ -14,7 +14,7 @@ import {
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
 import { availableOf, deriveFields } from "../stock_calc.js";
-import { formatQty, packOf, piecesHint, piecesToUnits, qtyWarn, round2, unitsToPieces, usedWarn } from "../units.js";
+import { formatQty, packOf, piecesHint, piecesToUnits, qtyWarn, round2, usedWarn } from "../units.js";
 
 let unsubStatus = null;
 const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
@@ -22,14 +22,22 @@ const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
 function hiddenSet(app) {
   return new Set(app.boot.hidden || []);
 }
+// 2ap: hiding (ไม่เบิก) only declutters the page — it never changes a figure. A hidden item that carries OP/PP in the round shown
+// keeps its row (tagged "ซ่อนไว้"), so a quantity is never out of sight; rows are dropped only while empty.
+function hiddenWithQty(app, month, code) {
+  return !!month && hiddenSet(app).has(code) && lineTotal(sync.getLine(pcuCode(app), month, code)) > 0;
+}
+function isRowHidden(app, month, code, hidden) {
+  return (hidden || hiddenSet(app)).has(code) && !hiddenWithQty(app, month, code);
+}
 
 function stockRequired(app) {
   return app.boot.config.stock_required === 1;
 }
 
-function activeStepItems(app, step) {
+function activeStepItems(app, step, month) {
   const hidden = hiddenSet(app);
-  return getActiveItemRows(step).filter((it) => !hidden.has(it.code));
+  return getActiveItemRows(step).filter((it) => !isRowHidden(app, month, it.code, hidden));
 }
 
 function stepLabel(step) {
@@ -44,7 +52,7 @@ function priceOf(app, month, item) {
 
 function stepTotals(app, step, month) {
   let op = 0, pp = 0, qty = 0, money = 0;
-  for (const it of activeStepItems(app, step)) {
+  for (const it of activeStepItems(app, step, month)) {
     const line = sync.getLine(pcuCode(app), month, it.code);
     const o = Number(line.op) || 0, p = Number(line.pp) || 0;
     op += o; pp += p; qty += o + p; money += (o + p) * priceOf(app, month, it);
@@ -434,7 +442,7 @@ function renderStepForm(app, month, step, editable) {
   }
 
   const hidden = hiddenSet(app);
-  const hiddenCodes = Array.from(hidden).filter((c) => getActiveItemRows(step).some((it) => it.code === c));
+  const hiddenCodes = Array.from(hidden).filter((c) => getActiveItemRows(step).some((it) => it.code === c) && !hiddenWithQty(app, month, c));
   const hiddenDrawer = document.createElement("details");
   hiddenDrawer.className = "hidden-drawer";
   // 2ad (H4): say where the hidden items went and how to bring them back
@@ -727,7 +735,7 @@ function refreshRowCalc(app, month, item) {
       const editable = !!stockEl && !stockEl.disabled;
       if (st === "neg") {
         const pk = packOf(item);
-        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatQty(line.used)} ${esc(item.unit || "")} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} — ตรวจสอบยอดใช้ไป${pk && !piecesMode(item) ? ` (ถ้านับเป็น${esc(pk.piece)} กด “กรอกเป็น${esc(pk.piece)}”)` : ""} หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
+        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatQty(line.used)} ${esc(item.unit || "")} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} — ตรวจสอบยอดใช้ไป${pk ? ` (ถ้านับเป็น${esc(pk.piece)} ให้หาร ${esc(pk.n.toLocaleString("en-US"))})` : ""} หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
       } else if (st === "surplus") {
         msg.innerHTML = `<div class="calc-warn">คงเหลือ ${formatQty(line.stock)} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} (บันทึกคงเหลือ ไม่คำนวณใช้ไป)
           ${editable ? `<button type="button" class="btn btn-secondary btn-sm" data-put-extra>ใส่เป็นยอดรับเพิ่ม</button>` : ""}</div>`;
@@ -845,7 +853,7 @@ function buildItemTable(app, month, step, editable) {
       tbody.appendChild(tr);
       continue;
     }
-    if (hidden.has(row.code)) continue;
+    if (isRowHidden(app, month, row.code, hidden)) continue;
     tbody.appendChild(buildItemTr(app, month, row, editable && row.active !== false));
   }
   table.appendChild(tbody);
@@ -856,52 +864,27 @@ function inputHtml(field, value, editable, title) {
   return `<input class="num-input" data-field="${field}" inputmode="numeric" autocomplete="off" maxlength="5" value="${esc(valStr(value))}" ${editable ? "" : "disabled"}${title ? ` title="${esc(title)}"` : ""}>`;
 }
 
-// ---------------- 2ao: คงเหลือ / ใช้ไป in request units (decimals allowed) or in pieces ----------------
-// Pieces mode is a per-item choice remembered on this device (default = the request unit, as the hospital issues it). The stored
-// figure is always in request units (pieces ÷ pieces-per-unit, 2 decimals); a fraction shows "≈ n ชิ้น" under the input.
-const PCS_KEY = "pcu_pcs_mode_v1";
-let pcsModes = null;
-function pcsModeSet() {
-  if (pcsModes) return pcsModes;
-  try { pcsModes = new Set(JSON.parse(localStorage.getItem(PCS_KEY) || "[]")); } catch { pcsModes = new Set(); }
-  return pcsModes;
-}
-function piecesMode(item) {
-  return !!packOf(item) && pcsModeSet().has(item.code);
-}
-function setPiecesMode(item, on) {
-  const m = pcsModeSet();
-  if (on) m.add(item.code); else m.delete(item.code);
-  try { localStorage.setItem(PCS_KEY, JSON.stringify([...m])); } catch { /* private mode: this page only */ }
-}
-// what the คงเหลือ / ใช้ไป input shows for a stored figure
+// ---------------- 2ao/2ap: คงเหลือ / ใช้ไป in the request unit only (2ap: no pieces switch — the unit printed on the sheet) ------
+// Decimals allowed (part of a box, 2 places); a fraction shows "≈ n ชิ้น" under the input when pieces-per-unit is known.
 function qtyStr(item, field, v) {
-  if (v === null || v === undefined) return "";
-  return piecesMode(item) ? String(unitsToPieces(v, packOf(item))) : String(round2(v));
+  return v === null || v === undefined ? "" : String(round2(v));
 }
 function pcsHintText(item, field, v) {
   const pk = packOf(item);
   if (!pk || v === null || v === undefined) return "";
-  if (piecesMode(item)) return `= ${formatQty(v)} ${item.unit || ""}`;
   return piecesHint(v, pk) || "";
 }
 function stockInputHtml(item, field, value, editable, title) {
-  const pc = piecesMode(item);
-  const pk = packOf(item);
-  return `<input class="num-input${pc ? " num-input-pcs" : ""}" data-field="${field}" inputmode="decimal" autocomplete="off" maxlength="${pc ? 7 : 8}"
+  return `<input class="num-input" data-field="${field}" inputmode="decimal" autocomplete="off" maxlength="8"
     value="${esc(qtyStr(item, field, value))}" ${editable ? "" : "disabled"}${title ? ` title="${esc(title)}"` : ""}
-    placeholder="${pc ? esc(pk.piece) : ""}" aria-label="${field === "used" ? "ใช้ไป" : "คงเหลือ"} (${esc(pc ? pk.piece : item.unit || "หน่วย")})">
+    aria-label="${field === "used" ? "ใช้ไป" : "คงเหลือ"} (${esc(item.unit || "หน่วย")})">
     <span class="pcs-hint" data-pcs-hint="${field}">${esc(pcsHintText(item, field, value))}</span>`;
 }
-// the unit cell: request unit + "กรอกเป็นชิ้น" switch when pieces-per-unit is known
-function unitCellHtml(app, item, editable) {
+// the unit cell: request unit + "n ชิ้น/กล่อง" note when pieces-per-unit is known
+function unitCellHtml(app, item) {
   const pk = packOf(item);
   if (!pk) return esc(item.unit || "");
-  const pc = piecesMode(item);
-  const showSwitch = editable || pc;
-  return `${esc(item.unit || "")}<div class="pack-note">${esc(`${pk.n.toLocaleString("en-US")} ${pk.piece}/${item.unit || "หน่วย"}`)}</div>
-    ${showSwitch ? `<button type="button" class="btn btn-link pcs-toggle" data-pcs-toggle aria-pressed="${pc}" title="ใช้กับช่องคงเหลือ / ใช้ไป — ยอดขอ OP/PP ยังเป็น${esc(item.unit || "")}">
-      ${pc ? `กรอกเป็น${esc(item.unit || "หน่วย")}` : `กรอกเป็น${esc(pk.piece)}`}</button>` : ""}`;
+  return `${esc(item.unit || "")}<div class="pack-note">${esc(`${pk.n.toLocaleString("en-US")} ${pk.piece}/${item.unit || "หน่วย"}`)}</div>`;
 }
 
 // 2ao: "ยอดขอสูงผิดปกติ" — the note under the row (stays while it is true) + a one-time confirm per (round, item, qty)
@@ -918,7 +901,7 @@ function qtyWarnText(app, month, item, line, w) {
   const unit = item.unit || "หน่วย";
   const q = lineTotal(line);
   return `ขอ ${formatInt(q)} ${unit} (${formatMoney(q * priceOf(app, month, item))} บาท) สูงกว่าที่เคยขอมาก (ปกติไม่เกิน ${formatQty(round2(w.base))} ${unit}/เดือน)`
-    + ` — รายการนี้นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit}) ไม่ใช่${pk.piece}` : ""}`;
+    + ` — รายการนี้นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit}) ถ้านับเป็น${pk.piece} ให้หาร ${pk.n.toLocaleString("en-US")} ก่อนกรอก` : ""}`;
 }
 async function confirmQtyWarn(app, month, item, input) {
   const line = sync.getLine(pcuCode(app), month, item.code);
@@ -940,7 +923,7 @@ async function confirmQtyWarn(app, month, item, input) {
     input.select();
   }
 }
-// 2ao: ใช้ไป more than ยกมา + ได้รับ (only with last round's คงเหลือ) — likely typed in pieces: offer to read it as pieces
+// 2ao: ใช้ไป more than ยกมา + ได้รับ (only with last round's คงเหลือ) — maybe counted in pieces: say how to convert (2ap: no switch)
 let usedAsking = false;
 async function confirmUsedWarn(app, month, item, input) {
   if (usedAsking || !isModeB(app)) return;
@@ -950,48 +933,23 @@ async function confirmUsedWarn(app, month, item, input) {
   if (!w) return;
   const pk = packOf(item);
   const unit = item.unit || "หน่วย";
-  const asPcs = pk && !piecesMode(item) ? piecesToUnits(Number(line.used), pk) : null;
+  const asUnits = pk ? piecesToUnits(Number(line.used), pk) : null;
   usedAsking = true;
   try {
     const v = await showDialog({
       title: "ใช้ไปมากกว่าของที่มี — ตรวจหน่วย",
       html: `<p><strong>${esc(item.name)}</strong> นับเป็น “${esc(unit)}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${esc(pk.piece)}/${esc(unit)})` : ""}</p>
-        <p>กรอกใช้ไป ${esc(formatQty(line.used))} ${esc(piecesMode(item) && pk ? pk.piece : unit)} แต่มีของ ${esc(formatQty(round2(w.avail)))} ${esc(unit)} (ยกมา + ได้รับ)</p>
-        ${asPcs !== null && asPcs <= w.avail ? `<p>ถ้าหมายถึง ${esc(formatQty(line.used))} ${esc(pk.piece)} = ${esc(formatQty(asPcs))} ${esc(unit)}</p>` : ""}`,
-      buttons: [
-        { label: "แก้ยอด", value: "fix" },
-        ...(asPcs !== null ? [{ label: `เป็น${pk.piece} (= ${formatQty(asPcs)} ${unit})`, value: "pcs", primary: true }] : []),
-        { label: "ยอดถูกต้อง", value: "ok" },
-      ],
+        <p>กรอกใช้ไป ${esc(formatQty(line.used))} ${esc(unit)} แต่มีของ ${esc(formatQty(round2(w.avail)))} ${esc(unit)} (ยกมา + ได้รับ)</p>
+        ${asUnits !== null && asUnits <= w.avail ? `<p>ถ้านับเป็น${esc(pk.piece)}: ${esc(formatQty(line.used))} ${esc(pk.piece)} = ${esc(formatQty(asUnits))} ${esc(unit)} — แก้ยอดเป็น ${esc(formatQty(asUnits))}</p>` : ""}`,
+      buttons: [{ label: "แก้ยอด", value: "fix", primary: true }, { label: "ยอดถูกต้อง", value: "ok" }],
     });
-    if (v === "pcs") {
-      const typed = Number(line.used);
-      setPiecesMode(item, true);
-      const cur = sync.getLine(pcuCode(app), month, item.code);
-      sync.setLineFields(pcuCode(app), month, item.code, patchForEdit(true, base, cur, "used", piecesToUnits(typed, pk)));
-      document.querySelectorAll(`[data-code="${item.code}"]`).forEach((root) => repaintUnitCell(app, month, item, root));
-      refreshRowCalc(app, month, item);
-      sync.flush(pcuCode(app), month);
-    } else if (v === "fix" && input && document.body.contains(input)) {
+    if (v === "fix" && input && document.body.contains(input)) {
       input.focus();
       input.select();
     }
   } finally {
     usedAsking = false;
   }
-}
-// re-render the unit switch + the two inputs' placeholder after a pieces-mode change (values are repainted by refreshRowCalc)
-function repaintUnitCell(app, month, item, root) {
-  const editable = !!root.querySelector('input[data-field="stock"]:not([disabled])');
-  const cell = root.querySelector("[data-unit-cell]");
-  if (cell) cell.innerHTML = unitCellHtml(app, item, editable);
-  const pc = piecesMode(item), pk = packOf(item);
-  root.querySelectorAll('input[data-field="stock"], input[data-field="used"]').forEach((el) => {
-    el.classList.toggle("num-input-pcs", pc);
-    el.placeholder = pc ? pk.piece : "";
-    el.setAttribute("aria-label", `${el.dataset.field === "used" ? "ใช้ไป" : "คงเหลือ"} (${pc ? pk.piece : item.unit || "หน่วย"})`);
-    el.value = "";
-  });
 }
 
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
@@ -1033,6 +991,14 @@ function stockFlagHtml(app, item) {
 const rowStateClass = (app, month, item, editable) =>
   item.active === false ? " row-cancelled" : editable && qtyLocked(app, month, item.code) ? " row-qty-locked" : "";
 
+// "ไม่เบิก" hides the row · a hidden row that is still shown (it carries a quantity) gets "ซ่อนไว้" + a button to show it for good
+function hideBtnHtml(app, item) {
+  return hiddenSet(app).has(item.code)
+    ? `<span class="hidden-tag" title="ซ่อนไว้ แต่มียอดขอในใบนี้ — ยอดยังอยู่ในใบและใบพิมพ์">ซ่อนไว้</span>
+       <button type="button" class="btn btn-link btn-hide" data-unhide="${esc(item.code)}">แสดงตลอด</button>`
+    : `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>`;
+}
+
 function buildItemTr(app, month, item, editable) {
   const tr = document.createElement("tr");
   tr.className = "item-row" + rowStateClass(app, month, item, editable);
@@ -1056,7 +1022,7 @@ function buildItemTr(app, month, item, editable) {
     <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "pp")}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
     <td class="col-money row-money">${formatMoney(total * priceOf(app, month, item))}</td>
-    <td class="col-action">${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}</td>`;
+    <td class="col-action">${editable ? hideBtnHtml(app, item) : ""}</td>`;
   return tr;
 }
 
@@ -1072,7 +1038,7 @@ function buildMobileCards(app, month, step, editable) {
       wrap.appendChild(h);
       continue;
     }
-    if (hidden.has(row.code)) continue;
+    if (isRowHidden(app, month, row.code, hidden)) continue;
     wrap.appendChild(buildItemCard(app, month, row, editable && row.active !== false));
   }
   return wrap;
@@ -1091,7 +1057,7 @@ function buildItemCard(app, month, item, editable) {
     <div class="item-card-head">
       <span class="item-seq">${esc(item.seq)}</span>
       <span class="item-name">${esc(item.name)}</span>
-      ${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}
+      ${editable ? hideBtnHtml(app, item) : ""}
     </div>
     <div class="item-card-meta">หน่วย: <span data-unit-cell class="unit-inline">${unitCellHtml(app, item, editable)}</span> · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
     ${rowNoteHtml(app, month, item, editable)}${stockFlagHtml(app, item)}
@@ -1152,7 +1118,7 @@ function wireStepEvents(app, month, step, editable) {
         if (s !== input.value) input.value = s;
         if (s === "-") return; // sign typed, digits to come
         value = s === "" ? null : parseInt(s, 10);
-      } else if ((field === "stock" || field === "used") && !piecesMode(item)) {
+      } else if (field === "stock" || field === "used") {
         // 2ao: up to 5 digits + "." + 2 decimals (part of a box); "3." while typing waits for the decimals
         let s = input.value.replace(/,/g, ".").replace(/[^0-9.]/g, "");
         const dot = s.indexOf(".");
@@ -1162,10 +1128,9 @@ function wireStepEvents(app, month, step, editable) {
         if (s === ".") return;
         value = s === "" ? null : round2(parseFloat(s));
       } else {
-        const digits = input.value.replace(/[^0-9]/g, "").slice(0, field === "stock" || field === "used" ? 7 : 5);
+        const digits = input.value.replace(/[^0-9]/g, "").slice(0, 5);
         if (digits !== input.value) input.value = digits;
         value = digits === "" ? null : parseInt(digits, 10);
-        if ((field === "stock" || field === "used") && value !== null) value = Math.min(99999, piecesToUnits(value, packOf(item))); // 2ao: pieces
       }
       // 2ak A2: an admin-locked item may be lowered, never raised above what the server holds (its ITEM_LOCKED revert stays the backstop)
       if ((field === "op" || field === "pp") && value !== null && itemLock(app, month, code) && value > lockedCap(app, month, code, field)) {
@@ -1213,7 +1178,7 @@ function wireStepEvents(app, month, step, editable) {
     input.addEventListener("keydown", (ev) => {
       if (ev.key !== "Enter") return;
       ev.preventDefault();
-      moveToNextInput(app, input, step);
+      moveToNextInput(app, input, step, month);
     });
   });
 
@@ -1231,19 +1196,6 @@ function wireStepEvents(app, month, step, editable) {
   const formEl = container.querySelector(".step-form");
   if (formEl) {
     formEl.addEventListener("click", (ev) => {
-      const pcs = ev.target.closest("[data-pcs-toggle]"); // 2ao: กรอกเป็นชิ้น ⇄ กรอกเป็นกล่อง (this item, this device)
-      if (pcs) {
-        const rowEl = pcs.closest("[data-code]"); // kept before the switch is re-rendered (pcs leaves the page)
-        const code = rowEl.dataset.code;
-        const item = items.find((it) => it.code === code);
-        if (!item) return;
-        setPiecesMode(item, !piecesMode(item));
-        document.querySelectorAll(`[data-code="${code}"]`).forEach((root) => repaintUnitCell(app, month, item, root));
-        refreshRowCalc(app, month, item);
-        const inp = rowEl.querySelector('input[data-field="used"]:not([disabled]), input[data-field="stock"]:not([disabled])');
-        if (inp) inp.focus();
-        return;
-      }
       const toggle = ev.target.closest("[data-adj-toggle]");
       if (toggle) {
         const box = toggle.closest("[data-code]").querySelector("[data-adj-box]");
@@ -1273,9 +1225,37 @@ function wireStepEvents(app, month, step, editable) {
     });
   }
 
+  container.querySelectorAll("[data-unhide]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        await toggleHidden(app, btn.dataset.unhide, false);
+        renderFill(container, app, step.code, null);
+      } catch (err) {
+        btn.disabled = false;
+      }
+    });
+  });
   container.querySelectorAll("[data-hide]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const code = btn.dataset.hide;
+      // 2ap: hiding never removes a quantity — a row with OP/PP asks first (typed in the wrong row → clear it here)
+      const line = sync.getLine(pcuCode(app), month, code);
+      const q = lineTotal(line);
+      if (q > 0) {
+        const item = items.find((it) => it.code === code);
+        const v = await showDialog({
+          title: "รายการนี้มียอดขอในใบนี้",
+          html: `<p><strong>${esc(item ? item.name : code)}</strong> ขอ ${esc(formatInt(q))} ${esc((item && item.unit) || "")}</p>
+            <p>ซ่อนแล้ว <strong>ยอดยังอยู่ในใบ</strong> (ใบพิมพ์และยอดรวมยังนับ) — ถ้ากรอกผิดแถว ให้เลือก “ล้างยอดเป็น 0 แล้วซ่อน”</p>`,
+          buttons: [{ label: "ยกเลิก", value: "cancel" }, { label: "ล้างยอดเป็น 0 แล้วซ่อน", value: "clear", primary: true }, { label: "ซ่อน (ยอดยังอยู่)", value: "keep" }],
+        });
+        if (v !== "clear" && v !== "keep") return;
+        if (v === "clear") {
+          sync.setLineFields(pcuCode(app), month, code, { op: 0, pp: 0 });
+          await sync.flush(pcuCode(app), month);
+        }
+      }
       btn.disabled = true;
       try {
         await toggleHidden(app, code, true);
@@ -1290,9 +1270,9 @@ function wireStepEvents(app, month, step, editable) {
   refreshStatusChip(app, month);
 }
 
-function moveToNextInput(app, currentInput, step) {
+function moveToNextInput(app, currentInput, step, month) {
   const order = isModeB(app) ? ["used", "stock", "op", "pp"] : ["stock", "op", "pp"];
-  const items = activeStepItems(app, step);
+  const items = activeStepItems(app, step, month);
   const tr = currentInput.closest("[data-code]");
   const code = tr.dataset.code;
   let itemIdx = items.findIndex((it) => it.code === code);

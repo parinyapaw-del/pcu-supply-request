@@ -630,8 +630,8 @@ function appendTableHeader(tbody) {
   tbody.appendChild(r11);
 }
 
+// 2ap: `hidden` (the PCU's ไม่เบิก list) is ignored — hiding only declutters the fill page, the sheet prints every stored quantity
 function appendBodyRows(tbody, step, request, hidden) {
-  const hiddenSet = new Set(hidden || []);
   step.rows.forEach((row) => {
     if (row.type === "section") {
       tbody.appendChild(tr("row-h21", [
@@ -646,8 +646,7 @@ function appendBodyRows(tbody, step, request, hidden) {
       ], 21));
       return;
     }
-    const isHidden = hiddenSet.has(row.code);
-    const line = isHidden ? { op: 0, pp: 0 } : (request.lines && request.lines[row.code]) || { op: 0, pp: 0 };
+    const line = (request.lines && request.lines[row.code]) || { op: 0, pp: 0 };
     const op = Number(line.op) || 0;
     const pp = Number(line.pp) || 0;
     if (row.active === false && op + pp === 0) return; // inactive items are not on the sheet (unless they still carry a quantity)
@@ -667,10 +666,8 @@ function appendBodyRows(tbody, step, request, hidden) {
 }
 
 function appendTotalRow(tbody, step, request, hidden) {
-  const hiddenSet = new Set(hidden || []);
   let op = 0, pp = 0, money = 0;
   getItemRows(step).forEach((item) => {
-    if (hiddenSet.has(item.code)) return;
     const line = (request.lines && request.lines[item.code]) || {};
     const o = Number(line.op) || 0, p = Number(line.pp) || 0;
     op += o; pp += p; money += (o + p) * item.price;

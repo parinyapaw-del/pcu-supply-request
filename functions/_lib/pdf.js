@@ -14,7 +14,8 @@ import { MSG_QUOTA, PDF_RESERVE_BYTES, bumpStmt, quotaUsage, readUsage, renderSt
 // rendered again instead of served from R2 (handoff 2026-10-07 §3.1). 2 = brief 2g (--print-scale 0.78, one Blink engine everywhere).
 // 3 = brief 2h (header date / supply month blank unless chosen at print time; PCU14/15 sentence uses the full print_name).
 // 4 = brief 2x (header without dotted leaders, requester name at "ข้าพเจ้า" + "( ) ผู้เบิก", "โทร :" line under the receiver).
-export const LAYOUT_VERSION = 4;
+// 5 = 2ap (a PCU's hidden items no longer blank their quantity on the sheet — hiding only declutters the fill page).
+export const LAYOUT_VERSION = 5;
 export const PRINT_TOKEN_MS = 120000; // a print token (handed to the renderer inside the URL) lives 2 minutes
 const DEFAULT_RETRY_AFTER = 10;
 const RENDER_TIMEOUT_MS = 60000;
@@ -52,13 +53,13 @@ async function loadBundle(DB, pcuCode, month) {
   if (!pcuRow) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้: " + pcuCode);
   const reqRow = await DB.prepare(`SELECT ${REQ_COLS} FROM requests WHERE pcu = ? AND month = ?`).bind(pcuRow.code, month).first();
   if (!reqRow) return { pcuRow, reqRow: null, lines: [], hidden: [], form: null, requester: null };
-  const [lines, hid, form, requester] = await Promise.all([
+  // 2ap: hidden items do not touch the sheet (hidden: [] kept for the printData shape)
+  const [lines, form, requester] = await Promise.all([
     getLines(DB, reqRow.id),
-    DB.prepare(`SELECT item_code FROM hidden_items WHERE pcu = ?`).bind(pcuRow.code).all(),
     reqRow.form_version_id ? loadForm(DB, reqRow.form_version_id) : null, // the version the sheet is printed with (immutable, cached)
     requesterFor(DB, pcuRow, reqRow), // 2x: the requester name the sheet prints
   ]);
-  return { pcuRow, reqRow, lines, hidden: hid.results.map((r) => r.item_code), form, requester };
+  return { pcuRow, reqRow, lines, hidden: [], form, requester };
 }
 
 // 2p: the unit price printed for a line = price_print, fallback price_snapshot (rows from before migration v5 that were never re-sent).
@@ -84,7 +85,7 @@ export function printOptsOf(p, month) {
 // sheet printed at form prices (every request sent before 2p) is unchanged. 2z: a price change rewrites price_print → the bound form (rebound
 // to the new version) and/or `pr` change → new key → a fresh PDF on the next print.
 // 2x: + `rq` the printed requester name (bundle.requester) and `ph` the phone print option.
-export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form, requester }, opts = {}) {
+export async function contentKeyOf({ pcuRow, reqRow, lines, form, requester }, opts = {}) {
   const ls = {}, pr = {};
   for (const l of lines) {
     const op = Number(l.op) || 0, pp = Number(l.pp) || 0;
@@ -96,7 +97,6 @@ export async function contentKeyOf({ pcuRow, reqRow, lines, hidden, form, reques
     lv: LAYOUT_VERSION,
     v: reqRow.form_version_id ?? null,
     pn: pcuRow.print_name || pcuRow.name,
-    hidden: [...hidden].sort(),
     lines: ls,
     dd: opts.doc_date ?? null,
     sm: opts.supply_month ?? null,

@@ -1,7 +1,7 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
 import { err, assertQty, assertStockQty, isStr, phoneParam } from "./http.js";
 import {
-  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, hiddenDiffStatements, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
+  auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, hiddenDiffStatements, hiddenAuditDetail, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
   publicConfig, withLinkedRows,
 } from "./db.js";
 import {
@@ -13,7 +13,7 @@ import {
   firstRequester, priceStampStmts, sendRequestStmt,
 } from "./views.js";
 import { ADJ_REASONS, CALC_FROM, baselineFor, computeLine, recalcStockChain } from "./stock.js";
-import { loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
+import { formPrice, loadPriceHistory, priceFor, priceHistories, roundPriceOverrides } from "./price.js";
 import { lockedCodes, pcuNotices } from "./notices.js";
 
 const PCU_FORM = { pcu: true }; // formPublic option: strip soft-deleted pages
@@ -233,17 +233,27 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
 
 // 2ao: what this PCU usually requests per item, for the "ยอดสูงผิดปกติ — หน่วยถูกไหม" check while filling (public/js/units.js qtyWarn):
 // [p90 of its monthly op+pp in fy−1 (stats; a linked old code counts), {month: op+pp of each sent request of fy}]. Read only.
+// 2ap: an item whose unit changed between fy−1 and fy (price ratio ≥ UNIT_CHANGE_RATIO either way — e.g. LAB-04 อัน 4.5 ฿ → กล่อง
+// 450 ฿) gets no p90 from fy−1: those figures count another unit. Its base is then only what was sent this fy.
+export const UNIT_CHANGE_RATIO = 5;
 export async function unitHistory(DB, pcu, fy, form) {
   const months = fyMonths(fy);
-  const [st, rq] = await Promise.all([
+  const [st, rq, pp] = await Promise.all([
     DB.prepare(`SELECT pcu, item_code, p90_m FROM stats WHERE fy = ? AND pcu = ? AND p90_m > 0`).bind(fy - 1, pcu).raw(),
     DB.prepare(`SELECT r.month, l.item_code, COALESCE(l.op,0) + COALESCE(l.pp,0) AS q FROM requests r JOIN request_lines l ON l.request_id = r.id
        WHERE r.pcu = ? AND r.month >= ? AND r.month <= ? AND r.status IN ('submitted','issued') AND COALESCE(l.op,0) + COALESCE(l.pp,0) > 0`)
       .bind(pcu, months[0], months[months.length - 1]).all(),
+    DB.prepare(`SELECT item_code, price FROM prices_prev WHERE fy = ? AND price > 0`).bind(fy - 1).raw(),
   ]);
   const lm = linkMap(form);
+  const prevPrice = new Map(pp.map(([c, p]) => [c, Number(p) || 0]));
+  const unitChanged = (oldCode, c) => {
+    const a = prevPrice.get(oldCode), b = formPrice(form, c);
+    return !!a && !!b && (b / a >= UNIT_CHANGE_RATIO || a / b >= UNIT_CHANGE_RATIO);
+  };
   const out = {};
   for (const [, c, p90] of withLinkedRows(st, lm)) out[c] = [p90 || 0, {}];
+  for (const [, c0] of st) { const c = linkedCode(lm, c0); if (out[c] && unitChanged(c0, c)) out[c][0] = 0; }
   for (const r of rq.results) {
     const c = linkedCode(lm, r.item_code);
     const e = (out[c] ||= [0, {}]);
@@ -681,7 +691,7 @@ export async function setHidden(ctx, p) {
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];
   const stmts = await hiddenDiffStatements(DB, pcu.code, uniq, pcu.code);
-  stmts.push(auditStmt(DB, pcu.code, "pcu", "setHidden", pcu.code, "", `count=${uniq.length}`));
+  stmts.push(auditStmt(DB, pcu.code, "pcu", "setHidden", pcu.code, "", hiddenAuditDetail(uniq.length, stmts.diff)));
   await batchChunked(DB, stmts);
   return { hidden: uniq };
 }

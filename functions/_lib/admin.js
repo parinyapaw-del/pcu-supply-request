@@ -1,7 +1,7 @@
 // admin.js — admin / dispenser actions (functions/API.md §5). ctx.who = {email, role, units, backup}.
 import { err, assertLimitValue, isStr, jparse, phoneParam } from "./http.js";
 import {
-  SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, hiddenDiffStatements, insertStatements,
+  SECRET_CONFIG_KEYS, auditStmt, batchChunked, budgetConfig, configStmt, formPublic, getConfigAll, hiddenDiffStatements, hiddenAuditDetail, insertStatements,
   formForFy, latestForm, limitModeFor, linkMap, loadForm, priceMap, publicConfig, TABLES, withLinkedRows,
 } from "./db.js";
 import {
@@ -873,9 +873,10 @@ export async function adminSetHidden(ctx, p) {
   const form = await latestForm(DB, ctxFy(await getConfigAll(DB)));
   for (const c of codes) if (!isStr(c) || !form || !form.index.has(c)) throw err("BAD_REQUEST", "รหัสรายการไม่ถูกต้อง: " + c);
   const uniq = [...new Set(codes)];
+  const diffStmts = await hiddenDiffStatements(DB, p.pcu, uniq, who.email);
   await batchChunked(DB, [
-    ...(await hiddenDiffStatements(DB, p.pcu, uniq, who.email)),
-    auditStmt(DB, who.email, who.role, "adminSetHidden", p.pcu, "", `count=${uniq.length}`),
+    ...diffStmts,
+    auditStmt(DB, who.email, who.role, "adminSetHidden", p.pcu, "", hiddenAuditDetail(uniq.length, diffStmts.diff)),
   ]);
   return { hidden: uniq };
 }

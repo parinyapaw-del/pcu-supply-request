@@ -314,7 +314,13 @@ export async function hiddenDiffStatements(DB, pcuCode, codes, by) {
   const ts = nowIso();
   stmts.push(...insertStatements(DB, "hidden_items", ["pcu", "item_code", "hidden_at", "by"], added.map((c) => [pcuCode, c, ts, by]),
     { prefix: "INSERT OR IGNORE INTO" }));
+  stmts.diff = { added, removed }; // 2ap: for the audit detail (which codes, not only how many)
   return stmts;
+}
+// 2ap: audit detail of a hidden-list change — "count=N +A,B -C" (the one audit row it always was; only the text grows)
+export function hiddenAuditDetail(count, diff) {
+  const d = diff || { added: [], removed: [] };
+  return `count=${count}${d.added.length ? " +" + d.added.join(",") : ""}${d.removed.length ? " -" + d.removed.join(",") : ""}`;
 }
 
 // ---- config ------------------------------------------------------------------------------------------------
