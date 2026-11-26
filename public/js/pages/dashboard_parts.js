@@ -424,7 +424,7 @@ export function tableHtml(agg, data, { heat } = {}) {
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
   const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป · ≈ ได้มาจริงยังไม่กรอก ใช้ยอดเบิกแทน</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป · ≈ ได้มาจริงยังไม่กรอก คิดด้วยยอดเบิกแทน (อาจไม่ถูกต้อง)</p>
     ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">

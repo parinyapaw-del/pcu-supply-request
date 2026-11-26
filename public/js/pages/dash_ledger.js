@@ -25,10 +25,13 @@ export function ledgerTableHtml(byM, mode) {
     const nx = byM[nextOf(m)];
     const recvCell = !(num(req) > 0) ? dash : recv != null ? formatQty(recv) : nx ? tag(recvWho(mode), "led-miss") : tag("รอเดือนถัดไป"); // not due yet
     let usedCell;
-    if (used != null) usedCell = flag === 1 ? `≈ ${formatQty(used)} <span class="muted small">(ใช้ยอดเบิกแทน)</span>` : formatQty(used);
-    else if (st == null) usedCell = tag("ยังไม่กรอกคงเหลือ", "led-miss");
+    // 2as wording (Save): an estimate "may be wrong" · cannot compute → say which figure is missing
+    const recvMissing = num(req) > 0 && recv == null && !!nx;
+    if (used != null) usedCell = flag === 1 ? `≈ ${formatQty(used)} <span class="muted small">(อาจไม่ถูกต้อง — ไม่มีข้อมูลได้มาจริง)</span>` : formatQty(used);
+    else if (!nx) usedCell = tag("รอเดือนถัดไป"); // newest round: not due yet (unknown)
+    else if (st == null) usedCell = tag(recvMissing ? "คำนวณไม่ได้ — ไม่มีคงเหลือและได้มาจริง" : "คำนวณไม่ได้ — ไม่มีคงเหลือ", "led-miss");
     else if (flag === 2) usedCell = tag("ติดลบ — ตรวจตัวเลข", "led-warn");
-    else if (!nx || nx[0] == null) usedCell = tag("รอคงเหลือเดือนถัดไป");
+    else if (nx[0] == null) usedCell = tag("คำนวณไม่ได้ — ไม่มีคงเหลือเดือนถัดไป", "led-miss");
     else usedCell = dash;
     return `<tr><th scope="row" title="${esc(fullRound(m))}">${esc(shortRound(m))}</th>
       <td class="num">${st == null ? tag("ยังไม่กรอก", "led-miss") : formatQty(st)}</td><td class="num">${num(req) > 0 ? formatQty(req) : dash}</td>
@@ -37,7 +40,7 @@ export function ledgerTableHtml(byM, mode) {
   return `<table class="dash-table dash-table-sm led-tbl"><caption class="sr-only">รายเดือน: คงเหลือ เบิก ได้มาจริง ใช้ไป</caption>
     <thead><tr><th scope="col">รอบ</th><th scope="col" class="num">คงเหลือ</th><th scope="col" class="num">เบิก</th><th scope="col" class="num">ได้มาจริง</th><th scope="col" class="num">ใช้ไป</th></tr></thead>
     <tbody>${rows}</tbody></table>
-    <p class="muted small">ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป (รู้เมื่อทำใบเดือนถัดไป) · ได้มาจริงยังไม่กรอก → ใช้ยอดเบิกแทน (≈)</p>`;
+    <p class="muted small">ใช้ไปของรอบ = คงเหลือรอบนั้น + ได้มาจริง − คงเหลือรอบถัดไป (รู้เมื่อทำใบเดือนถัดไป) · ได้มาจริงยังไม่กรอก → คิดด้วยยอดเบิกแทน (≈ อาจไม่ถูกต้อง)</p>`;
 }
 
 // rounds whose ได้มาจริง is due: the next round's sheet exists (= the PCU has moved on) · stock: requested but no คงเหลือ at all
@@ -65,7 +68,7 @@ export function missingNoticeHtml(data, { staff = false } = {}) {
   if (stock.length) parts.push(`<li><strong>ไม่ได้กรอกคงเหลือ</strong>: ${stock.map((m) => esc(shortRound(m))).join(" · ")}</li>`);
   if (!parts.length) return "";
   return `<div class="notice notice-info led-notice" role="status"><ul class="led-list">${parts.join("")}</ul>
-    <p class="small">ใช้ไปของรายการที่ยังไม่กรอกได้มาจริงคำนวณด้วยยอดเบิกแทน (≈) · ไม่มีคงเหลือ = ยังคำนวณใช้ไปไม่ได้</p></div>`;
+    <p class="small">ใช้ไปของรายการที่ยังไม่กรอกได้มาจริงคิดด้วยยอดเบิกแทน (≈ อาจไม่ถูกต้อง) · ไม่มีคงเหลือ = คำนวณใช้ไปไม่ได้</p></div>`;
 }
 
 /** Admin network card: which PCU has not entered what, per round. `names` = Map code → name. */
@@ -81,7 +84,7 @@ export function netMissingCardHtml(data, names) {
       <td>${r || dash}</td><td>${s || dash}</td></tr>`;
   }).filter(Boolean);
   return `<div class="dash-card" id="adm-missing"><h3>ข้อมูลที่ยังไม่กรอก</h3>
-    <p class="muted small dash-caption">ได้มาจริง (${mode === "issuer" ? "หน่วยจ่ายกรอก" : "รพ.สต. กรอก"}) ของรอบที่ทำใบเดือนถัดไปแล้ว = ขาด/ขอเบิก รายการ · คงเหลือ = รอบที่ขอเบิกแต่ไม่กรอกคงเหลือเลย · ใช้ไปของรายการที่ขาดได้มาจริงใช้ยอดเบิกแทน (≈) · กดชื่อเพื่อดูราย รพ.สต.</p>
+    <p class="muted small dash-caption">ได้มาจริง (${mode === "issuer" ? "หน่วยจ่ายกรอก" : "รพ.สต. กรอก"}) ของรอบที่ทำใบเดือนถัดไปแล้ว = ขาด/ขอเบิก รายการ · คงเหลือ = รอบที่ขอเบิกแต่ไม่กรอกคงเหลือเลย · ใช้ไปของรายการที่ขาดได้มาจริงคิดด้วยยอดเบิกแทน (≈ อาจไม่ถูกต้อง) · กดชื่อเพื่อดูราย รพ.สต.</p>
     ${rows.length ? `<div class="table-scroll"><table class="dash-table dash-table-sm"><thead><tr><th scope="col">รพ.สต.</th><th scope="col">ได้มาจริงยังไม่กรอก</th><th scope="col">ไม่ได้กรอกคงเหลือ</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div>` : `<p class="muted">กรอกครบทุกแห่ง</p>`}</div>`;
 }

@@ -238,7 +238,7 @@ export function renderTab12(container, ctx) {
     box.classList.remove("is-loading");
     box.innerHTML = `
       <h2>แดชบอร์ดภาพรวมเครือข่าย</h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง ใช้ยอดเบิกแทน)</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง คิดด้วยยอดเบิกแทน อาจไม่ถูกต้อง)</p>
       ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
@@ -485,7 +485,7 @@ export function renderTab12(container, ctx) {
     box.innerHTML = `
       <p class="dash-back"><button type="button" class="btn btn-secondary btn-sm" id="adm-back">← กลับภาพรวมเครือข่าย</button></p>
       <h2>${esc(name)} <span class="muted small">${esc((d.pcu && d.pcu.code) || "")}</span></h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง ใช้ยอดเบิกแทน)</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง คิดด้วยยอดเบิกแทน อาจไม่ถูกต้อง)</p>
       ${controlsHtml(d, ordered, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);
