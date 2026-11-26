@@ -184,6 +184,15 @@ const V11 = [
   `CREATE TABLE IF NOT EXISTS item_lock_exempt (item_code TEXT NOT NULL, pcu TEXT NOT NULL, set_by TEXT, set_at TEXT, PRIMARY KEY (item_code, pcu))`,
 ];
 
+// Migration v12 (2ao, "show N times" announcements): announcements.show_limit = how many home-page visits each PCU sees it (null = as
+// before: until it expires / is switched off) · announcement_views = one row per (announcement, pcu) counting those visits (capped at
+// show_limit → at most show_limit writes per PCU per announcement). Same one-by-one rule.
+const V12 = [
+  `ALTER TABLE announcements ADD COLUMN show_limit INTEGER`,
+  `CREATE TABLE IF NOT EXISTS announcement_views (
+     announcement_id INTEGER NOT NULL, pcu TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, last_at TEXT, PRIMARY KEY (announcement_id, pcu))`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -197,10 +206,11 @@ export const MIGRATIONS = [
   { v: 9, statements: V9, oneByOne: true, tolerate: /duplicate column/i },
   { v: 10, statements: V10, oneByOne: true, tolerate: /duplicate column/i },
   { v: 11, statements: V11, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 12, statements: V12, oneByOne: true, tolerate: /duplicate column/i },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "item_locks", "item_lock_exempt", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "item_locks", "item_lock_exempt", "announcement_views", "audit_log",
 ];
 
 let migrated = false;

@@ -51,11 +51,12 @@ export function computeLine(base, line) {
   const cf = CALC_FROM.includes(line.calc_from) ? line.calc_from : null;
   if (!cf) return { stock, used, calc_from: null };
   const available = base.stock + (base.received || 0) + (line.adj ?? 0);
+  const r2 = (n) => Math.round(n * 100) / 100; // 2ao: stock / used may carry 2 decimals — no float noise (0.3 − 0.1)
   if (cf === "used") {
-    const s = used === null ? null : available - used;
+    const s = used === null ? null : r2(available - used);
     return { stock: s === null || s < 0 ? null : s, used, calc_from: cf };
   }
-  const u = stock === null ? null : available - stock;
+  const u = stock === null ? null : r2(available - stock);
   return { stock, used: u === null || u < 0 ? null : u, calc_from: cf };
 }
 

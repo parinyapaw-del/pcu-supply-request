@@ -218,6 +218,15 @@ async function main() {
       if (sv.stock !== cv.stock || sv.used !== cv.used) bad++;
     }
     eq(bad, 0, "stock mode B: server computeLine = client deriveFields (คงเหลือ = ยกมา + ได้รับ + ปรับยอด − ใช้ไป, negative → null)");
+    bad = 0; // 2ao: decimals (part of a box) give the same 2-decimal figure on both sides
+    for (const bs of [0, 0.4, 2.35]) for (const rc of [0, 3]) for (const cf of ["used", "stock"]) for (const v of [0.1, 0.3, 1.25, 2.7]) {
+      const base = { stock: bs, received: rc }, line = { adj: null, calc_from: cf, used: cf === "used" ? v : null, stock: cf === "stock" ? v : null };
+      const sv = srvStock.computeLine(base, line), cv = { ...line, ...cliStock.deriveFields(base, line) };
+      if (sv.stock !== cv.stock || sv.used !== cv.used) bad++;
+      const r = cf === "used" ? sv.stock : sv.used;
+      if (r !== null && Math.round(r * 100) / 100 !== r) bad++;
+    }
+    eq(bad, 0, "2ao: decimal คงเหลือ / ใช้ไป — server = client, results rounded to 2 decimals (no float noise)");
   }
 
   // ------------------------------------------------------------------------------------------------------------------------
@@ -1741,7 +1750,7 @@ async function main() {
     ok((await mustOk("adminAuditLog", { limit: 10 }, ADM2)).entries.some((e) => e.action === "pcuSetStockMode" && e.pcu === "PCU06" && e.detail === "B"), "audit pcuSetStockMode (detail = mode)");
 
     // ---- validation ----
-    for (const [f, v, why] of [["used", -1, "used −1"], ["used", 100000, "used 100000"], ["used", 1.5, "used 1.5"], ["adj", 100000, "adj 100000"], ["adj", -100000, "adj −100000"],
+    for (const [f, v, why] of [["used", -1, "used −1"], ["used", 100000, "used 100000"], ["used", "1,5x", "used text (2ao: decimals are fine)"], ["adj", 100000, "adj 100000"], ["adj", -100000, "adj −100000"],
       ["adj", 2.5, "adj 2.5"], ["adj_reason", "lost", "adj_reason outside the enum"], ["calc_from", "op", "calc_from op"]]) {
       expectErr(await sv(P, M1, { [A.code]: { op: 1, [f]: v } }), "BAD_REQUEST", `saveLines rejects ${why}`);
     }
@@ -1872,7 +1881,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 11, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 12, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2234,10 +2243,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 11, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 12, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 11, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 12, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3591,7 +3600,7 @@ async function main() {
 
     // ---- migration v8 re-run: no error, no second seed, data kept ----
     const fbN = (await list()).items.length;
-    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 11, "devRerunMigration v8 (+ v9)");
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 12, "devRerunMigration v8 (+ v9)");
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
@@ -3676,7 +3685,7 @@ async function main() {
     for (const f of (await mustOk("itemFlagList", {}, ADM2)).flags) await mustOk("itemFlagClear", { code: f.code }, ADM2);
 
     // ---- migration v9 ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 11, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 12, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
 
     // ---- flags: validation + scope ----
     expectErr(await api("itemFlagSet", { code: S1.code, status: "gone" }, ADM2), "BAD_REQUEST", "itemFlagSet bad status");
@@ -3748,7 +3757,7 @@ async function main() {
     ok(!old.live && old.active && !off.live && !off.active, "expired → live:false · switched off → live:false");
     const pa = (await mustOk("pcuBootstrap", {}, TP)).announcements;
     eq(pa.map((a) => a.id), [live2.id, live1.id], "pcuBootstrap.announcements = live only, newest first (expired + switched-off left out)");
-    eq(Object.keys(pa[0]).sort(), ["expires_at", "id", "text", "updated_at"], "…PCU gets id/text/expires_at/updated_at only");
+    eq(Object.keys(pa[0]).sort(), ["expires_at", "id", "seen", "show_limit", "text", "updated_at"], "…PCU gets id/text/expires_at/updated_at (+ 2ao show_limit/seen) only");
     const a2 = await auditN();
     eq((await mustOk("adminAnnouncementSave", { id: live1.id, text: "ประชุมผู้รับผิดชอบวันศุกร์" }, ADM2)).announcement.updated_at, live1.updated_at, "edit with no change → nothing written");
     eq(await auditN(), a2, "…no audit");
@@ -3768,7 +3777,7 @@ async function main() {
     ok((await mustOk("adminAuditLog", { limit: 50 }, ADM2)).entries.some((e) => e.action === "adminAnnouncementDelete"), "announcement delete audited");
 
     // ---- migration v9 re-run keeps data ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 11, "devRerunMigration v9 again");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 12, "devRerunMigration v9 again");
     eq((await mustOk("itemFlagList", {}, ADM2)).flags.length, 2, "…flags kept");
 
     for (const c of [S1.code, LB.code]) await mustOk("itemFlagClear", { code: c }, ADM2);
@@ -3779,7 +3788,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("2af: PCU received reports (separate from issued_*, lock the line, mismatch) · เดือนนี้ไม่เบิก (no_order) · admin mismatch report");
   {
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 11, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 12, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
     const F0 = b0.form;
     const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
@@ -3930,7 +3939,7 @@ async function main() {
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
 
     // ---- migration re-run keeps data · cleanup ----
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 11, "devRerunMigration v10 again");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 12, "devRerunMigration v10 again");
     eq([(await aLine(P, CUR, Y.code)).rcv_qty, (await mustOk("adminGetRequest", { pcu: Q, month: CUR }, ADM2)).request.no_order], [1, true], "…reports and no_order kept");
     for (const pc of [P, Q]) for (const m of [CUR, PREV, FIRST70]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
     eq((await mustOk("adminReceivedReport", { all: true, pcu: P }, ADM2)).rows.length, 0, "devDeleteRequest removes the received reports too");
@@ -3940,7 +3949,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("2ai: admin item locks (per-PCU release) · received on any request with a requested line");
   {
-    eq((await mustOk("devRerunMigration", { v: 11 })).schema_version, 11, "devRerunMigration v11 (item_locks + item_lock_exempt re-run cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 11 })).schema_version, 12, "devRerunMigration v11 (item_locks + item_lock_exempt re-run cleanly)");
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
     const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
     const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
@@ -4194,6 +4203,118 @@ async function main() {
     eq(mv(await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2), X.code, PREV)[2], 5, "2an: report removed → got = issued 5");
 
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+  }
+  // ------------------------------------------------------------------------------------------------------------------------
+  section("2ao: decimal คงเหลือ / ใช้ไป · form item pack · unit_hist (ยอดสูงผิดปกติ) · show-N-times announcements");
+  {
+    const U = await import("../public/js/units.js");
+    // pure helpers (client)
+    eq(U.packOf({ name: "Face Mask (50 ชิ้น/กล่อง)", unit: "กล่อง" }), { n: 50, piece: "ชิ้น", src: "name" }, "2ao packOf reads '50 ชิ้น/กล่อง' from the name");
+    eq(U.packOf({ name: "GAUZE 3*4\" (100แผ่น/ห่อ)", unit: "ห่อ" }).n, 100, "2ao packOf: no space '100แผ่น/ห่อ'");
+    eq(U.packOf({ name: "ชุดทดสอบกันรา (50 test)", unit: "กล่อง" }).n, 50, "2ao packOf: '(50 test)' = tests per box");
+    eq(U.packOf({ name: "ชุดทดสอบฟอร์มาลีน (1 test)", unit: "กล่อง" }), null, "2ao packOf: 1 test → nothing to convert");
+    eq(U.packOf({ name: "สำลี (450 กรัม/ถุง)", unit: "ห่อ" }), null, "2ao packOf: grams are not pieces");
+    eq(U.packOf({ name: "เข็มเจาะเลือดปลายนิ้ว", unit: "กล่อง" }), null, "2ao packOf: nothing in the name → null");
+    eq(U.packOf({ name: "เข็มเจาะเลือดปลายนิ้ว", unit: "กล่อง", pack: 100 }).n, 100, "2ao packOf: admin-set pack wins");
+    eq([U.qtyBase([5, { "2026-10": 8, "2026-11": 30 }], "2026-11"), U.qtyBase([5, {}], "2026-11"), U.qtyBase(undefined, "2026-11")], [8, 5, 0],
+      "2ao qtyBase = max(p90 last fy, other months this fy) — the round being filled left out");
+    eq([!!U.qtyWarn([20, {}], "2026-12", 1900), !!U.qtyWarn([20, {}], "2026-12", 60), !!U.qtyWarn([0, {}], "2026-12", 1900), !!U.qtyWarn([0, { "2026-11": 19 }], "2026-12", 1900)],
+      [true, false, false, true], "2ao qtyWarn: > 3× base warns · exactly 3× not · no history (new item, first request) no warning · second request uses the first");
+    eq([!!U.usedWarn({ stock: 3, received: 0 }, { used: 210 }), !!U.usedWarn({ stock: 3, received: 2 }, { used: 5 }), !!U.usedWarn(null, { used: 210 }), !!U.usedWarn({ stock: null }, { used: 210 })],
+      [true, false, false, false], "2ao usedWarn: used > ยกมา + ได้รับ · no last-round คงเหลือ → no warning");
+    eq([U.piecesToUnits(40, { n: 100 }), U.unitsToPieces(0.4, { n: 100 }), U.piecesHint(0.4, { n: 100, piece: "ชิ้น" }), U.piecesHint(2, { n: 100, piece: "ชิ้น" }), U.formatQty(0.4), U.formatQty(1200)],
+      [0.4, 40, "≈ 40 ชิ้น", null, "0.4", "1,200"], "2ao pieces ⇄ units · hint only on a fraction · formatQty");
+
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
+    await mustOk("adminLockRound", { month: PREV, locked: 0 }, ADM2);
+    const F0 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
+    const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
+    const P = (await mustOk("adminBootstrap", {}, ADM2)).pcus.filter((x) => x.group !== "ทดลอง").at(-1).code;
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+    const TP = (await mustOk("pcuLogin", { pcu: P, pin: "12345" })).token;
+    let n = 0;
+    const tsn = () => new Date(Date.parse("2026-11-29T00:00:00Z") + ++n * 1000).toISOString();
+    const L = (o) => Object.fromEntries(Object.entries(o).map(([c, v]) => [c, { stock: null, op: null, pp: null, ...v, updated_at: tsn() }]));
+    const sv = (month, lines, extra = {}) => api("saveLines", { month, lines: L(lines), ...extra }, TP);
+    const line = async (m, c) => (await mustOk("adminGetRequest", { pcu: P, month: m }, ADM2)).request.lines[c];
+
+    // ---- decimals ----
+    ok((await sv(CUR, { [X.code]: { stock: 0.4, op: 1 } })).ok, "2ao saveLines: คงเหลือ 0.4 accepted");
+    eq((await line(CUR, X.code)).stock, 0.4, "…stored as 0.4");
+    ok((await sv(CUR, { [X.code]: { stock: "2.345", op: 1 } })).ok, "2ao: 3 decimals accepted …");
+    eq((await line(CUR, X.code)).stock, 2.35, "…rounded to 2 decimals (2.35)");
+    ok((await sv(CUR, { [X.code]: { stock: 1, used: 0.25, op: 1 } })).ok, "2ao: ใช้ไป 0.25 accepted");
+    eq((await line(CUR, X.code)).used, 0.25, "…stored as 0.25");
+    expectErr(await sv(CUR, { [X.code]: { stock: -0.5 } }), "BAD_REQUEST", "2ao: negative คงเหลือ rejected");
+    expectErr(await sv(CUR, { [X.code]: { stock: "abc" } }), "BAD_REQUEST", "2ao: text คงเหลือ rejected");
+    expectErr(await sv(CUR, { [X.code]: { op: 1.5 } }), "BAD_REQUEST", "2ao: OP stays a whole number");
+    expectErr(await sv(CUR, { [X.code]: { stock: 1, adj: 0.5 } }), "BAD_REQUEST", "2ao: ปรับยอด stays a whole number");
+    await mustOk("adminSaveLines", { pcu: P, month: CUR, lines: { [Y.code]: { stock: 1.5, op: 2 } } }, ADM2, "2ao adminSaveLines: decimal คงเหลือ from paper");
+    eq((await line(CUR, Y.code)).stock, 1.5, "…stored as 1.5");
+    // mode B with a decimal baseline: PREV stock 2.5 + got 0 → used 0.4 → stock 2.1
+    await mustOk("pcuSetStockMode", { mode: "B" }, TP);
+    ok((await sv(PREV, { [X.code]: { stock: 2.5 } }, { send: true })).ok, "2ao setup: PREV stock 2.5 sent");
+    ok((await sv(CUR, { [X.code]: { used: 0.4, calc_from: "used", op: 1 } })).ok, "2ao: mode B used 0.4 …");
+    eq((await line(CUR, X.code)).stock, 2.1, "…คงเหลือ = 2.5 − 0.4 = 2.1 (no float noise)");
+    await mustOk("pcuSetStockMode", { mode: "A" }, TP);
+
+    // ---- form pack ----
+    const cl = (o) => JSON.parse(JSON.stringify(o));
+    const withItems = (base, patch) => { const steps = cl(base.steps); steps.forEach((s) => s.rows.forEach((r) => { if (r.type === "item" && r.code in patch) { Object.assign(r, patch[r.code]); if (patch[r.code].pack === undefined) delete r.pack; } })); return steps; };
+    const row = (f, c) => f.steps.flatMap((s) => s.rows).find((r) => r.code === c);
+    expectErr(await api("adminFormSave", { base_version_id: F0.id, form: { steps: withItems(F0, { [X.code]: { pack: 0 } }) } }, ADM2), "BAD_REQUEST", "2ao pack 0 rejected");
+    expectErr(await api("adminFormSave", { base_version_id: F0.id, form: { steps: withItems(F0, { [X.code]: { pack: 2.5 } }) } }, ADM2), "BAD_REQUEST", "2ao pack must be a whole number");
+    const fs1 = await mustOk("adminFormSave", { base_version_id: F0.id, note: "2ao pack", form: { steps: withItems(F0, { [X.code]: { pack: 100 } }) } }, ADM2);
+    ok(!fs1.same && (fs1.diff.pack_changed || []).some((d) => d.code === X.code && d.new === 100), "2ao: pack saved as a new form version · diff.pack_changed");
+    const F1 = (await mustOk("adminBootstrap", {}, ADM2)).form;
+    eq([row(F1, X.code).pack, "pack" in row(F1, Y.code)], [100, false], "2ao: pack on X only (other items keep their shape)");
+    eq(row((await mustOk("pcuBootstrap", {}, TP)).form, X.code).pack, 100, "2ao: pcuBootstrap.form carries pack");
+    const fs2 = await mustOk("adminFormSave", { base_version_id: F1.id, note: "2ao pack off", form: { steps: withItems(F1, { [X.code]: { pack: undefined } }) } }, ADM2);
+    ok(!fs2.same && !("pack" in row((await mustOk("adminBootstrap", {}, ADM2)).form, X.code)), "2ao: pack cleared");
+
+    // ---- unit_hist ----
+    ok((await sv(PREV, { [X.code]: { stock: 2.5, op: 7, pp: 2 } }, { send: true })).ok, "2ao setup: PREV request X 9 sent");
+    const b1 = await mustOk("pcuBootstrap", {}, TP);
+    ok(b1.unit_hist && typeof b1.unit_hist === "object", "2ao pcuBootstrap.unit_hist present");
+    eq((b1.unit_hist[X.code] || [0, {}])[1][PREV], 9, "2ao unit_hist: this fy's sent request per month (op+pp)");
+    eq(CUR in ((b1.unit_hist[X.code] || [0, {}])[1]), false, "2ao unit_hist: draft round not counted");
+    const sd = ((await mustOk("adminBootstrap", {}, ADM2)).stats || { data: {} }).data[P] || {};
+    const sc = Object.keys(sd).find((c) => sd[c][1] > 0 && c !== X.code);
+    if (sc) eq(b1.unit_hist[sc][0], sd[sc][1], "2ao unit_hist: p90 of last fy = stats p90_m");
+    else ok(true, "2ao unit_hist: (no stats for this pcu in the seed — p90 check skipped)");
+    eq((await mustOk("adminGetRequest", { pcu: P, month: CUR }, ADM2)).unit_hist[X.code][1][PREV], 9, "2ao adminGetRequest.unit_hist = same figures");
+    for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
+
+    // ---- show N times ----
+    expectErr(await api("adminAnnouncementSave", { text: "x", show_limit: 11 }, ADM2), "BAD_REQUEST", "2ao show_limit > 10 rejected");
+    expectErr(await api("adminAnnouncementSave", { text: "x", show_limit: 1.5 }, ADM2), "BAD_REQUEST", "2ao show_limit must be a whole number");
+    const a3 = (await mustOk("adminAnnouncementSave", { text: "ระบบอัปเดต 2ao", show_limit: 3 }, ADM2)).announcement;
+    eq([a3.show_limit, a3.views], [3, { pcus: 0, done: 0 }], "2ao: announcement with show_limit 3 · views 0");
+    const plain = (await mustOk("adminAnnouncementSave", { text: "ประกาศธรรมดา" }, ADM2)).announcement;
+    const pick = async () => (await mustOk("pcuBootstrap", {}, TP)).announcements.find((a) => a.id === a3.id);
+    eq([(await pick()).show_limit, (await pick()).seen], [3, 0], "2ao pcuBootstrap: show_limit 3 · seen 0");
+    const seen = [];
+    for (let i = 0; i < 3; i++) seen.push((await mustOk("pcuAnnouncementSeen", { id: a3.id }, TP)).seen);
+    eq(seen, [1, 2, 3], "2ao pcuAnnouncementSeen counts 1 → 3");
+    eq(await pick(), undefined, "2ao: after 3 showings it is no longer sent to this PCU");
+    const auditN = async () => (await mustOk("adminAuditLog", { limit: 1 }, ADM2)).entries[0].id;
+    const a4 = await auditN();
+    eq((await mustOk("pcuAnnouncementSeen", { id: a3.id }, TP)).seen, 3, "2ao: a 4th call stays at 3 (no write)");
+    eq(await auditN(), a4, "2ao: seen writes no audit row");
+    eq((await mustOk("pcuAnnouncementSeen", { id: plain.id }, TP)).seen, 0, "2ao: plain announcement → nothing counted");
+    ok((await mustOk("pcuBootstrap", {}, TP)).announcements.some((a) => a.id === plain.id), "2ao: plain announcement still shown");
+    expectErr(await api("pcuAnnouncementSeen", { id: "x" }, TP), "BAD_REQUEST", "2ao seen: bad id");
+    expectErr(await api("pcuAnnouncementSeen", { id: 999999 }, TP), "NOT_FOUND", "2ao seen: unknown id");
+    expectErr(await api("pcuAnnouncementSeen", { id: a3.id }, ADM2), "FORBIDDEN", "2ao seen needs a PCU token");
+    const al = (await mustOk("adminAnnouncementList", {}, ADM2)).announcements.find((a) => a.id === a3.id);
+    eq(al.views, { pcus: 1, done: 1 }, "2ao adminAnnouncementList.views: 1 pcu saw it, 1 done");
+    const a3e = (await mustOk("adminAnnouncementSave", { id: a3.id, text: "ระบบอัปเดต 2ao (แก้ข้อความ)" }, ADM2)).announcement;
+    eq([a3e.show_limit, a3e.views], [3, { pcus: 0, done: 0 }], "2ao: new wording keeps show_limit and restarts the count");
+    eq((await pick()).seen, 0, "…the PCU sees it again");
+    const a3o = (await mustOk("adminAnnouncementSave", { id: a3.id, text: a3e.text, show_limit: null }, ADM2)).announcement;
+    eq(a3o.show_limit, null, "2ao: show_limit null = shown until it expires (as before)");
+    for (const a of [a3, plain]) await mustOk("adminAnnouncementDelete", { id: a.id }, ADM2);
   }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -9,6 +9,8 @@ import {
   aggregate, groupTotals, isEmpty, unitGroups, shortRound, niceTicks, compact,
   top3Rows, spentSum, limitStatus, notYetRequested, stockRows, avgPerMonth, buildCsv,
 } from "./dashboard_calc.js";
+import { formatQty } from "../units.js"; // 2ao
+import { mount as mountOverview, pcuOverviewRows } from "./dash_overview.js"; // 2ao
 
 export { esc };
 
@@ -335,9 +337,9 @@ export function stockCardHtml(data) {
   const body = list.map((r) => `<tr>
       <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}</div></th>
       <td>${esc(shortRound(r.round))}</td>
-      <td class="num">${fmt(r.stock)}</td>
-      <td class="num">${r.got == null ? '<span class="muted">รอจ่าย</span>' : fmt(r.got)}</td>
-      <td class="num strong">${r.total == null ? '<span class="muted">–</span>' : fmt(r.total)}</td></tr>`).join("");
+      <td class="num">${formatQty(r.stock)}</td>
+      <td class="num">${r.got == null ? '<span class="muted">รอจ่าย</span>' : formatQty(r.got)}</td>
+      <td class="num strong">${r.total == null ? '<span class="muted">–</span>' : formatQty(r.total)}</td></tr>`).join("");
   const more = all.length > list.length ? `<button type="button" class="btn btn-secondary dash-stock-more">แสดงเพิ่ม (เหลืออีก ${all.length - list.length} รายการ)</button>` : "";
   return `<div class="dash-card" id="dash-stock-card"><h3>คงเหลือ (stock)</h3>
     <p class="muted small dash-caption">ต่อรายการ ใช้รอบล่าสุดที่กรอกคงเหลือ (ระบุรอบในแต่ละแถว) · ของเดิม + ได้เพิ่ม = รวม · เฉพาะรายการที่กรอกคงเหลือแล้ว</p>
@@ -496,6 +498,7 @@ export function bodyShellHtml() {
         <div id="dash-spent"></div>
         <div id="dash-bars"></div>
         <div id="dash-cum"></div>
+        <div id="dash-overview"></div>
         <div id="dash-stock"></div>
         <div id="dash-limit"></div>
         <div id="dash-never"></div>
@@ -521,6 +524,15 @@ export function bodyShellHtml() {
 export function createBody(box, data, { onRender, heat = false, hiddenLink = false, xlsx = null } = {}) {
   let agg = null;
   const $ = (id) => box.querySelector(id);
+  // 2ao: combined per-item table (ได้รับจริง · ใช้ไป · คงเหลือ · พอใช้อีก ~เดือน) — follows the mode toggle + unit filter
+  let ovRows = null;
+  const overview = mountOverview($("#dash-overview"), {
+    title: "ภาพรวมต่อรายการ",
+    caption: "ต่อรายการ: ได้รับจริง · ใช้ไป · คงเหลือล่าสุดที่กรอก (ระบุรอบ) · พอใช้อีกกี่เดือน · เรียงได้ที่หัวคอลัมน์",
+    getRows: () => ovRows || (ovRows = pcuOverviewRows(data)),
+    getMode: () => ui.mode,
+    getUnit: () => ui.unit,
+  });
 
   function syncSeg() {
     box.querySelectorAll(".dash-seg-btn").forEach((b) => {
@@ -558,6 +570,7 @@ export function createBody(box, data, { onRender, heat = false, hiddenLink = fal
     $("#dash-kpi").innerHTML = kpiHtml(agg, data);
     $("#dash-spent").innerHTML = spentHtml(agg.rows, data);
     renderStock();
+    overview.render();
     $("#dash-limit").innerHTML = limitCardHtml(agg.rows, data);
     $("#dash-never").innerHTML = neverCardHtml(agg.rows, data, { hiddenLink });
 

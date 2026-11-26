@@ -15,10 +15,12 @@ function entryMonths(ctx) {
   return out.reverse();
 }
 
-const numOrNull = (v) => {
+// 2ao: คงเหลือ (stock) takes up to 2 decimals (a part of a box, e.g. 0.4); op / pp stay whole numbers
+const numOrNull = (v, f) => {
   const s = String(v ?? "").trim();
   if (s === "") return null;
   const n = Number(s);
+  if (f === "stock") return /^\d+(\.\d{1,2})?$/.test(s) && n >= 0 && n <= 99999 ? n : NaN;
   return Number.isInteger(n) && n >= 0 && n <= 99999 ? n : NaN;
 };
 
@@ -102,7 +104,7 @@ export function openEntry(ctx, pcuCode, month, { onSaved } = {}) {
       if (row.type !== "item" || row.active === false) return "";
       const l = lines()[row.code];
       const iss = l && l.issued_total !== null && l.issued_total !== undefined ? `<span class="muted small" title="ยอดจ่ายที่บันทึกไว้">จ่าย ${l.issued_total}</span>` : "";
-      const inp = (f) => `<input type="number" inputmode="numeric" min="0" max="99999" step="1" class="num-input entry-input" data-code="${escapeHtml(row.code)}" data-f="${f}" value="${cur(row.code, f) ?? ""}"${st.edits.has(row.code) && f in st.edits.get(row.code) ? ' data-dirty="1"' : ""}>`;
+      const inp = (f) => `<input type="number" inputmode="${f === "stock" ? "decimal" : "numeric"}" min="0" max="99999" step="${f === "stock" ? "0.01" : "1"}" class="num-input entry-input" data-code="${escapeHtml(row.code)}" data-f="${f}" value="${cur(row.code, f) ?? ""}"${st.edits.has(row.code) && f in st.edits.get(row.code) ? ' data-dirty="1"' : ""}>`;
       return `<tr data-code="${escapeHtml(row.code)}"${hidden.has(row.code) ? ' class="row-hidden" title="รพ.สต. ซ่อนรายการนี้"' : ""}>
         <td class="left">${escapeHtml(row.code)}</td><td class="left">${escapeHtml(row.name || "")}${hidden.has(row.code) ? ' <span class="muted small">(ซ่อน)</span>' : ""}</td>
         <td class="left">${escapeHtml(row.unit || "")}</td><td>${inp("stock")}</td><td>${inp("op")}</td><td>${inp("pp")}</td><td class="left">${iss}</td></tr>`;
@@ -112,7 +114,7 @@ export function openEntry(ctx, pcuCode, month, { onSaved } = {}) {
       <tbody>${rows}</tbody></table>`);
     host.querySelectorAll(".entry-input").forEach((inp) => inp.addEventListener("input", () => {
       const code = inp.dataset.code, f = inp.dataset.f;
-      const v = numOrNull(inp.value);
+      const v = numOrNull(inp.value, f);
       inp.classList.toggle("input-error", Number.isNaN(v));
       const e = st.edits.get(code) || {};
       const l = lines()[code];
@@ -132,7 +134,7 @@ export function openEntry(ctx, pcuCode, month, { onSaved } = {}) {
     if (st.busy) return;
     const payload = {};
     for (const [code, e] of st.edits) {
-      if (Object.values(e).some((v) => Number.isNaN(v))) { toast(`${code}: จำนวนต้องเป็นเลขจำนวนเต็ม 0–99999`, "err"); return; }
+      if (Object.values(e).some((v) => Number.isNaN(v))) { toast(`${code}: จำนวนต้องเป็นเลขจำนวนเต็ม 0–99999 (คงเหลือใส่ทศนิยมได้ 2 ตำแหน่ง)`, "err"); return; }
       const o = {};
       for (const f of FIELDS) o[f] = f in e ? e[f] : cur(code, f);
       payload[code] = o;

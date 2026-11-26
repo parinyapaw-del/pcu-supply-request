@@ -1,6 +1,7 @@
 // tab2b_sheet.js — "จ่ายจริง" mode ต่อใบ: one PCU + round (adminGetRequest -> issueLines / issueAll / issueDone).
 // 2ak D8: split out of renderTab2b (tab2b_issue.js), no behaviour change. `core` = the tab's shared state + helpers (see renderTab2b).
 import { formatInt } from "../format.js";
+import { formatQty, packOf, qtyWarn } from "../units.js"; // 2ao
 import { el, escapeHtml, tableScroll, monthLong, formatBangkokDateTime, confirmDialog, toast, errMessage } from "./util.js";
 import { buildCatalog, addForm, DISPENSE_UNITS, isUsableStatus, itemOrPlaceholder } from "./compute.js";
 import { clearRequestCache } from "./requests.js";
@@ -17,7 +18,7 @@ export function sheetMode(core) {
     try {
       const data = await ctx.adminCall("adminGetRequest", { pcu: ts.pcu, month: ts.month });
       if (my !== ts.seq) return;
-      ts.sheet = { request: data.request, form: data.form, issue: data.issue || null };
+      ts.sheet = { request: data.request, form: data.form, issue: data.issue || null, unit_hist: data.unit_hist || {} };
       ts.expired = expiredFor([data.request]);
       drawSheet();
     } catch (err) {
@@ -122,7 +123,7 @@ export function sheetMode(core) {
         const l = r.x.l;
         const by = l.issued_at ? ` title="บันทึก ${escapeHtml(formatBangkokDateTime(l.issued_at))} โดย ${escapeHtml(whoLabel(l.issued_by))}"` : "";
         body.push(`<tr data-key="${escapeHtml(r.key)}"${by}>
-          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}${usedAdjHtml(l)}${rcvHtml(l)}</td>
+          <td class="left name-cell"><span class="code-cell">${escapeHtml(it.code)}</span> ${escapeHtml(it.name)}${it.unit ? ` <span class="muted small">(${escapeHtml(it.unit)})</span>` : ""}${warnTag(it, r.req)}${usedAdjHtml(l)}${rcvHtml(l)}</td>
           <td class="num">${formatInt(r.op)}</td><td class="num">${formatInt(r.pp)}</td><td class="num"><strong>${formatInt(r.req)}</strong></td>
           ${inputCell(r)}${gotCells()}${reasonCell(r)}</tr>`);
       });
@@ -141,11 +142,20 @@ export function sheetMode(core) {
     refreshFooter();
   }
 
+  // 2ao: "สูงกว่าปกติ ×N" — op+pp against this PCU's usual (same rule as the fill-page warning; computed on display, never stored)
+  function warnTag(it, req) {
+    const w = qtyWarn((ts.sheet.unit_hist || {})[it.code], ts.month, req);
+    if (!w) return "";
+    const pk = packOf(it);
+    const title = `ปกติสูงสุด ${formatInt(w.base)}/เดือน — ตรวจหน่วย${pk ? ` (รายการนี้นับเป็น ${it.unit || "หน่วย"} ละ ${formatInt(pk.n)} ${pk.piece})` : it.unit ? ` (นับเป็น ${it.unit})` : ""}`;
+    return ` <span class="badge badge-warn t2b-qtywarn" title="${escapeHtml(title)}">สูงกว่าปกติ ×${Math.round(w.factor)}</span>`;
+  }
+
   // 2o: ใช้ไป / ปรับยอด (เหตุผล) of a request line — shown when present (never on the printed form, Q16)
   const ADJ_REASON_LABEL = { received_extra: "ได้รับเพิ่ม", borrow_return: "ยืม/คืน", expired_damaged: "หมดอายุ/เสียหาย", recount: "นับใหม่", other: "อื่น ๆ" };
   function usedAdjHtml(l) {
     const parts = [];
-    if (l.used != null) parts.push(`ใช้ไป ${formatInt(l.used)}`);
+    if (l.used != null) parts.push(`ใช้ไป ${formatQty(l.used)}`); // 2ao: decimals allowed
     const adj = Number(l.adj) || 0;
     if (adj) parts.push(`ปรับยอด ${adj > 0 ? "+" : "−"}${formatInt(Math.abs(adj))}${l.adj_reason ? ` (${escapeHtml(ADJ_REASON_LABEL[l.adj_reason] || l.adj_reason)})` : ""}`);
     return parts.length ? `<div class="muted small t2b-usedadj">${parts.join(" · ")}</div>` : "";

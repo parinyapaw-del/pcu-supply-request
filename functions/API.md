@@ -74,6 +74,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 | `pcuDashboard` (2q) | `fy?` (int or digit string; default `config.fy_current`) | the PCU's own dashboard — §4.2 · loaded when `#/dashboard` opens (not part of `pcuBootstrap`) · `fy` not an integer 1–9999 → `BAD_REQUEST` · no form version of exactly that fy → `NOT_FOUND` · admin / dispenser token → `FORBIDDEN` |
 | `setHidden` | `codes:[item_code]` (full replacement) | `{hidden:[...]}` |
 | `pcuAck` | `month` | `{issued_seen_at}` (acknowledge the issue notice; `NOT_FOUND` if no request) |
+| `pcuAnnouncementSeen` (2ao) | `id:int` | `{id, seen, show_limit\|null}` — counts one home-page popup of a "show N times" announcement for this PCU (`announcement_views` upsert, n+1). Already at `show_limit`, switched off, or a plain announcement (show_limit null) → no write, current count returned · no audit row · bad id → `BAD_REQUEST` · unknown → `NOT_FOUND` · staff token → `FORBIDDEN` |
 | `pcuReceivedSave` (2af) | `month, lines:[{code, qty:int\|null, received_date?:"YYYY-MM-DD", note?:string}]` (≤ 400) | `{changed, request:RequestObj(PCU view, + issued), issue}` — "รายงานของได้จริง", see rules below |
 | `pcuNoOrder` (2af) | `month` | `{request, cleared}` — "เดือนนี้ไม่เบิก", see rules below |
 | `pcuNoOrderCancel` (2af) | `month` | `{request}` — back to `draft` (`no_order` 0) · not "ไม่เบิก" → `BAD_REQUEST` · round locked → `CONFLICT` · audit `pcuNoOrderCancel` |
@@ -85,7 +86,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `month`: `YYYY-MM`, must be `currentRound`, `prevRound` (= calMonth), or a month where this PCU already has a request; never later than
   `currentRound` (`BAD_REQUEST` "ยังไม่ถึงรอบเดือนนี้"); otherwise `BAD_REQUEST` "เดือนนี้ไม่เปิดให้กรอก". Item codes are checked against the latest
   form of the round's fy via `formForFy` (+ the bound version).
-- Values: integer 0–99999 or `null`. Per-line **last-write-wins** (done in SQL): a line is written only if its `updated_at` is **strictly newer**
+- Values: integer 0–99999 or `null` — **2ao: `stock` and `used` may carry decimals** (0–99999, rounded to 2 places: part of a box, e.g. 0.4 กล่อง = 40 ชิ้น); `op`/`pp`/`adj` stay integers. Per-line **last-write-wins** (done in SQL): a line is written only if its `updated_at` is **strictly newer**
   than the stored one (equal = idempotent retry → no-op; missing `updated_at` = now). Item codes must exist in the latest form (or the request's bound version) else `BAD_REQUEST`.
 - Request `updated_at` is bumped only when at least one line actually changed (an all-stale or empty call is a no-op for `edited_after_submit`).
   `last_step` / `submitter_name` are stored when present (2ak B3: only when they differ from the stored row, in the same UPDATE as the `updated_at` bump).
@@ -117,7 +118,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   `off`: `over_limit:[]`.
   2z: on send every line of the request gets `price_snapshot` **and** `price_print` = the item's price in the latest form of the round's fy (else the bound
   version) — one price per fy (§5.2); a later price change rewrites both on every sent line of the fy. 2ak B3: a line whose two prices already equal it is not rewritten.
-- **2o stock calculation** (server owns the formula — `functions/_lib/stock.js`). Extra per-line keys, all optional: `used` (int 0–99999 | null) · `adj`
+- **2o stock calculation** (server owns the formula — `functions/_lib/stock.js`). Extra per-line keys, all optional: `used` (0–99999, 2ao: 2 decimals | null) · `adj`
   (int −99999…99999 | null) · `adj_reason` (`received_extra|borrow_return|expired_damaged|recount|other` | null — null accepted with a non-zero adj) ·
   `calc_from` (`'used'|'stock'|null`). A key **not sent keeps the stored value** (old clients that only send `stock,op,pp` lose nothing); `stock/op/pp`
   keep the old rule (missing = null). Out of range / not in the enum → `BAD_REQUEST` (Thai message).
@@ -200,6 +201,10 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
                                            // (currentRound <= from_month + 2, i.e. from setting the lock through its 3rd round)
   announcements: [ {id, text, expires_at|null, updated_at} ]   // 2ae: active AND (expires_at NULL OR expires_at >= Bangkok today), newest first, ≤ 10 —
                                            // home page banner; "ซ่อน" is per device (localStorage `pcu.announce.hidden` = ["id@updated_at"], an edit shows it again)
+                                           // 2ao: + show_limit|null, seen — show_limit set = also a popup on home (pcuAnnouncementSeen counts it); left out once seen >= show_limit
+  unit_hist: { code: [p90, {month: qty}] }  // 2ao: p90 of this PCU's monthly op+pp in fy−1 (stats, linked codes count) + op+pp of each sent
+                                           // (submitted/issued) request of the round's fy — fill page "ยอดสูงผิดปกติ" check (public/js/units.js qtyWarn:
+                                           // base = max(p90, other months) · warn when op+pp > 3 × base · no base → no warning). Read only.
 }
 RequestObj = { id, pcu, month, status, form_version_id|null, submitter_name, last_step, created_at, updated_at,
                first_submitted_at|null, submitted_at|null, submit_count, admin_note|null, admin_note_at|null, issued_seen_at|null,
@@ -322,7 +327,7 @@ Admin = all. **Dispenser** may call only `adminBootstrap` (reduced), `adminReque
 | `adminLoginBackup` | `password` | `{token, exp, role:"admin"}` · `BAD_PASSWORD{remaining}` · `LOCKED{until}` · `NOT_FOUND` if none set |
 | `adminBootstrap` | – | §5.1 |
 | `adminRequests` | `month?` (omitted = `[currentRound, prevRound]`) | `{requests:[RequestObj without lines + pcu_name + progress + issue], rounds:[RoundInfo], server_time, current_month (calMonth), current_round}` · `progress={items_requested, stock_filled, lines, qty_op, qty_pp, baht, last_step}` (baht = Σ qty × (`price_snapshot` ?? priceFor(round)), 2p) · `issue` = IssueInfo (§4.1) or `null` when the request has no requested line (2c) |
-| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot, price_print (2p) & issued_* per line)|null, issue: IssueInfo|null, pcu:{code,name,print_name,group,requester_name,phone}, requester_name|null (2x: the name this request prints with — §6b rule), hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}}` (form = version bound to the request, else `formForFy` of the round's fy, §4.1). A **dispenser** only gets the lines of items on pages of its own `units` (`issue` is still computed over all lines/units). `issued_*` per line = `issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by` (all `null` until issued). |
+| `adminGetRequest` | `pcu, month` | `{request: RequestObj(+price_snapshot, price_print (2p) & issued_* per line)|null, issue: IssueInfo|null, pcu:{code,name,print_name,group,requester_name,phone}, requester_name|null (2x: the name this request prints with — §6b rule), hidden:[code], form_version_id, form:{id,fy,created_at,note,steps}, unit_hist (2ao, same shape as pcuBootstrap — admin "สูงกว่าปกติ ×n" tag)}` (form = version bound to the request, else `formForFy` of the round's fy, §4.1). A **dispenser** only gets the lines of items on pages of its own `units` (`issue` is still computed over all lines/units). `issued_*` per line = `issued_total, issued_op, issued_pp, issue_reason, issue_note, issued_at, issued_by` (all `null` until issued). |
 | `issueLines` (staff) | `pcu, month, lines:{code:{issued_total:int\|null, reason?:"out_of_stock"\|"other"\|null, note?:string\|null}}` | `{request: RequestObj(admin view), issue: IssueInfo}` — §5.3 |
 | `issueAll` (staff) | `pcu, month, unit?` | same — every requested line of the unit(s) = requested qty — §5.3 |
 | `issueDone` (staff) | `pcu, month, unit, done:0\|1` | same — §5.3 |
@@ -683,9 +688,9 @@ Flags = one row per item code (not per fy; kept until cleared by hand). Writes o
 | `itemFlagList` | admin + dispenser | – | `{flags:[{code,status,note,eta,set_by,set_at}]}` every flag, newest first (a dispenser sees all units' flags) |
 | `itemFlagSet` | admin + dispenser | `code, status:"out"\|"pending", note?` (trimmed ≤ 200, `""` → null), `eta?:"YYYY-MM-DD"\|null` | `{flag, changed}` · the item's unit = its page's `dispense_unit` in the latest form of `fy_current` · dispenser: unit not in its `units` (or code not on the form) → `FORBIDDEN` · admin: code not on the form → `NOT_FOUND` · bad status/eta/note → `BAD_REQUEST` · same values → `changed:false`, no write · audit `itemFlagSet` |
 | `itemFlagClear` | admin + dispenser | `code` | `{ok:true, changed}` · same scope rule (admin may clear a code that left the form) · no flag → `changed:false`, no write · audit `itemFlagClear` |
-| `adminAnnouncementList` | admin | – | `{announcements:[{id,text,expires_at,active:bool,live:bool,created_by,created_at,updated_by,updated_at}], today}` newest first (≤ 200) · `live` = what the PCU gets |
-| `adminAnnouncementSave` | admin | `id?, text` (trimmed 1–1,000), `expires_at?:"YYYY-MM-DD"\|null` (last Bangkok day shown), `active?:bool` (new: default true · edit: omitted = keep) | `{announcement}` · no `id` → INSERT · unknown id → `NOT_FOUND` · unchanged → no write · audit `adminAnnouncementSave` |
-| `adminAnnouncementDelete` | admin | `id` | `{ok:true}` · permanent (the UI offers "ปิด" instead) · unknown → `NOT_FOUND` · audit `adminAnnouncementDelete` |
+| `adminAnnouncementList` | admin | – | `{announcements:[{id,text,expires_at,active:bool,live:bool,show_limit\|null,views:{pcus,done},created_by,created_at,updated_by,updated_at}], today}` (2ao views: PCUs that saw the popup ≥ once / `show_limit` times) newest first (≤ 200) · `live` = what the PCU gets |
+| `adminAnnouncementSave` | admin | `id?, text` (trimmed 1–1,000), `expires_at?:"YYYY-MM-DD"\|null` (last Bangkok day shown), `active?:bool` (new: default true · edit: omitted = keep), 2ao `show_limit?:1–10\|null` (null/""/0 = until it expires · edit: omitted = keep · a text change deletes its `announcement_views` = count restarts) | `{announcement}` · no `id` → INSERT · unknown id → `NOT_FOUND` · unchanged → no write · audit `adminAnnouncementSave` |
+| `adminAnnouncementDelete` | admin | `id` | `{ok:true}` · permanent (its `announcement_views` rows go too) (the UI offers "ปิด" instead) · unknown → `NOT_FOUND` · audit `adminAnnouncementDelete` |
 
 ### 5.8 PCU received reports vs issue (2af — admin tab "รับของไม่ตรง" `#received`, `public/js/admin/tab16_received.js`)
 The PCU's figure (`received_reports`) and the dispenser's (`request_lines.issued_*`) are stored apart — neither side overwrites the other.
@@ -825,7 +830,7 @@ it listed that survived the prune, then runs the PDF retention for all PCUs (§6
 HTTP 403 on wrong/missing key (or `BACKUP_KEY` unset). `{ok:true,data:{key,size,deleted,pdf_pruned:[r2 keys]}}`. Called nightly by `.github/workflows/backup.yml`
 (cron `0 19 * * *` UTC; repo secret `BACKUP_KEY`, repo variable `SITE_URL`).
 
-## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11)
+## 8. D1 schema as implemented (`functions/_lib/db.js`, migrations v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9 + v10 + v11 + v12)
 Base = spec §3.3 verbatim. **Additions** (all documented here): `pcus.pin_custom`; `form_versions.data_hash`;
 `requests.submit_count`; `limits.note`; table `prices_prev(fy,item_code,price)`; `schema_version` holds one row per applied migration (`MAX(v)` = current).
 ```
@@ -866,7 +871,9 @@ feedback(id PK AUTOINCREMENT, created_at, day 'YYYY-MM-DD' (Bangkok), role 'pcu'
 faq(id PK AUTOINCREMENT, question, answer, aud_pcu, aud_dispenser, aud_admin (0|1), category NULL, sort DEFAULT 0, hidden DEFAULT 0,
     from_feedback_id NULL, created_at, created_by, updated_at, updated_by)                               -- v8 (2ab)
 item_flags(item_code PK, status 'out'|'pending', note NULL, eta 'YYYY-MM-DD' NULL, set_by, set_at)        -- v9 (2ae): one row per flagged code, no fy
-announcements(id PK AUTOINCREMENT, text, expires_at 'YYYY-MM-DD' NULL, active 0|1 DEFAULT 1, created_by, created_at, updated_by, updated_at)  -- v9 (2ae)
+announcements(id PK AUTOINCREMENT, text, expires_at 'YYYY-MM-DD' NULL, active 0|1 DEFAULT 1, created_by, created_at, updated_by, updated_at,
+              show_limit INTEGER NULL)                                                                     -- v9 (2ae) · show_limit v12 (2ao)
+announcement_views(announcement_id, pcu, n INTEGER DEFAULT 0, last_at)  PK(announcement_id,pcu)         -- v12 (2ao): popup count per PCU (≤ show_limit)
 received_reports(request_id, item_code, qty INTEGER NOT NULL, received_date 'YYYY-MM-DD', note NULL, reported_by, reported_at)  PK(request_id,item_code)  -- v10 (2af): no row = not reported
 item_locks(item_code PK, from_month 'YYYY-MM', note NULL, set_by, set_at)                                -- v11 (2ai): one row per locked code, no fy
 item_lock_exempt(item_code, pcu, set_by, set_at)  PK(item_code,pcu)                                      -- v11 (2ai): per-PCU release
@@ -899,8 +906,11 @@ audit_log(id PK AUTOINCREMENT, ts, actor, role, action, pcu, month, detail)
   tolerated; re-run tested with `devRerunMigration{v:10}`). No extra index — the PK serves every lookup (by request_id; the admin report joins from `requests`
   by month range). `received_reports` is in `TABLES`; `adminClearTrial`, `devDeleteRequest` and `devSetRequestMonth` delete / move its rows with the request.
   **v11** (2ai) = `CREATE TABLE IF NOT EXISTS item_locks …` + `CREATE TABLE IF NOT EXISTS item_lock_exempt …` (re-run tested with `devRerunMigration{v:11}`); both in `TABLES`.
+  **v12** (2ao) = `ALTER TABLE announcements ADD COLUMN show_limit INTEGER` + `CREATE TABLE IF NOT EXISTS announcement_views …` (one by one, duplicate column tolerated);
+  `announcement_views` is in `TABLES`. `request_lines.stock` / `used` keep INTEGER affinity — SQLite stores a 2-decimal value as REAL (no migration).
 - Multi-statement writes use `DB.batch()`; bulk inserts are chunked (≤ 100 statements per batch, ≤ 100 bound params per statement — D1 limits).
-- `form_versions.data` items: `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
+- `form_versions.data` items: 2ao `pack` (int 1–100000, only when the admin set it — pieces per request unit; absent = the client reads it from the name,
+  `public/js/units.js packOf`; `adminFormSave` diff has `pack_changed:[{code,old,new}]`) · `active` defaults to true, `dispense_unit` defaults from the step code (P* = พัสดุ, CS = จ่ายกลาง, LAB = LAB) when a seed omits them.
 
 ## 9. Environment
 | name | use |

@@ -8,7 +8,7 @@ import { bangkokDate, currentRound, isDate, isMonth, monthFy, monthMinus, nowIso
 import { unitOfCode } from "./views.js";
 
 export const FLAG_STATUSES = ["out", "pending"];
-export const NOTICE_LIMITS = { flag_note: 200, text: 1000, announcements_live: 10 };
+export const NOTICE_LIMITS = { flag_note: 200, text: 1000, announcements_live: 10, show_limit_max: 10 };
 const L = NOTICE_LIMITS;
 const actorOf = (who) => (who.backup ? "backup" : who.email);
 
@@ -26,8 +26,12 @@ function locksForPcu(DB, pcu, cols, month) {
 export async function pcuNotices(DB, pcu) {
   const [fr, ar, lr] = await Promise.all([
     DB.prepare(`SELECT item_code, status, note, eta FROM item_flags`).all(),
-    DB.prepare(`SELECT id, text, expires_at, updated_at FROM announcements WHERE active = 1 AND (expires_at IS NULL OR expires_at >= ?) ORDER BY id DESC LIMIT ?`)
-      .bind(bangkokDate(), L.announcements_live).all(),
+    // 2ao: a "show N times" announcement (show_limit) drops out once this PCU has opened the home page with it N times
+    DB.prepare(`SELECT a.id, a.text, a.expires_at, a.updated_at, a.show_limit, COALESCE(v.n, 0) AS seen FROM announcements a
+       LEFT JOIN announcement_views v ON v.announcement_id = a.id AND v.pcu = ?
+      WHERE a.active = 1 AND (a.expires_at IS NULL OR a.expires_at >= ?) AND (a.show_limit IS NULL OR COALESCE(v.n, 0) < a.show_limit)
+      ORDER BY a.id DESC LIMIT ?`)
+      .bind(String(pcu || ""), bangkokDate(), L.announcements_live).all(),
     locksForPcu(DB, pcu, "item_code, from_month, note"),
   ]);
   const item_flags = {};
@@ -37,7 +41,22 @@ export async function pcuNotices(DB, pcu) {
   for (const r of lr.results) {
     item_locks[r.item_code] = { from_month: r.from_month, note: r.note || null, banner: cur <= monthMinus(r.from_month, -(LOCK_BANNER_ROUNDS - 1)) };
   }
-  return { item_flags, item_locks, announcements: ar.results.map((r) => ({ id: r.id, text: r.text, expires_at: r.expires_at || null, updated_at: r.updated_at })) };
+  return { item_flags, item_locks, announcements: ar.results.map((r) => ({ id: r.id, text: r.text, expires_at: r.expires_at || null, updated_at: r.updated_at,
+    show_limit: r.show_limit ?? null, seen: r.seen || 0 })) };
+}
+
+// 2ao: {id} (PCU) → {id, seen, show_limit} — counts one home-page showing of a "show N times" announcement for this PCU. Never past
+// show_limit (that call writes nothing), nothing for a plain announcement / one switched off or gone. No audit row (D1 quota: ≤ N rows/PCU).
+export async function pcuAnnouncementSeen(ctx, p) {
+  const { DB, pcu } = ctx;
+  if (!Number.isInteger(p.id)) throw err("BAD_REQUEST", "id ต้องเป็นจำนวนเต็ม");
+  const row = await DB.prepare(`SELECT a.show_limit, a.active, COALESCE(v.n, 0) AS n FROM announcements a
+      LEFT JOIN announcement_views v ON v.announcement_id = a.id AND v.pcu = ? WHERE a.id = ?`).bind(pcu.code, p.id).first();
+  if (!row) throw err("NOT_FOUND", "ไม่พบประกาศนี้");
+  if (!row.show_limit || !row.active || row.n >= row.show_limit) return { id: p.id, seen: row.n, show_limit: row.show_limit ?? null };
+  await DB.prepare(`INSERT INTO announcement_views (announcement_id, pcu, n, last_at) VALUES (?, ?, 1, ?)
+      ON CONFLICT(announcement_id, pcu) DO UPDATE SET n = n + 1, last_at = excluded.last_at`).bind(p.id, pcu.code, nowIso()).run();
+  return { id: p.id, seen: row.n + 1, show_limit: row.show_limit };
 }
 
 // ---- item flags (staff) -------------------------------------------------------------------------------------------------------
@@ -104,16 +123,23 @@ export async function itemFlagClear(ctx, p) {
 }
 
 // ---- announcements (admin) ----------------------------------------------------------------------------------------------------
-const annObj = (r, today) => ({
+const annObj = (r, today, views) => ({
   id: r.id, text: r.text, expires_at: r.expires_at || null, active: !!r.active,
+  show_limit: r.show_limit ?? null, // 2ao: views = {pcus: PCUs that saw it at least once, done: PCUs that saw it show_limit times}
+  views: (views && views.get(r.id)) || { pcus: 0, done: 0 },
   live: !!r.active && (!r.expires_at || r.expires_at >= today),
   created_by: r.created_by || null, created_at: r.created_at || null, updated_by: r.updated_by || null, updated_at: r.updated_at || null,
 });
 
 export async function adminAnnouncementList(ctx) {
-  const rows = (await ctx.DB.prepare(`SELECT * FROM announcements ORDER BY id DESC LIMIT 200`).all()).results;
+  const [rows, vr] = await Promise.all([
+    ctx.DB.prepare(`SELECT * FROM announcements ORDER BY id DESC LIMIT 200`).all().then((x) => x.results),
+    ctx.DB.prepare(`SELECT v.announcement_id AS id, COUNT(*) AS pcus, SUM(CASE WHEN v.n >= a.show_limit THEN 1 ELSE 0 END) AS done
+        FROM announcement_views v JOIN announcements a ON a.id = v.announcement_id GROUP BY v.announcement_id`).all().then((x) => x.results),
+  ]);
+  const views = new Map(vr.map((r) => [r.id, { pcus: r.pcus || 0, done: r.done || 0 }]));
   const today = bangkokDate();
-  return { announcements: rows.map((r) => annObj(r, today)), today };
+  return { announcements: rows.map((r) => annObj(r, today, views)), today };
 }
 
 // {id?, text, expires_at? ("YYYY-MM-DD" | null), active? (default true)} → {announcement}
@@ -128,12 +154,18 @@ export async function adminAnnouncementSave(ctx, p) {
   }
   if (p.active !== undefined && typeof p.active !== "boolean") throw err("BAD_REQUEST", "active ต้องเป็น true/false");
   const active = p.active === false ? 0 : 1;
+  // 2ao: show_limit = show it N times per PCU (1–10) · null / "" / 0 = until it expires (as before) · not sent on an edit = keep
+  let showLimit = null;
+  if (p.show_limit !== undefined && p.show_limit !== null && p.show_limit !== "" && p.show_limit !== 0) {
+    if (!Number.isInteger(p.show_limit) || p.show_limit < 1 || p.show_limit > L.show_limit_max) throw err("BAD_REQUEST", `จำนวนครั้งที่แสดงต้องเป็น 1–${L.show_limit_max} หรือว่าง`);
+    showLimit = p.show_limit;
+  }
   const now = nowIso(), actor = actorOf(who), today = bangkokDate();
 
   if (p.id === undefined || p.id === null) {
     const row = await DB.prepare(
-      `INSERT INTO announcements (text, expires_at, active, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`
-    ).bind(text, expires, active, actor, now, actor, now).first();
+      `INSERT INTO announcements (text, expires_at, active, show_limit, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`
+    ).bind(text, expires, active, showLimit, actor, now, actor, now).first();
     await auditStmt(DB, actor, who.role, "adminAnnouncementSave", "", "", `new #${row.id} ${text.slice(0, 80)}`).run();
     return { announcement: annObj(row, today) };
   }
@@ -141,12 +173,14 @@ export async function adminAnnouncementSave(ctx, p) {
   const cur = await DB.prepare(`SELECT * FROM announcements WHERE id = ?`).bind(p.id).first();
   if (!cur) throw err("NOT_FOUND", "ไม่พบประกาศนี้");
   // `active` not sent on an edit = keep the stored value
-  const vals = { text, expires_at: expires, active: p.active === undefined ? cur.active : active };
+  const vals = { text, expires_at: expires, active: p.active === undefined ? cur.active : active, show_limit: p.show_limit === undefined ? cur.show_limit ?? null : showLimit };
   const changed = Object.keys(vals).filter((k) => (cur[k] ?? null) !== (vals[k] ?? null));
   if (!changed.length) return { announcement: annObj(cur, today) };
   await DB.batch([
     DB.prepare(`UPDATE announcements SET ${changed.map((k) => `${k} = ?`).join(", ")}, updated_by = ?, updated_at = ? WHERE id = ?`)
       .bind(...changed.map((k) => vals[k]), actor, now, p.id),
+    // 2ao: new wording = a new message → every PCU sees it its N times again (the count restarts)
+    ...(changed.includes("text") ? [DB.prepare(`DELETE FROM announcement_views WHERE announcement_id = ?`).bind(p.id)] : []),
     auditStmt(DB, actor, who.role, "adminAnnouncementSave", "", "", `#${p.id} ${changed.join(",")}`),
   ]);
   return { announcement: annObj(await DB.prepare(`SELECT * FROM announcements WHERE id = ?`).bind(p.id).first(), today) };
@@ -160,6 +194,7 @@ export async function adminAnnouncementDelete(ctx, p) {
   const actor = actorOf(who);
   await DB.batch([
     DB.prepare(`DELETE FROM announcements WHERE id = ?`).bind(p.id),
+    DB.prepare(`DELETE FROM announcement_views WHERE announcement_id = ?`).bind(p.id), // 2ao
     auditStmt(DB, actor, who.role, "adminAnnouncementDelete", "", "", `#${p.id} ${String(cur.text).slice(0, 80)}`),
   ]);
   return { ok: true };

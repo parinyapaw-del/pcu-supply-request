@@ -1,8 +1,8 @@
 // pcu.js — PCU-facing actions (functions/API.md §4). Every action except pcuList/pcuLogin runs with ctx.pcu taken from the token.
-import { err, assertQty, isStr, phoneParam } from "./http.js";
+import { err, assertQty, assertStockQty, isStr, phoneParam } from "./http.js";
 import {
   auditStmt, batchChunked, budgetConfig, formForFy, formPublic, getConfigAll, hiddenDiffStatements, insertStatements, latestForm, limitModeFor, linkMap, linkedCode, loadForm,
-  publicConfig,
+  publicConfig, withLinkedRows,
 } from "./db.js";
 import {
   PIN_LOCK_MIN, PIN_MAX_FAIL, PIN_RE, constantTimeEq, hashSecret, makePcuToken, newSalt, pcuPublic,
@@ -187,6 +187,8 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     return s ? { month: rr.month, complete: s.complete, incomplete: s.incomplete } : null;
   }))).filter(Boolean);
 
+  const unitHist = await unitHistory(DB, code, monthFy(cur), form); // 2ao
+
   // forms bound to the shown requests when they differ from the latest (another fy's form) — PCU-stripped; 2t: also the latest form itself,
   // unstripped, when the request still carries a quantity on one of its closed pages
   const forms = {};
@@ -224,8 +226,30 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     prices, // 2p: { round: {code: price} } — only codes whose round price differs from the form ({} per round when none)
     item_flags: live.item_flags, // 2ae: {code: {status, note, eta}} — every PCU, never blocks ordering
     item_locks: live.item_locks, // 2ai: {code: {from_month, note, banner}} — requested qty locked from round from_month (this PCU's exemptions left out)
-    announcements: live.announcements, // 2ae: live admin banners for the home page, newest first
+    announcements: live.announcements, // 2ae: live admin banners for the home page, newest first · 2ao: + show_limit, seen
+    unit_hist: unitHist, // 2ao: {code: [p90 per month last fy, {month: op+pp sent this fy}]} — the "unusually high, wrong unit?" check
   };
+}
+
+// 2ao: what this PCU usually requests per item, for the "ยอดสูงผิดปกติ — หน่วยถูกไหม" check while filling (public/js/units.js qtyWarn):
+// [p90 of its monthly op+pp in fy−1 (stats; a linked old code counts), {month: op+pp of each sent request of fy}]. Read only.
+export async function unitHistory(DB, pcu, fy, form) {
+  const months = fyMonths(fy);
+  const [st, rq] = await Promise.all([
+    DB.prepare(`SELECT pcu, item_code, p90_m FROM stats WHERE fy = ? AND pcu = ? AND p90_m > 0`).bind(fy - 1, pcu).raw(),
+    DB.prepare(`SELECT r.month, l.item_code, COALESCE(l.op,0) + COALESCE(l.pp,0) AS q FROM requests r JOIN request_lines l ON l.request_id = r.id
+       WHERE r.pcu = ? AND r.month >= ? AND r.month <= ? AND r.status IN ('submitted','issued') AND COALESCE(l.op,0) + COALESCE(l.pp,0) > 0`)
+      .bind(pcu, months[0], months[months.length - 1]).all(),
+  ]);
+  const lm = linkMap(form);
+  const out = {};
+  for (const [, c, p90] of withLinkedRows(st, lm)) out[c] = [p90 || 0, {}];
+  for (const r of rq.results) {
+    const c = linkedCode(lm, r.item_code);
+    const e = (out[c] ||= [0, {}]);
+    e[1][r.month] = (e[1][r.month] || 0) + r.q;
+  }
+  return out;
 }
 
 // 2t: does `req` carry a quantity on an item of a closed page of `form`? (a PCU-stripped copy would hide that line)
@@ -348,8 +372,8 @@ function parseLines(p, now) {
     if (typeof ua === "number" && Number.isFinite(ua)) ua = new Date(ua).toISOString();
     if (!isStr(ua) || !ua) ua = now;
     return {
-      code, stock: assertQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua,
-      used: has(l, "used") ? assertQty(l.used) : undefined,
+      code, stock: assertStockQty(l.stock), op: assertQty(l.op), pp: assertQty(l.pp), updated_at: ua,
+      used: has(l, "used") ? assertStockQty(l.used) : undefined, // 2ao: decimals
       adj: has(l, "adj") ? assertAdj(l.adj) : undefined,
       adj_reason: has(l, "adj_reason") ? assertAdjReason(l.adj_reason) : undefined,
       calc_from: has(l, "calc_from") ? assertCalcFrom(l.calc_from) : undefined,

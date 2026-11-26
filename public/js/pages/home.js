@@ -4,8 +4,9 @@
 import { getOrderedSteps, lineQty } from "../data.js";
 import {
   esc, pcuCode, requestOf, requestStatus,
-  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow,
+  loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow, showDialog,
 } from "./common.js";
+import { call, getPcuToken } from "../api.js";
 import * as sync from "../sync.js";
 import { fiscalYearOf, fiscalYearStartMonthKey, formatMonthKeyThai, prevMonthKey } from "../format.js";
 import { formatThaiYmd, formatThaiShortDate } from "./common.js";
@@ -155,6 +156,29 @@ function announcementsHtml(app) {
       <button type="button" class="btn btn-link announce-hide" data-ann-hide="${esc(annKey(a))}" aria-label="ซ่อนประกาศนี้">ซ่อน</button></div>`)
     .join("");
 }
+// 2ao: "show N times" announcements (show_limit): a popup the first time the home page opens in this page load, counted on the server
+// per PCU (pcuAnnouncementSeen) — after N openings the server stops sending it. One popup per announcement per page load.
+const annPopped = new Set();
+async function popupAnnouncements(app) {
+  const list = (app.boot.announcements || []).filter((a) => a.show_limit && (a.seen || 0) < a.show_limit && !annPopped.has(a.id));
+  for (const a of list) {
+    annPopped.add(a.id);
+    let seen = (a.seen || 0) + 1;
+    try {
+      const r = await call("pcuAnnouncementSeen", { id: a.id }, { token: getPcuToken() });
+      if (r && Number.isInteger(r.seen)) seen = r.seen;
+    } catch { /* offline: show it anyway, counted next time */ }
+    a.seen = seen;
+    const left = a.show_limit - seen;
+    await showDialog({
+      title: "📢 ประกาศจากโรงพยาบาล",
+      html: `<div class="announce-pop">${esc(a.text)}</div>
+        <p class="muted small">${left > 0 ? `จะแสดงอีก ${left} ครั้งเมื่อเข้าหน้านี้` : "แสดงครั้งสุดท้าย"} (ครั้งที่ ${seen}/${a.show_limit})</p>`,
+      buttons: [{ label: "รับทราบ", value: true, primary: true }],
+    });
+  }
+}
+
 function bindAnnouncements(box, app) {
   box.querySelectorAll("[data-ann-hide]").forEach((btn) => btn.addEventListener("click", () => {
     const live = new Set((app.boot.announcements || []).map(annKey));
@@ -268,6 +292,7 @@ export async function renderHome(container, app) {
   container.innerHTML = "";
   container.appendChild(box);
   bindAnnouncements(box, app);
+  popupAnnouncements(app); // 2ao
 
   function bindCards(scope) {
     scope.querySelectorAll("[data-fill]").forEach((btn) => {

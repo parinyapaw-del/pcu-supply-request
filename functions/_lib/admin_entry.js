@@ -3,7 +3,7 @@
 // month ∈ fyMonths(fy_current) · skips deadline / round lock / limits / issued pages · requests.entry_by = 'admin' (sticky) · audit admin_lines.
 // Only lines whose values change are written (D1 write quota). An issued figure above the new requested qty is clamped down (`clamped`).
 // 2ak A1: a line set to requested 0 loses its PCU received report (audit `rcv_cleared=`).
-import { err, assertQty } from "./http.js";
+import { err, assertQty, assertStockQty } from "./http.js";
 import { auditStmt, batchChunked, formForFy, getConfigAll, loadForm, publicConfig } from "./db.js";
 import { currentRound, fyMonths, isMonth, monthFy, nowIso } from "./time.js";
 import { getLines, getRequestRow, priceStampStmts, requestId, requestObj, sendRequestStmt } from "./views.js";
@@ -46,7 +46,7 @@ export async function adminSaveLines(ctx, p) {
     const l = isObj(linesIn[code]) ? linesIn[code] : {};
     const e = existing.get(code) || null;
     const v = {};
-    for (const k of QTY) v[k] = has(l, k) ? assertQty(l[k]) : e ? e[k] ?? null : null;
+    for (const k of QTY) v[k] = has(l, k) ? (k === "stock" || k === "used" ? assertStockQty(l[k]) : assertQty(l[k])) : e ? e[k] ?? null : null; // 2ao: stock/used decimals
     v.adj = e ? e.adj ?? null : null;
     v.calc_from = has(l, "stock") || has(l, "used") ? null : e ? e.calc_from ?? null : null;
     parsed.push({ code, e, v });

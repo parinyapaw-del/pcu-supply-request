@@ -323,6 +323,20 @@ const SHOTS = (c) => [
     actions: [{ upload: ["#t11-json-file", c.nextFile] }, { click: "#t11-next1" }, { waitFor: "#t11-apply:not([disabled])" }, { click: "#t11-apply" },
       { click: `.admin-modal [data-role="ok"]` }, { waitFor: ".admin-modal input" }],
     clip: { from: ".admin-modal", to: ".admin-modal", pad: 16 }, marks: { phrase: ".admin-modal input", ok: ".admin-modal .btn-primary" } },
+  // ---- 2ao (after the others: they type into the open round's draft) ----
+  { img: "unit_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`,
+    actions: [{ type: [`tr[data-code="P1-14"] input[data-field="op"]`, "900"], replace: true }, { waitFor: ".dialog-box" }],
+    clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 }, marks: { fix: ".dialog-box .btn-secondary", ok: ".dialog-box .btn-primary" } },
+  { img: "unit_2.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`,
+    actions: [{ click: `tr[data-code="P1-14"] [data-pcs-toggle]` }, { type: [`tr[data-code="P1-14"] input[data-field="stock"]`, "40"] }],
+    clip: { from: `tr[data-code="P1-13"]`, to: `tr[data-code="P1-14"]`, pad: 0 },
+    marks: { toggle: `tr[data-code="P1-14"] [data-pcs-toggle]`, stock: `tr[data-code="P1-14"] input[data-field="stock"]`, hint: `tr[data-code="P1-14"] [data-pcs-hint="stock"]` } },
+  { img: "dashboard_3.png", role: "pcu", url: "index.html#/dashboard", clip: { from: "#dash-overview", to: "#dash-overview", pad: 8, maxH: 700 },
+    marks: { search: ".ov-search", sort: ".ov-sort" } },
+  { img: "announce_2.png", role: "pcu", url: "index.html#/home", // a "show 3 times" announcement exists only for this image
+    before: async (t) => { t.ann = (await api("adminAnnouncementSave", { text: "ระบบมีการเปลี่ยนแปลง (ข้อความตัวอย่าง)\n• เตือนเมื่อยอดขอสูงผิดปกติ\n• กรอกคงเหลือ/ใช้ไปเป็นชิ้นได้", show_limit: 3 }, t.admin.token)).announcement; },
+    after: async (t) => { await api("adminAnnouncementDelete", { id: t.ann.id }, t.admin.token); },
+    actions: [{ waitFor: ".dialog-box" }], clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 }, marks: { text: ".announce-pop", ok: ".dialog-box .btn-primary" } },
   // last on purpose: it turns the demo unit's open round into "ไม่เบิก" (clears its draft), which no other image may show
   { img: "noorder_3.png", role: "pcu", url: "index.html#/home",
     actions: [{ click: `button[data-noorder="on"][data-month="${c.OPEN}"]` }, { waitFor: ".dialog-box" }, { click: ".dialog-box .btn-primary" },
@@ -353,6 +367,7 @@ async function capture(ctx) {
   const out = {};
   try {
     for (const shot of SHOTS({ OPEN, ...ctx })) {
+      if (shot.before) await shot.before(tokens); // 2ao: data that must exist for this image only
       const bctx = await browser.createBrowserContext();
       const page = await bctx.newPage();
       try {
@@ -373,7 +388,11 @@ async function capture(ctx) {
           if (a.click) { await page.waitForSelector(a.click, { visible: true, timeout: 10000 }); await page.click(a.click); }
           else if (a.select) { await page.waitForSelector(a.select[0], { timeout: 10000 }); await page.select(a.select[0], a.select[1]); }
           else if (a.upload) { const h = await page.waitForSelector(a.upload[0], { timeout: 10000 }); await h.uploadFile(a.upload[1]); }
-          else if (a.type) { await page.waitForSelector(a.type[0], { visible: true, timeout: 10000 }); await page.type(a.type[0], a.type[1]); await page.keyboard.press("Tab"); }
+          else if (a.type) {
+            await page.waitForSelector(a.type[0], { visible: true, timeout: 10000 });
+            if (a.replace) await page.$eval(a.type[0], (el) => { el.value = ""; }); // 2ao: replace what the draft already holds
+            await page.type(a.type[0], a.type[1]); await page.keyboard.press("Tab");
+          }
           else if (a.waitFor) { await page.waitForSelector(a.waitFor, { timeout: 20000 }); }
           if (a.settle) await sleep(a.settle);
           await page.waitForNetworkIdle({ idleTime: 300, timeout: 20000 }).catch(() => {});
@@ -436,6 +455,7 @@ async function capture(ctx) {
         console.log(`  ${shot.img.padEnd(20)} ${clip.w}×${clip.h}  marks: ${Object.keys(marks).join(", ")}`);
       } finally {
         await bctx.close();
+        if (shot.after) await shot.after(tokens);
       }
     }
   } finally {

@@ -37,7 +37,7 @@ export function addForm(cat, form) {
       if (r.type === "section") { section = r.title || ""; return; }
       if (r.type !== "item" || cat.byCode[r.code]) return;
       const item = {
-        code: r.code, name: r.name || r.code, unit: r.unit || "", price: Number(r.price) || 0, active: r.active !== false,
+        code: r.code, name: r.name || r.code, unit: r.unit || "", price: Number(r.price) || 0, active: r.active !== false, pack: r.pack || null, // 2ao
         stepCode: s.code, stepOrder: stepInfo.order, pageNo: stepInfo.pageNo, sheet: stepInfo.sheet,
         title: stepInfo.title, section, dispenseUnit: stepInfo.dispenseUnit
       };

@@ -766,3 +766,15 @@ body.has-fb-fab { padding-bottom: 72px; } /* the end of every page can scroll cl
   .progress-pill:not(.pill-summary) { width: auto; min-width: 28px; border-radius: 14px; padding: 2px 10px; flex-direction: column; line-height: 1.2; height: auto; min-height: 28px; }
   .pill-name { display: block; font-size: 0.7rem; font-weight: 400; }
 }
+
+/* 2ao: unit guard — pieces-per-unit note + "กรอกเป็นชิ้น" switch, "≈ n ชิ้น" under คงเหลือ/ใช้ไป, unusually high request */
+.pack-note { color: var(--muted); font-size: 0.72rem; line-height: 1.2; }
+.pcs-toggle { font-size: 0.75rem; padding: 0; min-height: 0; white-space: nowrap; }
+.pcs-toggle[aria-pressed="true"] { font-weight: 700; }
+.unit-inline .pack-note, .unit-inline .pcs-toggle { display: inline; margin-left: 4px; }
+.pcs-hint { display: block; color: var(--muted); font-size: 0.72rem; line-height: 1.2; min-height: 0; }
+.pcs-hint:empty { display: none; }
+.num-input-pcs { border-style: dashed; }
+.limit-unit { color: var(--danger); font-weight: 600; }
+.item-row.row-qty-warn td, .item-card.row-qty-warn { background: var(--warn-bg); }
+.announce-pop { white-space: pre-line; line-height: 1.6; } /* 2ao */

@@ -39,6 +39,7 @@ const PCU = {
   pcuNoOrderCancel: pcu.pcuNoOrderCancel, // 2af
   pcuReceivedSave: pcu.pcuReceivedSave, // 2af
   pcuDashboard, // 2q
+  pcuAnnouncementSeen: notices.pcuAnnouncementSeen, // 2ao
   requestPdf: pdf.requestPdf,
 };
 // admin + dispenser

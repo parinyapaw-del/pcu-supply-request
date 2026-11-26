@@ -19,6 +19,7 @@ import { priceFor, priceHistories, roundPriceOverrides } from "./price.js";
 import { PDF_RULE, pdfDownloadUrl, prunePdfFiles } from "./pdf.js";
 import { R2_CAP_KEYS, r2Caps, readUsage } from "./usage.js";
 import { feedbackNewCount } from "./feedback.js";
+import { unitHistory } from "./pcu.js";
 
 const round2 = (x) => Math.round(x * 100) / 100;
 
@@ -430,6 +431,7 @@ export async function adminGetRequest(ctx, p) {
     hidden: hid.map((r) => r.item_code),
     form_version_id: form ? form.id : null,
     form: formPublic(form),
+    unit_hist: await unitHistory(DB, pcuRow.code, monthFy(p.month), form), // 2ao: same figures as pcuBootstrap → "สูงกว่าปกติ" tag
   };
 }
 

@@ -44,6 +44,14 @@ function canonCols(r) {
   return c.length === 1 ? { closed_cols: c } : {};
 }
 
+// 2ao: `pack` = pieces per request unit (e.g. 100 ชิ้น/กล่อง) — only when the admin set it, so other items keep their shape (and hash).
+// Not set → the client reads it from the item name ("(50 ชิ้น/กล่อง)", public/js/units.js packOf). Used to enter ใช้ไป/คงเหลือ in pieces.
+export const MAX_PACK = 100000;
+function canonPack(r) {
+  const n = Number(r.pack);
+  return r.pack !== undefined && r.pack !== null && r.pack !== "" && Number.isInteger(n) && n >= 1 && n <= MAX_PACK ? { pack: n } : {};
+}
+
 export function canonSteps(stepsIn) {
   const steps = (Array.isArray(stepsIn) ? stepsIn : []).map((s, i) => ({
     code: text(s.code),
@@ -57,7 +65,7 @@ export function canonSteps(stepsIn) {
     active: s.active !== false,
     rows: (Array.isArray(s.rows) ? s.rows : []).map((r) => (r.type === "section"
       ? { type: "section", title: text(r.title) }
-      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false, ...canonLinks(r), ...canonCancel(r), ...canonCols(r) })),
+      : { type: "item", code: text(r.code), seq: 0, name: text(r.name), unit: text(r.unit), price: round2(Number(r.price) || 0), active: r.active !== false, ...canonLinks(r), ...canonCancel(r), ...canonCols(r), ...canonPack(r) })),
   }));
   let page = 0, seq = 0;
   for (const s of steps) if (s.active) s.page_no = ++page;
@@ -138,6 +146,10 @@ function validateInput(formIn) {
         if (!Array.isArray(cc) || cc.some((k) => !QTY_COLS.includes(k)) || new Set(cc).size !== cc.length) throw err("BAD_REQUEST", `รายการ ${ic}: closed_cols ต้องเป็น ["op"] หรือ ["pp"]`);
         if (cc.length > 1) throw err("BAD_REQUEST", `รายการ ${ic}: ปิดทั้งช่อง OP และ PP ไม่ได้ — ถ้าไม่ใช้รายการนี้แล้วให้ "ยกเลิกรายการถาวร" แทน`);
       }
+      if (r.pack !== undefined && r.pack !== null && r.pack !== "") {
+        const n = Number(r.pack);
+        if (!Number.isInteger(n) || n < 1 || n > MAX_PACK) throw err("BAD_REQUEST", `รายการ ${ic}: จำนวนชิ้นต่อหน่วยต้องเป็นจำนวนเต็ม 1–${MAX_PACK} หรือว่าง`);
+      }
       if (r.active !== false) activeItems++;
     }
     if (activeItems > MAX_ACTIVE_ITEMS) throw err("BAD_REQUEST", `${label}: มีรายการที่เปิดใช้ได้ไม่เกิน ${MAX_ACTIVE_ITEMS} รายการ (ตอนนี้ ${activeItems}) — ปิดรายการหรือย้ายไปหน้าอื่น`);
@@ -179,7 +191,7 @@ function indexOf(steps) {
 export function diffSteps(baseSteps, newSteps) {
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: [],
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: [], pack_changed: [],
   };
   const bs = new Map(baseSteps.map((s) => [s.code, s]));
   for (const s of newSteps) {
@@ -207,6 +219,7 @@ export function diffSteps(baseSteps, newSteps) {
     // 2al: closed qty column set / cleared (an added item counts too when it starts with one)
     const cw = (o && o.item.closed_cols) || [], cn = item.closed_cols || [];
     if (cw.join(",") !== cn.join(",")) d.cols_changed.push({ code, old: cw, new: cn });
+    if (((o && o.item.pack) || null) !== (item.pack || null)) d.pack_changed.push({ code, old: (o && o.item.pack) || null, new: item.pack || null }); // 2ao
   }
   return d;
 }

@@ -10,10 +10,11 @@ import { formatInt, formatMoney, formatMonthKeyThai, nowTimeHHMM } from "../form
 import {
   esc, pcuCode, roundOf, monthData, isEditable, isLocked, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
-  alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow,
+  alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow, showDialog,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal, planStatus } from "./send.js";
 import { availableOf, deriveFields } from "../stock_calc.js";
+import { formatQty, packOf, piecesHint, piecesToUnits, qtyWarn, round2, unitsToPieces, usedWarn } from "../units.js";
 
 let unsubStatus = null;
 const ITEM_HIGHLIGHT_MS = 2000; // .row-highlight animation = 2 x 1 s
@@ -667,7 +668,7 @@ function patchForEdit(modeB, base, line, field, value) {
 
 function calcHintText(base, line) {
   const adj = Number(line.adj) || 0;
-  return `ยกมา ${formatInt(base.stock)} + ได้รับ ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${formatInt(availableOf(base, line))}`;
+  return `ยกมา ${formatQty(base.stock)} + ได้รับ ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${formatQty(round2(availableOf(base, line)))}`;
 }
 
 // Mode-B block under the item name: ยกมา hint, "± ปรับยอด" link + input, message slot (filled by refreshRowCalc).
@@ -701,7 +702,7 @@ function refreshRowCalc(app, month, item) {
   document.querySelectorAll(`[data-code="${item.code}"]`).forEach((root) => {
     const setVal = (field, v) => {
       const el = root.querySelector(`[data-field="${field}"]`);
-      if (el && document.activeElement !== el) el.value = field === "adj_reason" ? (v || "") : valStr(v);
+      if (el && document.activeElement !== el) el.value = field === "adj_reason" ? (v || "") : field === "stock" || field === "used" ? qtyStr(item, field, v) : valStr(v);
     };
     setVal("stock", line.stock); setVal("used", line.used); setVal("adj", line.adj); setVal("adj_reason", line.adj_reason);
     const stockEl = root.querySelector('input[data-field="stock"]');
@@ -716,6 +717,7 @@ function refreshRowCalc(app, month, item) {
       usedEl.classList.toggle("input-error", st === "neg");
     }
     root.querySelectorAll("[data-calc-tag]").forEach((tag) => { tag.hidden = !(tag.dataset.calcTag === "stock" ? stockComputed : usedComputed); });
+    root.querySelectorAll("[data-pcs-hint]").forEach((h) => { h.textContent = pcsHintText(item, h.dataset.pcsHint, line[h.dataset.pcsHint]); }); // 2ao
     const hint = root.querySelector("[data-calc-hint]");
     if (hint && base) hint.textContent = calcHintText(base, line);
     const box = root.querySelector("[data-adj-box]");
@@ -724,9 +726,10 @@ function refreshRowCalc(app, month, item) {
     if (msg) {
       const editable = !!stockEl && !stockEl.disabled;
       if (st === "neg") {
-        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatInt(line.used)} มากกว่ายอดที่มี ${formatInt(availableOf(base, line))} — ตรวจสอบยอดใช้ไป หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
+        const pk = packOf(item);
+        msg.innerHTML = `<div class="limit-line limit-danger">ใช้ไป ${formatQty(line.used)} ${esc(item.unit || "")} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} — ตรวจสอบยอดใช้ไป${pk && !piecesMode(item) ? ` (ถ้านับเป็น${esc(pk.piece)} กด “กรอกเป็น${esc(pk.piece)}”)` : ""} หรือ “± ปรับยอด” (ยังไม่คำนวณคงเหลือ)</div>`;
       } else if (st === "surplus") {
-        msg.innerHTML = `<div class="calc-warn">คงเหลือ ${formatInt(line.stock)} มากกว่ายอดที่มี ${formatInt(availableOf(base, line))} (บันทึกคงเหลือ ไม่คำนวณใช้ไป)
+        msg.innerHTML = `<div class="calc-warn">คงเหลือ ${formatQty(line.stock)} มากกว่ายอดที่มี ${formatQty(round2(availableOf(base, line)))} (บันทึกคงเหลือ ไม่คำนวณใช้ไป)
           ${editable ? `<button type="button" class="btn btn-secondary btn-sm" data-put-extra>ใส่เป็นยอดรับเพิ่ม</button>` : ""}</div>`;
       } else {
         msg.innerHTML = "";
@@ -804,7 +807,7 @@ function hintHtml(app, month, item) {
       html += `<div class="ghost-line">รอบก่อน: OP ${formatInt(prev.op)} / PP ${formatInt(prev.pp)}</div>`; // old server without 2o fields
     } else {
       const src = prev.received_src === "issued" ? "จ่ายจริง" : "ตามที่ขอ";
-      html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ไม่ได้กรอกคงเหลือ" : `คงเหลือ ${formatInt(prev.stock)}`} · ได้รับ ${formatInt(Number(prev.received) || 0)} (${src})${opPp}</div>`;
+      html += `<div class="ghost-line">รอบก่อน: ${prev.stock == null ? "ไม่ได้กรอกคงเหลือ" : `คงเหลือ ${formatQty(prev.stock)}`} · ได้รับ ${formatInt(Number(prev.received) || 0)} (${src})${opPp}</div>`;
     }
   }
   return html;
@@ -853,6 +856,144 @@ function inputHtml(field, value, editable, title) {
   return `<input class="num-input" data-field="${field}" inputmode="numeric" autocomplete="off" maxlength="5" value="${esc(valStr(value))}" ${editable ? "" : "disabled"}${title ? ` title="${esc(title)}"` : ""}>`;
 }
 
+// ---------------- 2ao: คงเหลือ / ใช้ไป in request units (decimals allowed) or in pieces ----------------
+// Pieces mode is a per-item choice remembered on this device (default = the request unit, as the hospital issues it). The stored
+// figure is always in request units (pieces ÷ pieces-per-unit, 2 decimals); a fraction shows "≈ n ชิ้น" under the input.
+const PCS_KEY = "pcu_pcs_mode_v1";
+let pcsModes = null;
+function pcsModeSet() {
+  if (pcsModes) return pcsModes;
+  try { pcsModes = new Set(JSON.parse(localStorage.getItem(PCS_KEY) || "[]")); } catch { pcsModes = new Set(); }
+  return pcsModes;
+}
+function piecesMode(item) {
+  return !!packOf(item) && pcsModeSet().has(item.code);
+}
+function setPiecesMode(item, on) {
+  const m = pcsModeSet();
+  if (on) m.add(item.code); else m.delete(item.code);
+  try { localStorage.setItem(PCS_KEY, JSON.stringify([...m])); } catch { /* private mode: this page only */ }
+}
+// what the คงเหลือ / ใช้ไป input shows for a stored figure
+function qtyStr(item, field, v) {
+  if (v === null || v === undefined) return "";
+  return piecesMode(item) ? String(unitsToPieces(v, packOf(item))) : String(round2(v));
+}
+function pcsHintText(item, field, v) {
+  const pk = packOf(item);
+  if (!pk || v === null || v === undefined) return "";
+  if (piecesMode(item)) return `= ${formatQty(v)} ${item.unit || ""}`;
+  return piecesHint(v, pk) || "";
+}
+function stockInputHtml(item, field, value, editable, title) {
+  const pc = piecesMode(item);
+  const pk = packOf(item);
+  return `<input class="num-input${pc ? " num-input-pcs" : ""}" data-field="${field}" inputmode="decimal" autocomplete="off" maxlength="${pc ? 7 : 8}"
+    value="${esc(qtyStr(item, field, value))}" ${editable ? "" : "disabled"}${title ? ` title="${esc(title)}"` : ""}
+    placeholder="${pc ? esc(pk.piece) : ""}" aria-label="${field === "used" ? "ใช้ไป" : "คงเหลือ"} (${esc(pc ? pk.piece : item.unit || "หน่วย")})">
+    <span class="pcs-hint" data-pcs-hint="${field}">${esc(pcsHintText(item, field, value))}</span>`;
+}
+// the unit cell: request unit + "กรอกเป็นชิ้น" switch when pieces-per-unit is known
+function unitCellHtml(app, item, editable) {
+  const pk = packOf(item);
+  if (!pk) return esc(item.unit || "");
+  const pc = piecesMode(item);
+  const showSwitch = editable || pc;
+  return `${esc(item.unit || "")}<div class="pack-note">${esc(`${pk.n.toLocaleString("en-US")} ${pk.piece}/${item.unit || "หน่วย"}`)}</div>
+    ${showSwitch ? `<button type="button" class="btn btn-link pcs-toggle" data-pcs-toggle aria-pressed="${pc}" title="ใช้กับช่องคงเหลือ / ใช้ไป — ยอดขอ OP/PP ยังเป็น${esc(item.unit || "")}">
+      ${pc ? `กรอกเป็น${esc(item.unit || "หน่วย")}` : `กรอกเป็น${esc(pk.piece)}`}</button>` : ""}`;
+}
+
+// 2ao: "ยอดขอสูงผิดปกติ" — the note under the row (stays while it is true) + a one-time confirm per (round, item, qty)
+const QTY_OK_KEY = "pcu_qty_ok_v1";
+function qtyOkSet() {
+  try { return new Set(JSON.parse(localStorage.getItem(QTY_OK_KEY) || "[]")); } catch { return new Set(); }
+}
+const qtyOkKey = (app, month, code, q) => `${pcuCode(app)}|${month}|${code}|${q}`;
+function qtyWarnOf(app, month, item, line) {
+  return qtyWarn((app.boot.unit_hist || {})[item.code], month, lineTotal(line));
+}
+function qtyWarnText(app, month, item, line, w) {
+  const pk = packOf(item);
+  const unit = item.unit || "หน่วย";
+  const q = lineTotal(line);
+  return `ขอ ${formatInt(q)} ${unit} (${formatMoney(q * priceOf(app, month, item))} บาท) สูงกว่าที่เคยขอมาก (ปกติไม่เกิน ${formatQty(round2(w.base))} ${unit}/เดือน)`
+    + ` — รายการนี้นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit}) ไม่ใช่${pk.piece}` : ""}`;
+}
+async function confirmQtyWarn(app, month, item, input) {
+  const line = sync.getLine(pcuCode(app), month, item.code);
+  const w = qtyWarnOf(app, month, item, line);
+  if (!w) return;
+  const key = qtyOkKey(app, month, item.code, lineTotal(line));
+  const ok = qtyOkSet();
+  if (ok.has(key)) return;
+  const v = await showDialog({
+    title: "ตรวจหน่วยก่อน — ยอดขอสูงผิดปกติ",
+    html: `<p><strong>${esc(item.name)}</strong></p><p>${esc(qtyWarnText(app, month, item, line, w))}</p><p>ยอดนี้ถูกต้องไหม?</p>`,
+    buttons: [{ label: "แก้ยอด", value: "fix" }, { label: "ยืนยัน ยอดถูกต้อง", value: "ok", primary: true }],
+  });
+  if (v === "ok") {
+    ok.add(key);
+    try { localStorage.setItem(QTY_OK_KEY, JSON.stringify([...ok].slice(-300))); } catch { /* ignore */ }
+  } else if (input && document.body.contains(input)) {
+    input.focus();
+    input.select();
+  }
+}
+// 2ao: ใช้ไป more than ยกมา + ได้รับ (only with last round's คงเหลือ) — likely typed in pieces: offer to read it as pieces
+let usedAsking = false;
+async function confirmUsedWarn(app, month, item, input) {
+  if (usedAsking || !isModeB(app)) return;
+  const line = sync.getLine(pcuCode(app), month, item.code);
+  const base = baselineOf(app, month, item.code);
+  const w = usedWarn(base, line);
+  if (!w) return;
+  const pk = packOf(item);
+  const unit = item.unit || "หน่วย";
+  const asPcs = pk && !piecesMode(item) ? piecesToUnits(Number(line.used), pk) : null;
+  usedAsking = true;
+  try {
+    const v = await showDialog({
+      title: "ใช้ไปมากกว่าของที่มี — ตรวจหน่วย",
+      html: `<p><strong>${esc(item.name)}</strong> นับเป็น “${esc(unit)}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${esc(pk.piece)}/${esc(unit)})` : ""}</p>
+        <p>กรอกใช้ไป ${esc(formatQty(line.used))} ${esc(piecesMode(item) && pk ? pk.piece : unit)} แต่มีของ ${esc(formatQty(round2(w.avail)))} ${esc(unit)} (ยกมา + ได้รับ)</p>
+        ${asPcs !== null && asPcs <= w.avail ? `<p>ถ้าหมายถึง ${esc(formatQty(line.used))} ${esc(pk.piece)} = ${esc(formatQty(asPcs))} ${esc(unit)}</p>` : ""}`,
+      buttons: [
+        { label: "แก้ยอด", value: "fix" },
+        ...(asPcs !== null ? [{ label: `เป็น${pk.piece} (= ${formatQty(asPcs)} ${unit})`, value: "pcs", primary: true }] : []),
+        { label: "ยอดถูกต้อง", value: "ok" },
+      ],
+    });
+    if (v === "pcs") {
+      const typed = Number(line.used);
+      setPiecesMode(item, true);
+      const cur = sync.getLine(pcuCode(app), month, item.code);
+      sync.setLineFields(pcuCode(app), month, item.code, patchForEdit(true, base, cur, "used", piecesToUnits(typed, pk)));
+      document.querySelectorAll(`[data-code="${item.code}"]`).forEach((root) => repaintUnitCell(app, month, item, root));
+      refreshRowCalc(app, month, item);
+      sync.flush(pcuCode(app), month);
+    } else if (v === "fix" && input && document.body.contains(input)) {
+      input.focus();
+      input.select();
+    }
+  } finally {
+    usedAsking = false;
+  }
+}
+// re-render the unit switch + the two inputs' placeholder after a pieces-mode change (values are repainted by refreshRowCalc)
+function repaintUnitCell(app, month, item, root) {
+  const editable = !!root.querySelector('input[data-field="stock"]:not([disabled])');
+  const cell = root.querySelector("[data-unit-cell]");
+  if (cell) cell.innerHTML = unitCellHtml(app, item, editable);
+  const pc = piecesMode(item), pk = packOf(item);
+  root.querySelectorAll('input[data-field="stock"], input[data-field="used"]').forEach((el) => {
+    el.classList.toggle("num-input-pcs", pc);
+    el.placeholder = pc ? pk.piece : "";
+    el.setAttribute("aria-label", `${el.dataset.field === "used" ? "ใช้ไป" : "คงเหลือ"} (${pc ? pk.piece : item.unit || "หน่วย"})`);
+    el.value = "";
+  });
+}
+
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
 // 2ad (H5): the reason ใช้ไป is disabled + what to do instead
 const NO_BASE_TITLE = "ใช้ไปกรอกไม่ได้ เพราะรอบก่อนไม่มียอดคงเหลือ (ยกมา) — กรอกคงเหลือเองได้";
@@ -860,7 +1001,7 @@ const NO_BASE_TITLE = "ใช้ไปกรอกไม่ได้ เพร�
 // ใช้ไป input (mode B): disabled when the row has no baseline (Q13).
 function usedInputHtml(app, month, item, line, editable) {
   const base = baselineOf(app, month, item.code);
-  return inputHtml("used", line.used, editable && !!base, base ? "" : NO_BASE_TITLE);
+  return stockInputHtml(item, "used", line.used, editable && !!base, base ? "" : NO_BASE_TITLE);
 }
 
 // 2ad: grey notes under the item name — cancelled item (whole row read-only) · qty-locked line (OP/PP read-only)
@@ -907,10 +1048,10 @@ function buildItemTr(app, month, item, editable) {
       ${item.active === false ? "" : hintHtml(app, month, item)}
       ${calcBlockHtml(app, month, item, line, editable)}
       <div class="limit-msg" data-limit-for="${esc(item.code)}"></div></td>
-    <td class="col-unit">${esc(item.unit || "")}</td>
+    <td class="col-unit" data-unit-cell>${unitCellHtml(app, item, editable)}</td>
     <td class="col-price">${formatMoney(priceOf(app, month, item))}</td>
     ${modeB ? `<td class="col-num col-used">${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</td>` : ""}
-    <td class="col-num">${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
+    <td class="col-num">${stockInputHtml(item, "stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</td>
     <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "op")}</td>
     <td class="col-num">${qtyInputHtml(app, month, item, line, editable, "pp")}</td>
     <td class="col-num row-total">${formatInt(total)}</td>
@@ -952,13 +1093,13 @@ function buildItemCard(app, month, item, editable) {
       <span class="item-name">${esc(item.name)}</span>
       ${editable ? `<button type="button" class="btn btn-link btn-hide" data-hide="${esc(item.code)}">ไม่เบิก</button>` : ""}
     </div>
-    <div class="item-card-meta">หน่วย: ${esc(item.unit || "")} · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
+    <div class="item-card-meta">หน่วย: <span data-unit-cell class="unit-inline">${unitCellHtml(app, item, editable)}</span> · ราคา/หน่วย: ${formatMoney(priceOf(app, month, item))}</div>
     ${rowNoteHtml(app, month, item, editable)}${stockFlagHtml(app, item)}
     ${item.active === false ? "" : hintHtml(app, month, item)}
     ${calcBlockHtml(app, month, item, line, editable)}
     <div class="item-card-inputs${modeB ? " item-card-inputs-4" : ""}">
       ${modeB ? `<label>ใช้ไป${usedInputHtml(app, month, item, line, editable)}${CALC_TAG("used")}</label>` : ""}
-      <label>คงเหลือ${req ? " *" : ""}${inputHtml("stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
+      <label>คงเหลือ${req ? " *" : ""}${stockInputHtml(item, "stock", line.stock, editable)}${modeB ? CALC_TAG("stock") : ""}</label>
       <label>OP${qtyInputHtml(app, month, item, line, editable, "op")}</label>
       <label>PP${qtyInputHtml(app, month, item, line, editable, "pp")}</label>
     </div>
@@ -981,8 +1122,13 @@ function refreshRowLimit(app, month, item) {
   document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
     if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-plan-over", !!plan);
   });
+  const qw = item.active !== false ? qtyWarnOf(app, month, item, line) : null; // 2ao
+  document.querySelectorAll(`[data-code="${item.code}"]`).forEach((el) => {
+    if (el.classList.contains("item-row") || el.classList.contains("item-card")) el.classList.toggle("row-qty-warn", !!qw);
+  });
   document.querySelectorAll(`[data-limit-for="${item.code}"]`).forEach((box) => {
-    box.innerHTML = plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "";
+    box.innerHTML = (plan ? `<div class="limit-line limit-plan">${esc(plan.message)}</div>` : "")
+      + (qw ? `<div class="limit-line limit-unit" data-qty-warn>⚠ ${esc(qtyWarnText(app, month, item, line, qw))}</div>` : "");
   });
 }
 
@@ -1006,10 +1152,20 @@ function wireStepEvents(app, month, step, editable) {
         if (s !== input.value) input.value = s;
         if (s === "-") return; // sign typed, digits to come
         value = s === "" ? null : parseInt(s, 10);
+      } else if ((field === "stock" || field === "used") && !piecesMode(item)) {
+        // 2ao: up to 5 digits + "." + 2 decimals (part of a box); "3." while typing waits for the decimals
+        let s = input.value.replace(/,/g, ".").replace(/[^0-9.]/g, "");
+        const dot = s.indexOf(".");
+        if (dot >= 0) s = s.slice(0, dot).slice(0, 5) + "." + s.slice(dot + 1).replace(/\./g, "").slice(0, 2);
+        else s = s.slice(0, 5);
+        if (s !== input.value) input.value = s;
+        if (s === ".") return;
+        value = s === "" ? null : round2(parseFloat(s));
       } else {
-        const digits = input.value.replace(/[^0-9]/g, "").slice(0, 5);
+        const digits = input.value.replace(/[^0-9]/g, "").slice(0, field === "stock" || field === "used" ? 7 : 5);
         if (digits !== input.value) input.value = digits;
         value = digits === "" ? null : parseInt(digits, 10);
+        if ((field === "stock" || field === "used") && value !== null) value = Math.min(99999, piecesToUnits(value, packOf(item))); // 2ao: pieces
       }
       // 2ak A2: an admin-locked item may be lowered, never raised above what the server holds (its ITEM_LOCKED revert stays the backstop)
       if ((field === "op" || field === "pp") && value !== null && itemLock(app, month, code) && value > lockedCap(app, month, code, field)) {
@@ -1042,7 +1198,17 @@ function wireStepEvents(app, month, step, editable) {
       refreshStatusChip(app, month);
     });
 
-    input.addEventListener("blur", () => sync.flush(pcuCode(app), month));
+    input.addEventListener("blur", () => {
+      sync.flush(pcuCode(app), month);
+      // 2ao: unit checks once the figure is complete (after leaving the box)
+      const code = input.closest("[data-code]").dataset.code;
+      const item = items.find((it) => it.code === code);
+      if (!item || input.disabled) return;
+      const f = input.dataset.field;
+      if (f === "op" || f === "pp") confirmQtyWarn(app, month, item, input);
+      else if (f === "used") confirmUsedWarn(app, month, item, input);
+      else if (f === "stock") { const line = sync.getLine(pcuCode(app), month, code); input.value = qtyStr(item, f, line.stock); }
+    });
 
     input.addEventListener("keydown", (ev) => {
       if (ev.key !== "Enter") return;
@@ -1065,6 +1231,19 @@ function wireStepEvents(app, month, step, editable) {
   const formEl = container.querySelector(".step-form");
   if (formEl) {
     formEl.addEventListener("click", (ev) => {
+      const pcs = ev.target.closest("[data-pcs-toggle]"); // 2ao: กรอกเป็นชิ้น ⇄ กรอกเป็นกล่อง (this item, this device)
+      if (pcs) {
+        const rowEl = pcs.closest("[data-code]"); // kept before the switch is re-rendered (pcs leaves the page)
+        const code = rowEl.dataset.code;
+        const item = items.find((it) => it.code === code);
+        if (!item) return;
+        setPiecesMode(item, !piecesMode(item));
+        document.querySelectorAll(`[data-code="${code}"]`).forEach((root) => repaintUnitCell(app, month, item, root));
+        refreshRowCalc(app, month, item);
+        const inp = rowEl.querySelector('input[data-field="used"]:not([disabled]), input[data-field="stock"]:not([disabled])');
+        if (inp) inp.focus();
+        return;
+      }
       const toggle = ev.target.closest("[data-adj-toggle]");
       if (toggle) {
         const box = toggle.closest("[data-code]").querySelector("[data-adj-box]");

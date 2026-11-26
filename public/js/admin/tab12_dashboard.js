@@ -13,6 +13,8 @@ import {
   groupBreakdown, anomalyRows, rankRows, sortRank, stockNetRows, stockFilledLatest,
 } from "./dash_calc.js";
 import { mountShortage } from "./shortage.js";
+import { formatQty } from "../units.js"; // 2ao
+import { mount as mountOverview, networkOverviewRows, pcuOverviewRows } from "../pages/dash_overview.js"; // 2ao
 
 const ANOM_PAGE = 30;
 const STOCK_NET_PAGE = 10;
@@ -46,6 +48,9 @@ export function renderTab12(container, ctx) {
     rule: "all",
     anomLimit: ANOM_PAGE,
     loaded: false,
+    ovPcu: "", // 2ao: PCU picked in the "ภาพรวมต่อรายการ" card ("" = whole network)
+    ovCache: {}, // 2ao: {pcu: adminDashboard{pcu} payload} for the picker (keyed by fy|pcu)
+    ovMode: "baht",
   };
   const box = document.createElement("div");
   box.className = "dash-page adm-dash";
@@ -102,6 +107,7 @@ export function renderTab12(container, ctx) {
     ts.fy = fy;
     ts.overview = null;
     ts.detail = null;
+    ts.ovPcu = ""; // 2ao
     if (shortage) shortage.reload(fy);
     load();
   }
@@ -238,6 +244,7 @@ export function renderTab12(container, ctx) {
         <div id="adm-top3"></div>
         <div class="dash-card"><h3>แยกตามหน่วยจ่าย</h3>
           <p class="muted small dash-caption">ยอดขอเบิกสะสมปีงบ — แสดงทุกหน่วยจ่ายเสมอ กดแถวเพื่อกรองทั้งหน้า</p><div id="adm-groups"></div></div>
+        <div id="adm-overview"></div>
         <div id="adm-stock"></div>
         <div class="dash-card"><h3>จัดอันดับ รพ.สต.</h3>
           <p class="muted small dash-caption" id="adm-rank-cap"></p><div id="adm-rank"></div></div>
@@ -297,6 +304,7 @@ export function renderTab12(container, ctx) {
     g.innerHTML = groupRowsHtml(groupBreakdown(d, ui.mode));
     g.querySelectorAll(".dash-group").forEach((b) => b.addEventListener("click", () => setUnit(ui.unit === b.dataset.unit ? "all" : b.dataset.unit)));
 
+    renderOverviewCard();
     renderStockNet();
 
     $("#adm-rank-cap").textContent = `${scope} · ยอดเป็นบาทเสมอ · เดือนสูงสุด/ต่ำสุด (เดือนที่ไม่เบิกไม่นับ) และเกินแผน (รายการสะสมขอ > แผนปี) เป็นตัวเลขของทุกหน่วยจ่าย ไม่เปลี่ยนตามตัวกรอง · รูปแบบการเบิก (pattern) คิดจากทุกหน่วยจ่ายของแห่งนั้น ไม่เปลี่ยนตามตัวกรอง · กดชื่อ รพ.สต. เพื่อดูรายแห่ง`;
@@ -312,6 +320,63 @@ export function renderTab12(container, ctx) {
     renderAnomalies();
   }
 
+  // 2ao: "ภาพรวมต่อรายการ" — network total by default; the picker loads adminDashboard{fy, pcu} (cached) and shows that PCU's items
+  let ovView = null;
+  function renderOverviewCard() {
+    const host = box.querySelector("#adm-overview");
+    if (!host) return;
+    const d = ts.overview;
+    const key = (p) => `${ts.fy}|${p}`;
+    if (!ovView || ovView.host !== host) {
+      const names = [...((d && d.pcus) || [])].sort((a, b) => String(a.name || a.code).localeCompare(String(b.name || b.code), "th"));
+      const picker = `<div class="dash-controls ov-head">
+        <label class="dash-ctl"><span class="dash-ctl-label">ดูของ</span>
+          <select class="fy-select ov-pcu" aria-label="เลือก รพ.สต. สำหรับภาพรวมต่อรายการ"><option value="">รวมทุกแห่ง (เครือข่าย)</option>${names.map((p) => `<option value="${esc(p.code)}">${esc(p.name || p.code)}</option>`).join("")}</select></label>
+        <div class="dash-ctl"><span class="dash-ctl-label" id="ov-l-mode">แสดงเป็น</span>${seg2()}</div>
+        <span class="muted small ov-status" role="status"></span></div>`;
+      const view = mountOverview(host, {
+        title: "ภาพรวมต่อรายการ",
+        caption: "ได้รับจริง · ใช้ไป · คงเหลือ · พอใช้อีกกี่เดือน — รวมเครือข่าย (คงเหลือ = รวมของแต่ละแห่งที่กรอกแล้ว · เฉลี่ยใช้ไปหารด้วยจำนวนรอบที่ผ่านไป) หรือเลือกดูทีละ รพ.สต. (เฉลี่ยเฉพาะรอบที่มีตัวเลขใช้ไป)",
+        headHtml: picker,
+        getRows: () => {
+          const p = ts.ovPcu && ts.ovCache[key(ts.ovPcu)];
+          return p ? pcuOverviewRows(p) : networkOverviewRows(ts.overview);
+        },
+        getMode: () => ts.ovMode,
+        getUnit: () => ui.unit,
+        onHead: (h) => {
+          const sel = h.querySelector(".ov-pcu");
+          sel.value = ts.ovPcu;
+          sel.addEventListener("change", async () => {
+            const code = sel.value;
+            const st = h.querySelector(".ov-status");
+            if (code && !ts.ovCache[key(code)]) {
+              st.textContent = "กำลังโหลด...";
+              try { ts.ovCache[key(code)] = await ctx.adminCall("adminDashboard", { fy: ts.fy, pcu: code }); }
+              catch (err) { st.textContent = `โหลดไม่สำเร็จ: ${errMessage(err)}`; sel.value = ts.ovPcu; return; }
+              st.textContent = "";
+            }
+            ts.ovPcu = code;
+            view.render();
+          });
+          h.querySelectorAll("[data-ovmode]").forEach((b) => b.addEventListener("click", () => {
+            ts.ovMode = b.dataset.ovmode;
+            h.querySelectorAll("[data-ovmode]").forEach((x) => { const on = x.dataset.ovmode === ts.ovMode; x.classList.toggle("is-on", on); x.setAttribute("aria-pressed", String(on)); });
+            view.render();
+          }));
+        },
+      });
+      ovView = { host, view };
+      view.render(true);
+      return;
+    }
+    ovView.view.render();
+  }
+  function seg2() {
+    return `<div class="dash-seg" role="group" aria-labelledby="ov-l-mode">${[["qty", "จำนวน"], ["baht", "บาท"]]
+      .map(([v, l]) => `<button type="button" class="dash-seg-btn${ts.ovMode === v ? " is-on" : ""}" data-ovmode="${v}" aria-pressed="${ts.ovMode === v}">${l}</button>`).join("")}</div>`;
+  }
+
   // 2an: network คงเหลือ — latest stock per PCU × item summed, by baht; each item opens to its PCUs
   function renderStockNet() {
     const host = box.querySelector("#adm-stock");
@@ -324,8 +389,8 @@ export function renderTab12(container, ctx) {
     const body = list.map((r) => `<tr>
         <th scope="row" class="dash-name"><div>${esc(r.name)}</div><div class="muted small">${esc(r.code)}${r.unit ? ` · ${esc(r.unit)}` : ""}${r.group ? ` · ${esc(r.group)}` : ""}</div>
           <details class="dash-det"><summary>${fmt(r.pcus.length)} แห่ง</summary>
-            <ul class="dash-plain">${r.pcus.map((p) => `<li>${esc(p.name)} <strong>${fmt(p.stock)}</strong> <span class="muted small">${esc(shortRound(p.round))}</span></li>`).join("")}</ul></details></th>
-        <td class="num strong">${fmt(r.qty)}</td><td class="num">${fmt(r.baht)}</td></tr>`).join("");
+            <ul class="dash-plain">${r.pcus.map((p) => `<li>${esc(p.name)} <strong>${formatQty(p.stock)}</strong> <span class="muted small">${esc(shortRound(p.round))}</span></li>`).join("")}</ul></details></th>
+        <td class="num strong">${formatQty(r.qty)}</td><td class="num">${fmt(r.baht)}</td></tr>`).join("");
     const more = all.length > list.length ? `<button type="button" class="btn btn-secondary adm-stock-more">แสดงเพิ่ม (เหลืออีก ${all.length - list.length} รายการ)</button>` : "";
     host.innerHTML = `<div class="dash-card" id="adm-stock-card"><h3>คงเหลือรวมทุกแห่ง</h3>
       <p class="muted small dash-caption">ต่อรายการ รวมคงเหลือล่าสุดของแต่ละ รพ.สต. (รอบล่าสุดที่แห่งนั้นกรอกรายการนี้) · เรียงตามมูลค่า${filled ? ` · ${filled}` : ""}</p>
@@ -397,7 +462,7 @@ export function renderTab12(container, ctx) {
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);
     const sel = box.querySelector(".dash-fy");
-    if (sel) sel.addEventListener("change", () => { ts.fy = Number(sel.value); ts.detail = null; ts.overview = null; if (shortage) shortage.reload(ts.fy); load(); });
+    if (sel) sel.addEventListener("change", () => { ts.fy = Number(sel.value); ts.detail = null; ts.overview = null; ts.ovPcu = ""; if (shortage) shortage.reload(ts.fy); load(); });
     if (empty) return;
 
     // extra sections (pattern / top 3 / anomalies) sit between the charts and the unit-group card

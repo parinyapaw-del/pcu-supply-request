@@ -52,6 +52,18 @@ export function assertQty(v) {
   return n;
 }
 
+// 2ao: คงเหลือ / ใช้ไป — up to 2 decimals (part of a box, e.g. 0.4 กล่อง = 40 ชิ้น), 0–99999 or null. More decimals → rounded to 2
+// (a figure typed in pieces ÷ pieces-per-box, e.g. 1 ÷ 3). op / pp / adj / received stay whole numbers (assertQty).
+export function round2q(n) {
+  return Math.round(n * 100) / 100;
+}
+export function assertStockQty(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > 99999) throw err("BAD_REQUEST", "คงเหลือ / ใช้ไป ต้องเป็นตัวเลข 0–99999 (ทศนิยมได้ 2 ตำแหน่ง) หรือว่าง");
+  return round2q(n);
+}
+
 // integer >= 0 or null (limits)
 export function assertLimitValue(v) {
   if (v === null || v === undefined || v === "") return null;

@@ -137,13 +137,20 @@ export function renderTab15(container, ctx) {
     if (!a.live) return `<span class="badge badge-muted">หมดอายุแล้ว</span>`;
     return `<span class="badge badge-success">แสดงอยู่</span>`;
   }
+  // 2ao: "แสดง N ครั้ง/แห่ง · เห็นแล้ว x แห่ง · ครบ y แห่ง" (views from adminAnnouncementList)
+  function annViews(a) {
+    const v = a.views || { pcus: 0, done: 0 };
+    if (!a.show_limit) return `<span class="muted">แสดงจนกว่าจะหมดอายุ/ปิด</span>`;
+    return `แสดง ${a.show_limit} ครั้ง/แห่ง · เห็นแล้ว ${v.pcus} แห่ง · ครบ ${v.done} แห่ง`;
+  }
   function renderAnns() {
     if (!anns.length) { annList.innerHTML = `<p class="muted" id="t15-ann-empty">ยังไม่มีประกาศ</p>`; return; }
     annList.innerHTML = tableScroll(`<table class="admin-table" id="t15-ann-tbl">
-      <thead><tr><th class="left">ข้อความ</th><th class="left">แสดงถึง</th><th class="left">สถานะ</th><th class="left">แก้ล่าสุด</th><th class="left"></th></tr></thead>
+      <thead><tr><th class="left">ข้อความ</th><th class="left">แสดงถึง</th><th class="left">จำนวนครั้ง / การเห็น</th><th class="left">สถานะ</th><th class="left">แก้ล่าสุด</th><th class="left"></th></tr></thead>
       <tbody>${anns.map((a) => `<tr data-id="${a.id}">
         <td class="left t15-ann-text">${escapeHtml(a.text)}</td>
         <td class="left">${a.expires_at ? escapeHtml(formatDateThai(a.expires_at)) : "ไม่กำหนด"}</td>
+        <td class="left small">${annViews(a)}</td>
         <td class="left">${annState(a)}</td>
         <td class="left small muted">${escapeHtml(formatBangkokDateTime(a.updated_at))}<br>${escapeHtml(a.updated_by === "backup" ? "รหัสสำรอง" : a.updated_by || "")}</td>
         <td class="left"><button type="button" class="btn btn-link" data-aedit="${a.id}">แก้</button>
@@ -159,10 +166,16 @@ export function renderTab15(container, ctx) {
     const v = await formDialog(a ? "แก้ประกาศ" : "เพิ่มประกาศ", [
       { key: "text", label: "ข้อความ", type: "textarea", rows: 4, maxlength: 1000, required: true, value: a ? a.text : "" },
       { key: "expires_at", label: "แสดงถึงวันที่ (ไม่ใส่ = ไม่กำหนด)", type: "date", value: a ? a.expires_at || "" : "" },
-    ], { okText: a ? "บันทึก" : "เพิ่มประกาศ" });
+      // 2ao: show N times per PCU (counted on the server per รพ.สต.) — empty = until it expires / is switched off, as before
+      { key: "show_limit", label: "แสดงกี่ครั้งต่อ รพ.สต. (1–10 · ว่าง = แสดงจนกว่าจะหมดอายุ/ปิด)", type: "number", min: "1", max: "10", inputmode: "numeric", value: a && a.show_limit ? a.show_limit : "" },
+    ], {
+      okText: a ? "บันทึก" : "เพิ่มประกาศ",
+      intro: "ถ้าตั้งจำนวนครั้ง ประกาศจะเด้งเป็นหน้าต่างตอนเปิดหน้าแรก แล้วหยุดแสดงเมื่อ รพ.สต. นั้นเห็นครบ · การแก้ข้อความประกาศจะเริ่มนับใหม่",
+      validate: (o) => (o.show_limit && !/^(10|[1-9])$/.test(o.show_limit) ? "จำนวนครั้งต้องเป็นเลขเต็ม 1–10 หรือเว้นว่าง" : ""),
+    });
     if (!v) return;
     try {
-      const params = { text: v.text, expires_at: v.expires_at || null };
+      const params = { text: v.text, expires_at: v.expires_at || null, show_limit: v.show_limit ? Number(v.show_limit) : null };
       if (a) params.id = a.id;
       await ctx.adminCall("adminAnnouncementSave", params);
       toast(a ? "บันทึกประกาศแล้ว" : "เพิ่มประกาศแล้ว");

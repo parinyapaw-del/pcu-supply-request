@@ -10,12 +10,13 @@ export function availableOf(base, line) {
 export function deriveFields(base, line) {
   if (!base || !line.calc_from) return {};
   const avail = availableOf(base, line);
+  const r2 = (n) => Math.round(n * 100) / 100; // 2ao: คงเหลือ / ใช้ไป may carry 2 decimals (server stock.js does the same)
   if (line.calc_from === "used" && line.used != null) {
-    const v = avail - Number(line.used);
+    const v = r2(avail - Number(line.used));
     return { stock: v < 0 ? null : v };
   }
   if (line.calc_from === "stock" && line.stock != null) {
-    const v = avail - Number(line.stock);
+    const v = r2(avail - Number(line.stock));
     return { used: v < 0 ? null : v };
   }
   return {};

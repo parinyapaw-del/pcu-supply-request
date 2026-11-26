@@ -32,6 +32,15 @@ export function colsOf(r) {
   return c.length === 1 ? c : [];
 }
 
+// 2ao: pieces per request unit (item.pack, integer 1–100000) — omitted when empty (the client then reads it from the name); same canon as the server
+export const MAX_PACK = 100000;
+export function packVal(r) {
+  const v = r ? r.pack : null;
+  if (v === null || v === undefined || str(v).trim() === "") return null;
+  const n = Number(v);
+  return Number.isInteger(n) && n >= 1 && n <= MAX_PACK ? n : NaN;
+}
+
 export function normalizeForm(form) {
   let pageNo = 0;
   const steps = (form.steps || []).map((s, i) => {
@@ -44,12 +53,14 @@ export function normalizeForm(form) {
       const price = typeof r.price === "number" ? r.price : (str(r.price).trim() === "" ? NaN : Number(r.price));
       const links = linksOf(r);
       const cols = colsOf(r);
+      const pack = packVal(r);
       // 2al: cancel_reason (closed items only) and closed_cols travel with the item — before 2al the editor dropped cancel_reason on save
       const reason = r.active === false ? str(r.cancel_reason).trim() : "";
       return {
         type: "item", code: str(r.code).trim(), seq, name: str(r.name).trim(), unit: str(r.unit).trim(),
         price: isFinite(price) ? round2(price) : price, active: r.active !== false, ...(links.length ? { links } : {}),
-        ...(reason ? { cancel_reason: reason } : {}), ...(cols.length ? { closed_cols: cols } : {})
+        ...(reason ? { cancel_reason: reason } : {}), ...(cols.length ? { closed_cols: cols } : {}),
+        ...(pack ? { pack } : {})
       };
     });
     return {
@@ -65,7 +76,7 @@ export function normalizeForm(form) {
 export function formSignature(form) {
   const n = normalizeForm(form);
   return JSON.stringify(n.steps.map((s) => [s.code, s.sheet, s.title, s.subject, s.to, s.dispense_unit, s.active,
-    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active, (r.links || []).join(","), r.cancel_reason || "", (r.closed_cols || []).join(",")]))]));
+    s.rows.map((r) => (r.type === "section" ? ["S", r.title] : ["I", r.code, r.name, r.unit, r.price, r.active, (r.links || []).join(","), r.cancel_reason || "", (r.closed_cols || []).join(","), packVal(r) || ""]))]));
 }
 
 function stepLabel(s, idx) {
@@ -117,6 +128,7 @@ export function validateForm(form, baseForm) {
       if (!name) return fail(`${label}: รายการ ${ic} ต้องมีชื่อรายการ`, s.code, ic);
       if (name.length > 200) return fail(`${label}: ชื่อรายการ ${ic} ยาวเกิน 200 ตัวอักษร`, s.code, ic);
       if (str(r.unit).trim().length > 30) return fail(`${label}: หน่วยของ ${ic} ยาวเกิน 30 ตัวอักษร`, s.code, ic);
+      if (Number.isNaN(packVal(r))) return fail(`${label}: "ชิ้นต่อหน่วย" ของ ${ic} ต้องเป็นจำนวนเต็ม 1–${MAX_PACK} (หรือเว้นว่าง)`, s.code, ic);
       const price = typeof r.price === "number" ? r.price : (str(r.price).trim() === "" ? NaN : Number(r.price));
       if (!isFinite(price) || price < 0) return fail(`${label}: ราคาของ ${ic} ต้องเป็นตัวเลข ≥ 0`, s.code, ic);
       if (isActive(r)) activeItems += 1;
@@ -166,7 +178,7 @@ export function diffForms(oldForm, newForm) {
   const a = indexForm(oldForm), b = indexForm(newForm);
   const d = {
     steps_added: [], steps_closed: [], steps_reopened: [], items_added: [], items_closed: [], items_reopened: [],
-    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: []
+    price_changed: [], renamed: [], unit_changed: [], moved: [], linked: [], cols_changed: [], pack_changed: []
   };
   Object.values(b.steps).forEach((s) => {
     const o = a.steps[s.code];
@@ -190,6 +202,8 @@ export function diffForms(oldForm, newForm) {
     if (was.join(",") !== now.join(",")) d.linked.push({ code: it.code, old: was, new: now });
     const cw = colsOf(a.items[it.code]), cn = colsOf(it);
     if (cw.join(",") !== cn.join(",")) d.cols_changed.push({ code: it.code, old: cw, new: cn });
+    const pw = packVal(a.items[it.code]) || null, pn = packVal(it) || null; // 2ao
+    if (a.items[it.code] && pw !== pn) d.pack_changed.push({ code: it.code, old: pw, new: pn });
   });
   return d;
 }
@@ -216,6 +230,7 @@ export function summaryThai(d) {
   if (d.moved.length) parts.push(`ย้ายหน้า ${d.moved.length} รายการ`);
   if ((d.linked || []).length) parts.push(`เชื่อมรหัสเดิม ${d.linked.length} รายการ`);
   if ((d.cols_changed || []).length) parts.push(`ปิด/เปิดช่อง OP-PP ${d.cols_changed.length} รายการ`);
+  if ((d.pack_changed || []).length) parts.push(`ชิ้นต่อหน่วย ${d.pack_changed.length} รายการ`);
   if (d.items_closed.length) parts.push(`ปิด ${d.items_closed.length} รายการ`);
   if (d.items_reopened.length) parts.push(`เปิดอีกครั้ง ${d.items_reopened.length} รายการ`);
   return parts.length ? parts.join(" · ") : "ไม่มีการเปลี่ยนแปลง";
@@ -236,6 +251,7 @@ export function diffDetailsThai(d, nameOf = () => "") {
     ["ย้ายหน้า", d.moved.map((x) => `${nm(x.code)}: หน้า ${x.from} → หน้า ${x.to}`)],
     ["เชื่อมรหัสเดิม", (d.linked || []).map((x) => `${nm(x.code)}: ${x.new.length ? "← " + x.new.join(", ") : "ยกเลิกการเชื่อม"}${x.old.length ? ` (เดิม ← ${x.old.join(", ")})` : ""}`)],
     ["ปิด/เปิดช่อง OP-PP", (d.cols_changed || []).map((x) => `${nm(x.code)}: ${x.new.length ? "ปิดช่อง " + x.new[0].toUpperCase() : "เปิดทุกช่อง"}${x.old.length ? ` (เดิมปิด ${x.old[0].toUpperCase()})` : ""}`)],
+    ["ชิ้นต่อหน่วย", (d.pack_changed || []).map((x) => `${nm(x.code)}: ${x.new ? `${x.new} ชิ้น/หน่วย` : "ไม่ระบุ (อ่านจากชื่อ)"}${x.old ? ` (เดิม ${x.old})` : ""}`)],
     ["รายการที่ปิด", d.items_closed.map(nm)],
     ["รายการที่เปิดอีกครั้ง", d.items_reopened.map(nm)]
   ];

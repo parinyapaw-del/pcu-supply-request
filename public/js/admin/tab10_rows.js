@@ -2,7 +2,8 @@
 // 2ak D8: split out of renderTab10 (tab10_form.js), no behaviour change. `core` = the editor's state + helpers (see renderTab10).
 import { formatMoney } from "../format.js";
 import { el, toast, formDialog, formatBangkokDateTime } from "./util.js";
-import { MAX_ACTIVE_ITEMS, MAX_SECTIONS, isActive, linksOf, nextItemCode, stepCounts } from "./form_diff.js";
+import { MAX_ACTIVE_ITEMS, MAX_SECTIONS, MAX_PACK, isActive, linksOf, nextItemCode, stepCounts } from "./form_diff.js";
+import { parsePack } from "../units.js";
 
 export function rowsPart(core) {
   const { ts, rowsCard, selStep, baseItemCodes, histText, touch, drawAll } = core;
@@ -53,7 +54,23 @@ export function rowsPart(core) {
         const name = el("input", { type: "text", class: "t10-in t10-in-name", value: r.name || "", maxlength: 200, "data-code": r.code, "aria-label": "ชื่อรายการ " + r.code });
         name.addEventListener("input", () => { r.name = name.value; touch(); });
         const unit = el("input", { type: "text", class: "t10-in t10-in-unit", value: r.unit || "", maxlength: 30, "aria-label": "หน่วย " + r.code });
-        unit.addEventListener("input", () => { r.unit = unit.value; touch(); });
+        unit.addEventListener("input", () => { r.unit = unit.value; touch(); packHint(); });
+        // 2ao: ชิ้นต่อหน่วย (item.pack) — empty = the client reads it from the name; the hint shows what it would read
+        const pack = el("input", { type: "number", class: "t10-in t10-in-pack", min: "1", max: String(MAX_PACK), step: "1", inputmode: "numeric", value: r.pack ? String(r.pack) : "", "aria-label": "ชิ้นต่อหน่วย " + r.code, title: "จำนวนชิ้นต่อ 1 หน่วยเบิก (เว้นว่าง = อ่านจากชื่อรายการ)" });
+        const packNote = el("div", { class: "t10-pack-hint muted small" });
+        function packHint() {
+          const g = parsePack(r.name, r.unit);
+          pack.placeholder = g ? String(g.n) : "ชิ้น/หน่วย";
+          packNote.textContent = g ? `จากชื่อ: ${g.n} ${g.piece}/${r.unit || "หน่วย"}` : "ชื่อไม่ระบุจำนวนชิ้น";
+        }
+        pack.addEventListener("input", () => {
+          const v = pack.value.trim();
+          if (v === "") delete r.pack; else r.pack = Number(v);
+          pack.classList.toggle("bad", v !== "" && !(Number.isInteger(r.pack) && r.pack >= 1 && r.pack <= MAX_PACK));
+          touch();
+        });
+        name.addEventListener("input", packHint);
+        packHint();
         const price = el("input", { type: "number", class: "t10-in t10-in-price", step: "0.01", min: "0", inputmode: "decimal", value: Number.isFinite(Number(r.price)) ? String(r.price) : "", "aria-label": "ราคา " + r.code });
         price.addEventListener("input", () => {
           const v = price.value.trim();
@@ -123,7 +140,7 @@ export function rowsPart(core) {
           el("td", { class: "left" }, histText(r.code)
             ? [name, el("div", { class: "t10-hist muted small", title: (ts.hist[r.code] || []).map((x) => `${formatMoney(x.price)}${x.set_at ? " ตั้งเมื่อ " + formatBangkokDateTime(x.set_at) : ""}${x.set_by ? " โดย " + x.set_by : ""}`).join("\n") }, histText(r.code))]
             : name),
-          el("td", { class: "left" }, unit),
+          el("td", { class: "left" }, [unit, el("div", { class: "t10-pack-row small muted" }, ["ชิ้นต่อหน่วย ", pack]), packNote]),
           el("td", { class: "num" }, price),
           statusCell,
           upDown,
