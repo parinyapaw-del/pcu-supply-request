@@ -11,7 +11,7 @@ import {
 } from "./dashboard_calc.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, pcuOverviewRows } from "./dash_overview.js"; // 2ao
-import { missingNoticeHtml } from "./dash_ledger.js"; // 2as
+import { missingNoticeHtml, recvMissingCount } from "./dash_ledger.js"; // 2as · 2au
 
 export { esc };
 
@@ -265,7 +265,7 @@ export function kpiHtml(agg, data) {
         : "ตามที่กรอก ถ้ายังไม่กรอกใช้จ่ายจริง (เฉพาะหน่วยที่จ่ายครบแล้ว)")}
       ${tile("ใช้ไป", `<strong>${fmt(totals.used)}</strong>`, [
         coverage ? `กรอกเอง ${esc(coverage.with)}/${esc(coverage.total)} รายการ` : "ตามที่ รพ.สต. กรอก",
-        totals.est > 0 ? `ประมาณ ${fmt(totals.est)} (ยังไม่มีได้มาจริง)` : "",
+        recvMissingCount(data) ? "นับเฉพาะที่คำนวณได้ (ได้มาจริงยังกรอกไม่ครบ)" : "", // 2au: no estimate
       ].filter(Boolean).join(" · "))}
       ${pctTile}
     </div>${flagNote}`;
@@ -424,7 +424,7 @@ export function tableHtml(agg, data, { heat } = {}) {
   const more = total > ui.limit ? `<button type="button" class="btn btn-secondary dash-more">แสดงเพิ่ม (เหลืออีก ${total - ui.limit} รายการ)</button>` : "";
   const cellNote = heat ? "ช่องรายเดือน = จำนวน (บรรทัดบน) / บาท (บรรทัดล่าง)" : `ค่ารายเดือน = ขอเบิก (${ui.mode === "baht" ? "บาท" : "จำนวน"})`;
   return `
-    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือเดือนถัดไป · “ประมาณ” = บางเดือนยังไม่มีได้มาจริง</p>
+    <p class="muted small" aria-live="polite">แสดง ${list.length} จาก ${total} รายการ · ${cellNote} · เฉลี่ย/เดือน = สะสมขอเบิก ÷ ${elapsed || "–"} รอบที่ผ่านไป (${ui.mode === "baht" ? "บาท" : "จำนวน"}) · แผนปี${ui.mode === "baht" ? "เป็นบาท = แผน × ราคาล่าสุด" : ""} · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือเดือนถัดไป · นับเฉพาะที่คำนวณได้ (ขาดได้มาจริงหรือคงเหลือ = ไม่นับ)</p>
     ${heat && total ? heatLegendHtml() : ""}
     ${total === 0 ? `<p class="muted">ไม่พบรายการ</p>` : `
     <div class="table-scroll dash-table-wrap">

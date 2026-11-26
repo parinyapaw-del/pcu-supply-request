@@ -226,7 +226,7 @@ async function pcuCore(DB, c, pcu, staff) {
     for (let i = 0; i < 4; i++) t[i] = i % 2 ? r2(t[i] + add[i]) : t[i] + add[i];
   }
   // 2as (Save's ledger): ใช้ไป of round M = what the round-M+1 sheet says — its used (typed, or stock.js-derived) — else
-  // คงเหลือ(M) + ได้มาจริง(M) + adj(M+1) − คงเหลือ(M+1), ยอดเบิก standing in for a missing ได้มาจริง (→ est slots = "≈", flag 1).
+  // คงเหลือ(M) + ได้มาจริง(M) + adj(M+1) − คงเหลือ(M+1). 2au: ได้มาจริง missing → unknown, flag 1 (no ยอดเบิก estimate).
   // Unknown (no row) when a count is missing · negative → unknown, flag 2. ledger[code][M] = [stock, req, recv|null, used|null, flag].
   const ledger = {};
   const ledKeys = new Set();
@@ -241,11 +241,13 @@ async function pcuCore(DB, c, pcu, staff) {
     const L = lineAt.get(key), N = lineAt.get(code0 + "|" + nextMonth(m));
     const lq = L ? L.q : 0, lrecv = L ? L.recv : 0;
     const assumedRecv = lq > 0 && lrecv === null;
+    // 2au (Save): no estimate — ได้มาจริง missing → ใช้ไป unknown (flag 1), never ยอดเบิก standing in. A typed used counts
+    // (calc_from used / none); a used derived from คงเหลือ (calc_from stock) rests on ได้มาจริง too → unknown when it is missing.
     let used = null, flag = 0;
-    if (N && N.u !== null) { used = N.u; if (N.cf === "stock" && assumedRecv) flag = 1; }
+    if (N && N.u !== null) { if (N.cf === "stock" && assumedRecv) flag = 1; else used = N.u; }
     else if (L && L.st !== null && N && N.st !== null) {
-      const e = r2(L.st + (assumedRecv ? lq : lrecv) + N.adj - N.st);
-      if (e >= 0) { used = e; if (assumedRecv) flag = 1; } else flag = 2;
+      if (assumedRecv) flag = 1;
+      else { const e = r2(L.st + lrecv + N.adj - N.st); if (e >= 0) used = e; else flag = 2; }
     }
     if (!L && used === null) continue;
     const code = linkedCode(lm, code0);
@@ -259,8 +261,7 @@ async function pcuCore(DB, c, pcu, staff) {
     withUsed.add(code);
     const price = L ? L.price : N.price;
     const t = ((monthly[code] ||= {})[m] ||= [0, 0, 0, 0, 0, 0, 0, 0]);
-    const j = flag === 1 ? 6 : 4;
-    t[j] += used; t[j + 1] = r2(t[j + 1] + used * price);
+    t[4] += used; t[5] = r2(t[5] + used * price); // 2au: est slots 6–7 stay 0
   }
   // 2as: what the PCU has not entered yet, per round — [requested lines, of which ได้มาจริง missing, lines with a คงเหลือ]
   const missing = {};
@@ -396,8 +397,8 @@ const LEDGER_CTE = (mode) => `WITH n AS (
          CASE WHEN COALESCE(pl.q,0) > 0 AND pl.k IS NULL AND (n.u IS NULL OR n.cf = 'stock') THEN 1 ELSE 0 END AS a
     FROM n LEFT JOIN pl ON pl.pcu = n.pcu AND pl.code = n.code AND pl.month = n.pm
    WHERE n.pm != ?)`;
-const LEDGER_SUMS = `SUM(CASE WHEN a = 0 THEN q ELSE 0 END), TOTAL(CASE WHEN a = 0 THEN q * ps END),
-  SUM(CASE WHEN a = 1 THEN q ELSE 0 END), TOTAL(CASE WHEN a = 1 THEN q * ps END)`;
+// 2au (Save): rows resting on a missing ได้มาจริง (a = 1) are not counted at all — the est slots stay 0
+const LEDGER_SUMS = `SUM(CASE WHEN a = 0 THEN q ELSE 0 END), TOTAL(CASE WHEN a = 0 THEN q * ps END), 0, 0`;
 
 const addTo = (map, k1, k2) => {
   let m = map.get(k1);

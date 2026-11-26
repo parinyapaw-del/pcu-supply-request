@@ -4206,25 +4206,25 @@ async function main() {
     const mv = (D, c, m) => (D.monthly[c] || {})[m] || [0, 0, 0, 0, 0, 0, 0, 0];
     const pX = mv(V, X.code, PREV)[1] / 5;
     eq([V.received_mode, mv(V, X.code, PREV)[2], mv(V, Y.code, PREV)[2]], ["pcu", 3, 0], "2as staff view, mode pcu: got X = report 3 (issued 5 ignored) · Y = 0 (no report; issued 2 ignored)");
-    eq([X, Y, Z].map((it) => [mv(V, it.code, PREV)[4], mv(V, it.code, PREV)[6]]), [[5, 0], [0, 6], [5, 0]],
-      "2as: ใช้ไป sits on PREV — X 10+3−8 = 5 · Y 20+4(ขอ)−18 = 6 ≈ · Z 7+0−2 = 5");
+    eq([X, Y, Z].map((it) => [mv(V, it.code, PREV)[4], mv(V, it.code, PREV)[6]]), [[5, 0], [0, 0], [5, 0]],
+      "2as: ใช้ไป sits on PREV — X 10+3−8 = 5 · 2au: Y has no ได้มาจริง → not counted (no ยอดเบิก estimate) · Z 7+0−2 = 5");
     eq([mv(V, X.code, CUR)[4], mv(V, X.code, CUR)[6]], [0, 0], "2as: CUR ใช้ไป unknown until the next sheet");
     ok(Math.abs(mv(V, X.code, PREV)[5] - 5 * pX) < 0.01, "2as: used baht = used × the round's price");
     eq([V.ledger[X.code][PREV], V.ledger[Y.code][PREV], V.ledger[Z.code][PREV], V.ledger[X.code][CUR]],
-      [[10, 5, 3, 5, 0], [20, 4, null, 6, 1], [7, 0, null, 5, 0], [8, 0, null, null, 0]],
-      "2as ledger [stock, req, ได้มาจริง|null, ใช้ไป|null, flag 1 = ยอดเบิกแทน]");
+      [[10, 5, 3, 5, 0], [20, 4, null, null, 1], [7, 0, null, 5, 0], [8, 0, null, null, 0]],
+      "2as ledger [stock, req, ได้มาจริง|null, ใช้ไป|null, flag] · 2au: flag 1 = ได้มาจริง missing → ใช้ไป null");
     eq([V.missing[PREV], V.missing[CUR]], [[2, 1, 3], [0, 0, 3]], "2as missing: PREV 2 requested, 1 without ได้มาจริง, 3 with คงเหลือ");
     eq(V.got_src, { pcu: 1, issuer: 0 }, "2as got_src: only the mode's source");
     eq(V.stock_latest[X.code], { round: CUR, stock: 8, got: 0 }, "2an stock_latest unchanged in shape (CUR stock-only → got 0)");
 
     const PV = await mustOk("pcuDashboard", { fy: FYD }, TP);
-    eq([PV.ledger[X.code][PREV], PV.ledger[Y.code][PREV], PV.received_mode], [[10, 5, 3, 5, 0], [20, 4, null, 6, 1], "pcu"], "2as PCU view: same ledger");
+    eq([PV.ledger[X.code][PREV], PV.ledger[Y.code][PREV], PV.received_mode], [[10, 5, 3, 5, 0], [20, 4, null, null, 1], "pcu"], "2as PCU view: same ledger");
 
     // network: deltas against the state before the setup · missing / recv_cmp per pcu
     const N1 = await netV();
     eq([X, Y, Z].map((it) => itemV(N1, it.code)[2] - itemV(N0, it.code)[2]), [3, 0, 0], "2as network items: got delta X 3 · Y 0 · Z 0");
-    eq([X, Y, Z].map((it) => [itemV(N1, it.code)[4] - itemV(N0, it.code)[4], itemV(N1, it.code)[6] - itemV(N0, it.code)[6]]), [[5, 0], [0, 6], [5, 0]],
-      "2as network items: used / ≈ deltas = the PCU view");
+    eq([X, Y, Z].map((it) => [itemV(N1, it.code)[4] - itemV(N0, it.code)[4], itemV(N1, it.code)[6] - itemV(N0, it.code)[6]]), [[5, 0], [0, 0], [5, 0]],
+      "2as network items: used deltas = the PCU view (2au: Y not counted, est slot 0)");
     eq(N1.missing[P][PREV], [2, 1, 3], "2as network missing[pcu][round]");
     eq(N1.recv_cmp[P], [1, 1, Math.round(2 * pX * 100) / 100, 0, 1], "2as recv_cmp: X both (3 vs 5, |2| × price) · Y dispenser only");
     eq(N1.pcus.find((x) => x.code === P).got_baht > 0, true, "2an pcus[].got_baht includes the PCU report");
@@ -4244,7 +4244,7 @@ async function main() {
     // removing the report (mode pcu) → X ได้มาจริง unknown → ยอดเบิก 5 stands in: 10+5−8 = 7 ≈
     await mustOk("pcuReceivedSave", { month: PREV, lines: [{ code: X.code, qty: null }] }, TP);
     const V3 = await mustOk("adminDashboard", { fy: FYD, pcu: P }, ADM2);
-    eq([mv(V3, X.code, PREV)[2], mv(V3, X.code, PREV)[6], V3.ledger[X.code][PREV]], [0, 7, [10, 5, null, 7, 1]], "2as: report removed → got 0, used 7 ≈ (ยอดเบิกแทน)");
+    eq([mv(V3, X.code, PREV)[2], mv(V3, X.code, PREV)[6], V3.ledger[X.code][PREV]], [0, 0, [10, 5, null, null, 1]], "2au: report removed → got 0, ใช้ไป unknown (no ยอดเบิก estimate)");
 
     for (const m of [CUR, PREV]) await mustOk("devDeleteRequest", { pcu: P, month: m });
   }

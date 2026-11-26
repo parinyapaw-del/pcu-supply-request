@@ -276,12 +276,13 @@ export function buildCsv(data, rows) {
   const rounds = data.rounds || [];
   const elapsed = num(data.elapsed);
   const head = ["รหัส", "รายการ", "หน่วย", "หน่วยจ่าย", ...rounds.map((r) => `ขอเบิก ${shortRound(r)}`),
-    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้มาจริง", "ใช้ไป", "ใช้ไป (ประมาณจากคงเหลือ)", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
+    "สะสมขอเบิก (จำนวน)", "สะสมขอเบิก (บาท)", "ได้มาจริง", "ใช้ไป", "แผนปี", "% แผน", "เฉลี่ย/เดือน", "คาดทั้งปี"];
   const r2 = (x) => Math.round(x * 100) / 100;
   return buildCsvText(head, rows.map((r) => {
     const avg = avgPerMonth(r.cq, elapsed);
     return [
-      r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq), r2(r.eq),
+      r.code, r.name, r.unit, r.group, ...r.rq.map(r2), r2(r.cq), r2(r.cb), r2(r.gq), r2(r.uq), // 2au: no ใช้ไป (ประมาณ) column
+     
       r.planQty > 0 ? r.planQty : "", r.planQty > 0 ? `${Math.round((r.cq / r.planQty) * 1000) / 10}%` : "",
       avg == null ? "" : r2(avg), avg == null ? "" : r2(avg * 12),
     ];

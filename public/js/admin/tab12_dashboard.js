@@ -16,7 +16,7 @@ import { mountShortage } from "./shortage.js";
 import { formatQty } from "../units.js"; // 2ao
 import { mount as mountOverview, networkOverviewRows, pcuOverviewRows } from "../pages/dash_overview.js"; // 2ao
 import { mount as mountHeat } from "../pages/dash_heat.js"; // 2aq
-import { netMissingCardHtml, pcuMismatchCardHtml, recvCmpCardHtml } from "../pages/dash_ledger.js"; // 2as
+import { netMissingCardHtml, pcuMismatchCardHtml, recvCmpCardHtml, recvIncompleteNote } from "../pages/dash_ledger.js"; // 2as · 2au
 
 const ANOM_PAGE = 30;
 const STOCK_NET_PAGE = 10;
@@ -238,7 +238,7 @@ export function renderTab12(container, ctx) {
     box.classList.remove("is-loading");
     box.innerHTML = `
       <h2>แดชบอร์ดภาพรวมเครือข่าย</h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง คิดด้วยยอดเบิกแทน อาจไม่ถูกต้อง)</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่าง รอบทดลอง และ รพ.สต. กลุ่มทดลอง) · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป · นับเฉพาะที่คำนวณได้ (ขาดคงเหลือหรือได้มาจริง = ไม่นับ)${recvIncompleteNote(d)}</p>
       ${controlsHtml(d, groups, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)} — เมื่อ รพ.สต. ส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : `
       <div id="adm-body">
@@ -485,7 +485,7 @@ export function renderTab12(container, ctx) {
     box.innerHTML = `
       <p class="dash-back"><button type="button" class="btn btn-secondary btn-sm" id="adm-back">← กลับภาพรวมเครือข่าย</button></p>
       <h2>${esc(name)} <span class="muted small">${esc((d.pcu && d.pcu.code) || "")}</span></h2>
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป (≈ ยังไม่กรอกได้มาจริง คิดด้วยยอดเบิกแทน อาจไม่ถูกต้อง)</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(d.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว · ได้มาจริง = ${d.received_mode === "issuer" ? "ที่หน่วยจ่ายบันทึก" : "ที่ รพ.สต. กรอก"} · ใช้ไปของรอบ = คงเหลือ + ได้มาจริง − คงเหลือรอบถัดไป · นับเฉพาะที่คำนวณได้ (ขาดคงเหลือหรือได้มาจริง = ไม่นับ)${recvIncompleteNote(d)}</p>
       ${controlsHtml(d, ordered, { mode: false })}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">รพ.สต.นี้ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(d.fy)}</div>${patternHtml(d)}` : bodyShellHtml()}`;
     box.querySelector("#adm-back").addEventListener("click", backToOverview);

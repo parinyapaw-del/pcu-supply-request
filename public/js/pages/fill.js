@@ -680,6 +680,7 @@ function patchForEdit(modeB, base, line, field, value) {
     }
     patch.calc_from = "stock";
   } else if (field === "used") {
+    if (!modeB || !base) { patch.calc_from = null; return patch; } // 2au: no baseline → ใช้ไป typed as is, nothing computed
     if (value == null) {
       if (line.calc_from === "used") { patch.calc_from = null; patch.stock = null; }
       return patch;
@@ -923,13 +924,13 @@ function qtyWarnText(app, month, item) {
   return `ตรวจหน่วย: นับเป็น “${unit}”${pk ? ` (${pk.n.toLocaleString("en-US")} ${pk.piece}/${unit})` : ""}`;
 }
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
-// 2ad (H5): the reason ใช้ไป is disabled + what to do instead
-const NO_BASE_TITLE = "ยังไม่เคยมีข้อมูลคงเหลือ — ยังคำนวณไม่ได้ (กรอกคงเหลือเองได้)";
+// 2au (Save): no คงเหลือ last round → ใช้ไป still typeable, but nothing is computed — say so and what makes it work next round
+const NO_BASE_TITLE = "รอบก่อนไม่มีคงเหลือ — กรอกใช้ไปได้ แต่ระบบคำนวณคงเหลือให้ไม่ได้ (กรอกคงเหลือเอง) · อยากให้รอบหน้าคำนวณได้ ต้องกรอกคงเหลือรอบนี้";
 
-// ใช้ไป input (mode B): disabled when the row has no baseline (Q13).
+// ใช้ไป input (mode B): 2au — always editable (Q13 disabled it without a baseline); no baseline = plain typing, calc_from null.
 function usedInputHtml(app, month, item, line, editable) {
   const base = baselineOf(app, month, item.code);
-  return stockInputHtml(item, "used", line.used, editable && !!base, base ? "" : NO_BASE_TITLE);
+  return stockInputHtml(item, "used", line.used, editable, base ? "" : NO_BASE_TITLE);
 }
 
 // 2ad: grey notes under the item name — cancelled item (whole row read-only) · qty-locked line (OP/PP read-only)

@@ -7,6 +7,7 @@ import * as auth from "../auth.js";
 import { esc, formForRequest, alertDialog } from "./common.js";
 import { ui, ROW_PAGE, controlsHtml, bodyShellHtml, createBody } from "./dashboard_parts.js";
 import { isEmpty, unitGroups } from "./dashboard_calc.js";
+import { recvIncompleteNote } from "./dash_ledger.js"; // 2au
 
 export async function renderDashboard(container, app) {
   const box = document.createElement("div");
@@ -88,7 +89,7 @@ export async function renderDashboard(container, app) {
     const empty = isEmpty(data);
     box.innerHTML = `
       ${headHtml}
-      <p class="muted dash-sub">ปีงบประมาณ ${esc(data.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่างและรอบทดลอง) · ใช้ไปที่ขึ้น “ประมาณ” คำนวณจากคงเหลือ 2 เดือนติดกัน</p>
+      <p class="muted dash-sub">ปีงบประมาณ ${esc(data.fy)} · นับเฉพาะใบเบิกที่ส่งแล้ว (ไม่รวมฉบับร่างและรอบทดลอง) · ใช้ไป = คงเหลือ + ได้มาจริง − คงเหลือเดือนถัดไป นับเฉพาะที่คำนวณได้${recvIncompleteNote(data)}</p>
       ${controlsHtml(data, groups)}
       ${empty ? `<div class="notice notice-info dash-empty" role="status">ยังไม่มีข้อมูลการเบิกในปีงบ ${esc(data.fy)} — เมื่อส่งใบเบิกแล้ว ข้อมูลจะแสดงที่นี่</div>` : bodyShellHtml()}`;
 

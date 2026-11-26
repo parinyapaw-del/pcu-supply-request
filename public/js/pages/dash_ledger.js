@@ -29,8 +29,10 @@ export function ledgerTableHtml(byM, mode) {
     // 2as wording (Save): an estimate "may be wrong" · cannot compute → say which figure is missing
     const recvMissing = num(req) > 0 && recv == null && !!nx;
     // 2at (Save): no ≈ sign, no blame — "ประมาณ" + why, cannot compute = one short neutral tag (the reason in the tooltip)
-    if (used != null) usedCell = flag === 1 ? `ประมาณ ${formatQty(used)} <span class="muted small">(ยังไม่มีได้มาจริง)</span>` : formatQty(used);
+    // 2au (Save): no estimate any more — ได้มาจริง missing (flag 1) = cannot compute
+    if (used != null) usedCell = formatQty(used);
     else if (!nx) usedCell = tag("รอเดือนถัดไป"); // newest round: not due yet (unknown)
+    else if (flag === 1) usedCell = tipTag("ยังคำนวณไม่ได้", st == null ? "ยังไม่มีคงเหลือและได้มาจริง" : "ยังไม่มีได้มาจริง");
     else if (st == null) usedCell = tipTag("ยังคำนวณไม่ได้", recvMissing ? "ยังไม่มีคงเหลือและได้มาจริง" : "ยังไม่มีคงเหลือ");
     else if (flag === 2) usedCell = tipTag("ยังคำนวณไม่ได้", "คงเหลือเพิ่มขึ้นมากกว่าที่ได้มา");
     else if (nx[0] == null) usedCell = tipTag("ยังคำนวณไม่ได้", "ยังไม่มีคงเหลือเดือนถัดไป");
@@ -55,6 +57,19 @@ function dueOf(missing) {
     if (req > 0 && st === 0) stock.push(m);
   });
   return { recv, stock };
+}
+
+/** 2au: number of requested lines whose ได้มาจริง is due but missing — PCU payload {round: [..]} or network {pcu: {round: [..]}}. */
+export function recvMissingCount(data) {
+  const miss = data.missing || {};
+  const one = (m) => dueOf(m).recv.reduce((a, r) => a + r[1], 0);
+  const vals = Object.values(miss);
+  return vals.length && !Array.isArray(vals[0]) ? vals.reduce((a, m) => a + one(m), 0) : one(miss);
+}
+/** 2au: " · ได้มาจริงยังกรอกไม่ครบ (n รายการ) …" for a caption, "" when complete. */
+export function recvIncompleteNote(data) {
+  const n = recvMissingCount(data);
+  return n ? ` · <strong>ได้มาจริงยังกรอกไม่ครบ</strong> (${formatInt(n)} รายการ) — แสดงเท่าที่มี` : "";
 }
 
 /** Notice on the PCU dashboard / admin per-PCU view: what this PCU has not entered yet (empty string when nothing). */
@@ -86,7 +101,7 @@ export function netMissingCardHtml(data, names) {
       <td>${r || dash}</td><td>${s || dash}</td></tr>`;
   }).filter(Boolean);
   return `<div class="dash-card" id="adm-missing"><h3>ข้อมูลที่ยังไม่กรอก</h3>
-    <p class="muted small dash-caption">ได้มาจริง (${mode === "issuer" ? "หน่วยจ่ายกรอก" : "รพ.สต. กรอก"}) ของรอบที่ทำใบเดือนถัดไปแล้ว = ขาด/ขอเบิก รายการ · คงเหลือ = รอบที่ขอเบิกแต่ไม่กรอกคงเหลือเลย · ใช้ไปของรายการที่ขาดได้มาจริงเป็นยอดประมาณ (คิดจากยอดเบิก) · กดชื่อเพื่อดูราย รพ.สต.</p>
+    <p class="muted small dash-caption">ได้มาจริง (${mode === "issuer" ? "หน่วยจ่ายกรอก" : "รพ.สต. กรอก"}) ของรอบที่ทำใบเดือนถัดไปแล้ว = ขาด/ขอเบิก รายการ · คงเหลือ = รอบที่ขอเบิกแต่ไม่กรอกคงเหลือเลย · รายการที่ขาดได้มาจริงไม่นับในใช้ไป · กดชื่อเพื่อดูราย รพ.สต.</p>
     ${rows.length ? `<div class="table-scroll"><table class="dash-table dash-table-sm"><thead><tr><th scope="col">รพ.สต.</th><th scope="col">ได้มาจริงยังไม่กรอก</th><th scope="col">ไม่ได้กรอกคงเหลือ</th></tr></thead>
       <tbody>${rows.join("")}</tbody></table></div>` : `<p class="muted">กรอกครบทุกแห่ง</p>`}</div>`;
 }

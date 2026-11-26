@@ -269,6 +269,7 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
            // · 2an est = "ใช้ไป (ประมาณ)": a line with stock not null and used null whose previous round (prevMonth, same code, counted request,
            // inside the fy) has stock not null → prev stock + prev received + adj − stock, only when > 0 (received = got of that line by this view's
            // rule, else its op+pp — as stock.js) · the UI adds est to the used series and marks it ≈ · 2v links: est of an old code counts under the new code
+           // · **2au: superseded — est_qty / est_baht are always 0** (no estimate; see ledger below)
            // baht = qty × price_snapshot (fallback priceFor(fy, code, round), 2p) — same price for req/got/used · baht rounded to 2 decimals
   prev_fy: { months:["2025-11", …], qty:[…], baht:[…] } | null,
            // actual_prev of fy−1 for this pcu, ALIGNED TO `rounds` (same length, index i ↔ rounds[i]): months[i] = the Excel/calendar month of the
@@ -279,9 +280,11 @@ Always `token.pcu` (a `pcu` param is ignored). Counts **`submitted`/`issued` req
   item_src: { code: { round: [req_q, req_b, pcu_q, pcu_b, pcu_n, iss_q, iss_b, iss_n, n] } },
   // 2as (brief 2as): ได้มาจริง = config.received_mode's figure only ("pcu" = received_reports.qty · "issuer" = issued_total, PCU view done units
   // only) — got (V8 slots 2–3) carries no other source. ใช้ไป (slots 4–5) is now the ledger's, on ROUND M (not the round it was typed on):
-  // the round-M+1 line's used (typed / stock.js-derived) else stock(M) + ได้มาจริง(M) + adj(M+1) − stock(M+1); ได้มาจริง missing → ยอดเบิก and
-  // the figure goes to slots 6–7 (the "≈" part); negative / a count missing → nothing. Lines of nextMonth(last fy round) close the fy's last round.
-  ledger: { code: { round: [stock|null, req, recv|null, used|null, flag] } }, // flag 0 · 1 = ยอดเบิกแทนได้มาจริง · 2 = negative (unknown)
+  // the round-M+1 line's used (typed / stock.js-derived) else stock(M) + ได้มาจริง(M) + adj(M+1) − stock(M+1); negative / a count missing →
+  // nothing. **2au (Save): ได้มาจริง missing (requested line) → ใช้ไป unknown, never ยอดเบิก standing in** — also for a used the M+1 line derived
+  // from คงเหลือ (calc_from stock); a typed used (calc_from used / null) counts. Slots 6–7 (est) are always 0 (kept for the V8 shape).
+  // Lines of nextMonth(last fy round) close the fy's last round.
+  ledger: { code: { round: [stock|null, req, recv|null, used|null, flag] } }, // flag 0 · 1 = ได้มาจริง missing → used null (2au) · 2 = negative (unknown)
   missing: { round: [requested lines, of which ได้มาจริง missing, lines with a คงเหลือ] }, received_mode: "pcu"|"issuer",
                                // 2aq: requested lines only (op+pp > 0) · n = lines · pcu_* = received_reports (qty 0 counts: pcu_n 1, pcu_q 0)
                                // · iss_* = issued_total not null (PCU view: DONE units only, Q78) · 2v links → new code · baht = qty × line price
