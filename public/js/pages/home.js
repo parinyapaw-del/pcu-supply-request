@@ -215,7 +215,9 @@ function historyStatusBadge(h) {
   return '<span class="badge badge-warn">กำลังกรอก</span>';
 }
 
-function historyRowHtml(h) {
+// 2av (Save): a sent sheet of a past round of fy_current (often keyed by admin from paper) — the PCU fills คงเหลือ itself
+const stockOpenRow = (h, fyCur) => h.fy === fyCur && !h.trial && (h.status === "submitted" || h.status === "issued");
+function historyRowHtml(h, fyCur) {
   const title = `<strong>${esc(roundTitle(h.month, h))}</strong>${trialBadgeHtml(h)}`;
   if (h.status === "not_started") {
     return `
@@ -227,6 +229,7 @@ function historyRowHtml(h) {
   <details class="round-card round-card-collapsed" data-month="${esc(h.month)}">
     <summary>${title} ${historyStatusBadge(h)} <span class="badge badge-muted">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
+      ${stockOpenRow(h, fyCur) ? `<button type="button" class="btn btn-primary" data-older="${esc(h.month)}" data-go="fill">กรอกคงเหลือ</button>` : ""}
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์/ดาวน์โหลด</button>
       ${canReport(h) ? receivedBtnHtml(h.month) : ""}
@@ -239,18 +242,18 @@ function historyRowHtml(h) {
 function cardsHtml(app, V, F) {
   const b = app.boot;
   const parts = [];
+  if (V === F && b.next_round) parts.push(previewHtml(b.next_round)); // 2av (Save): newest round on top
   (b.rounds || []).forEach((r, i) => {
     if (V !== F && r.fy !== V) return;
     const sentR = ((requestOf(app, r.month) || {}).status || "").match(/submitted|issued/); // 2at: a sent request keeps คงเหลือ open
     parts.push(i > 0 && closedWhy(r) && !sentR ? collapsedHtml(app, r) : cardHtml(app, r));
   });
-  if (V === F && b.next_round) parts.push(previewHtml(b.next_round));
   const trialMonth = prevMonthKey(fiscalYearStartMonthKey(V));
   const shown = new Set((b.rounds || []).map((r) => r.month));
   (b.history || [])
     .filter((h) => (h.fy === V || (h.trial && h.month === trialMonth)) && !(V === F && shown.has(h.month)))
     .sort((a, c) => (a.month < c.month ? 1 : a.month > c.month ? -1 : 0))
-    .forEach((h) => parts.push(historyRowHtml(h)));
+    .forEach((h) => parts.push(historyRowHtml(h, b.config && b.config.fy_current)));
   return parts.join("");
 }
 
@@ -324,8 +327,8 @@ export async function renderHome(container, app) {
         btn.disabled = true;
         try {
           await loadOlderMonth(app, btn.dataset.older);
-          location.hash = btn.dataset.go === "print"
-            ? `#/print?month=${btn.dataset.older}`
+          location.hash = btn.dataset.go === "print" ? `#/print?month=${btn.dataset.older}`
+            : btn.dataset.go === "fill" ? `#/fill?month=${btn.dataset.older}` // 2av: คงเหลือ of a past round
             : `#/fill/summary?month=${btn.dataset.older}`;
         } catch (err) {
           btn.disabled = false;

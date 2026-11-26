@@ -48,13 +48,19 @@ export async function baselineFor(DB, pcu, month) {
   return out;
 }
 
+// 2av (Save, as the dashboards since 2au): last round requested something but no ได้มาจริง is known (received_src "requested") →
+// ยอดเบิก never stands in: calc_from is kept, the derived figure stays NULL until ได้มาจริง arrives (pcuReceivedSave / issue → recalc).
+export const estimatedBase = (base) => !!base && base.received_src === "requested" && (Number(base.op) || 0) + (Number(base.pp) || 0) > 0;
+
 // One line's stored outputs given its baseline entry (or undefined). line = {stock, used, adj, calc_from}.
 // No baseline (no entry / stock null) → calc_from forced null, stock/used kept as given. calc_from null → nothing computed.
+// 2av: an estimated baseline → the derived field NULL (unknown), the driver kept.
 export function computeLine(base, line) {
   const stock = line.stock ?? null, used = line.used ?? null;
   if (!base || base.stock === null || base.stock === undefined) return { stock, used, calc_from: null };
   const cf = CALC_FROM.includes(line.calc_from) ? line.calc_from : null;
   if (!cf) return { stock, used, calc_from: null };
+  if (estimatedBase(base)) return cf === "used" ? { stock: null, used, calc_from: cf } : { stock, used: null, calc_from: cf };
   const available = base.stock + (base.received || 0) + (line.adj ?? 0);
   const r2 = (n) => Math.round(n * 100) / 100; // 2ao: stock / used may carry 2 decimals — no float noise (0.3 − 0.1)
   if (cf === "used") {

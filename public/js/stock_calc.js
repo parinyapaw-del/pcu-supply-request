@@ -7,8 +7,16 @@ export function availableOf(base, line) {
 
 // The derived field of a line from its driver (`calc_from`): { stock } (driver used) or { used } (driver stock).
 // A negative result becomes null (Q14).
+// 2av: ได้มาจริง of last round unknown while something was requested → the derived field is unknown (stock.js estimatedBase)
+export const estimatedBase = (base) => !!base && base.received_src === "requested" && (Number(base.op) || 0) + (Number(base.pp) || 0) > 0;
+
 export function deriveFields(base, line) {
   if (!base || !line.calc_from) return {};
+  if (estimatedBase(base)) {
+    if (line.calc_from === "used" && line.used != null) return { stock: null };
+    if (line.calc_from === "stock" && line.stock != null) return { used: null };
+    return {};
+  }
   const avail = availableOf(base, line);
   const r2 = (n) => Math.round(n * 100) / 100; // 2ao: คงเหลือ / ใช้ไป may carry 2 decimals (server stock.js does the same)
   if (line.calc_from === "used" && line.used != null) {

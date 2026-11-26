@@ -133,7 +133,15 @@ export function trialNote(round) {
 
 // Months shown on the home page as editable rounds (current + previous).
 export function isActiveRound(app, month) {
-  return month === PRACTICE || app.boot.rounds.some((r) => r.month === month);
+  return month === PRACTICE || app.boot.rounds.some((r) => r.month === month) || isOlderStockOpen(app, month);
+}
+// 2av (Save): a past round of fy_current loaded via pcuGetMonth whose request was sent (often keyed by admin) — the PCU may fill
+// คงเหลือ / ใช้ไป on every item; the requested quantities stay closed (isQtyOpen false). The server allows it (saveLines: request
+// exists + sent + past the deadline → only stock / used / adj change).
+export function isOlderStockOpen(app, month) {
+  const o = app.older && app.older[month];
+  if (!o || !o.round || o.round.trial || o.round.fy !== app.boot.config.fy_current) return false;
+  return !!o.request && (o.request.status === "submitted" || o.request.status === "issued");
 }
 
 // 2at: past the round's deadline (server RoundInfo.past_deadline) — the requested quantities are closed, a sent request keeps
@@ -163,7 +171,7 @@ export function isEditable(app, month) {
 }
 // 2at: the requested quantities (OP / PP), "ไม่เบิก" and sending are open only up to the deadline.
 export function isQtyOpen(app, month) {
-  return isEditable(app, month) && !isPastDeadline(app, month);
+  return isEditable(app, month) && !isPastDeadline(app, month) && !isOlderStockOpen(app, month);
 }
 
 // Ceilings/plans in the bootstrap are for fy_current — only meaningful for rounds of that fiscal year.

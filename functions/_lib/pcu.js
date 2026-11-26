@@ -287,7 +287,10 @@ export async function pcuGetMonth(ctx, p) {
   const { view, unlocks } = await pcuMonthView(DB, pcu.code, p.month, cfg.fy_current);
   const rounds = await getRoundRows(DB, [p.month]);
   const opens = await specialOpenSet(DB, pcu.code, [p.month]);
-  const out = { month: p.month, ...view, unlocks, round: { ...roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month), special_open: opens.has(p.month) } };
+  const ri = roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month);
+  // 2av: a round older than prevRound is closed for ยอดขอ whatever its deadline (as saveLines' closedReason)
+  if (p.month < currentMonth() && !ri.locked) ri.past_deadline = true;
+  const out = { month: p.month, ...view, unlocks, round: { ...ri, special_open: opens.has(p.month) } };
   // the bound form version, only when it differs from the latest (2d)
   const fid = view.request && view.request.form_version_id;
   const latest = await latestForm(DB, cfg.fy_current);
@@ -323,6 +326,8 @@ export async function saveLines(ctx, p) {
     formForFy(DB, fy, cfg.fy_current),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
+  // 2av (Save): an older round takes คงเหลือ only on a sheet of fy_current that is not the trial round
+  if (month < cal && (fy !== cfg.fy_current || (!!cfg.trial_month && month === cfg.trial_month))) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
   // 2at: a round the admin locked (= closed early) or past its deadline: a sent request keeps its requested quantities (คงเหลือ / ใช้ไป
   // still change, ได้มาจริง via pcuReceivedSave); one never sent is closed (admin keys it from paper). A special opening for this PCU
   // (round_opens, adminRoundOpen) lifts both. Admin's adminSaveLines is not affected.
@@ -382,7 +387,9 @@ function pastDeadlineOf(month, roundRow, cfg) {
 }
 // 2at: why the round takes no request change for this PCU ("รอบนี้ปิดรับแล้ว" admin lock · "เลยกำหนดส่งแล้ว") or null (open / special opening)
 async function closedReason(DB, month, roundRow, cfg, pcu) {
-  const why = roundRow && roundRow.locked ? "รอบนี้ปิดรับแล้ว" : pastDeadlineOf(month, roundRow, cfg) ? "เลยกำหนดส่งแล้ว" : null;
+  // 2av: a round older than prevRound is closed whatever its deadline (e.g. no deadline_date) — only คงเหลือ / ใช้ไป of a sent sheet
+  const why = roundRow && roundRow.locked ? "รอบนี้ปิดรับแล้ว"
+    : month < currentMonth() || pastDeadlineOf(month, roundRow, cfg) ? "เลยกำหนดส่งแล้ว" : null;
   if (!why) return null;
   const open = await DB.prepare(`SELECT 1 AS x FROM round_opens WHERE month = ? AND pcu = ?`).bind(month, pcu).first();
   return open ? null : why;
@@ -545,6 +552,8 @@ async function noOrderContext(ctx, month) {
     DB.prepare(`SELECT locked, deadline_date FROM rounds WHERE month = ?`).bind(month).first(),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
+  // 2av (Save): an older round takes คงเหลือ only on a sheet of fy_current that is not the trial round
+  if (month < cal && (fy !== cfg.fy_current || (!!cfg.trial_month && month === cfg.trial_month))) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
   const cfg = publicConfig(await getConfigAll(DB), monthFy(cur));
   const why = await closedReason(DB, month, roundRow, cfg, pcu.code); // 2at: admin lock / past deadline, unless opened for this PCU
   if (why) throw err("CONFLICT", `${why} — เปลี่ยนแปลงไม่ได้`);

@@ -13,7 +13,7 @@ import {
   alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow, showDialog,
 } from "./common.js";
 import { trySend, collectIssues, sendUi, lineTotal } from "./send.js";
-import { availableOf, deriveFields } from "../stock_calc.js";
+import { availableOf, deriveFields, estimatedBase } from "../stock_calc.js";
 import { formatQty, packOf, piecesHint, qtyWarn, round2 } from "../units.js";
 
 let unsubStatus = null;
@@ -663,6 +663,7 @@ function baselineOf(app, month, code) {
 // "ok" | "nobase" | "neg" (ใช้ไป > available: red, stock not computed) | "surplus" (stock > available: yellow + put-as-received)
 function calcStatus(base, line) {
   if (!base) return "nobase";
+  if (estimatedBase(base)) return "norecv"; // 2av: last round's ได้มาจริง unknown — the derived figure waits for it
   if (line.calc_from === "used" && line.used != null && line.stock == null) return "neg";
   if (line.calc_from === "stock" && line.stock != null && line.used == null) return "surplus";
   return "ok";
@@ -673,14 +674,20 @@ function calcStatus(base, line) {
 function patchForEdit(modeB, base, line, field, value) {
   const patch = { [field]: value };
   if (field === "stock") {
-    if (!modeB || !base) { patch.calc_from = null; return patch; }
+    if (!modeB || !base) { // 2av: a derived ใช้ไป of an earlier calculation is stale once คงเหลือ is typed by hand
+      if (line.calc_from === "stock") patch.used = null;
+      patch.calc_from = null; return patch;
+    }
     if (value == null) {
       if (line.calc_from === "stock") { patch.calc_from = null; patch.used = null; } // driver cleared: its derived value goes too
       return patch;
     }
     patch.calc_from = "stock";
   } else if (field === "used") {
-    if (!modeB || !base) { patch.calc_from = null; return patch; } // 2au: no baseline → ใช้ไป typed as is, nothing computed
+    if (!modeB || !base) { // 2au: no baseline → ใช้ไป typed as is, nothing computed · 2av: drop a stale derived คงเหลือ
+      if (line.calc_from === "used") patch.stock = null;
+      patch.calc_from = null; return patch;
+    }
     if (value == null) {
       if (line.calc_from === "used") { patch.calc_from = null; patch.stock = null; }
       return patch;
@@ -699,6 +706,7 @@ const hasActual = (base) => base.received_src === "pcu" || base.received_src ===
 const inLabel = (base) => (base.received_src === "issued" ? "จ่ายจริง" : hasActual(base) || base.received_src === undefined ? "ได้มาจริง" : "ยอดขอ");
 function calcHintText(base, line) {
   const adj = Number(line.adj) || 0;
+  if (estimatedBase(base)) return `ยกมา ${formatQty(base.stock)} + ได้มาจริง (ยังไม่ได้กรอก)`; // 2av: no ยอดเบิก stand-in
   const est = base.received_src !== undefined && !hasActual(base);
   return `ยกมา ${formatQty(base.stock)} + ${inLabel(base)} ${formatInt(Number(base.received) || 0)}${adj ? ` (${adj > 0 ? "+" : "−"} ปรับ ${formatInt(Math.abs(adj))})` : ""} = ${est ? "ประมาณ " : ""}${formatQty(round2(availableOf(base, line)))}`
     + (est ? " · ยังไม่มีข้อมูลได้มาจริง ยอดนี้อาจยังไม่ถูก" : "");
@@ -758,7 +766,9 @@ function refreshRowCalc(app, month, item) {
     const msg = root.querySelector("[data-calc-msg]");
     if (msg) {
       const editable = !!stockEl && !stockEl.disabled;
-      if (st === "neg") {
+      if (st === "norecv") {
+        msg.innerHTML = `<div class="ghost-line calc-note">${esc(NO_RECV_TITLE)}</div>`;
+      } else if (st === "neg") {
         const pk = packOf(item);
         msg.innerHTML = `<div class="ghost-line calc-note">ยังคำนวณคงเหลือไม่ได้ — ใช้ไปมากกว่ายอดที่มี (${formatQty(round2(availableOf(base, line)))})${pk ? ` · นับเป็น${esc(item.unit || "หน่วย")} (${esc(pk.n.toLocaleString("en-US"))} ${esc(pk.piece)})` : ""}</div>`;
       } else if (st === "surplus") {
@@ -788,7 +798,8 @@ function negativeCalcRows(app, month) {
   getOrderedSteps(app.boot.form).forEach((step) => {
     getActiveItemRows(step).forEach((it) => {
       const l = request.lines[it.code];
-      if (l && l.calc_from && l.used != null && l.stock == null && !hidden.has(it.code)) out.push({ code: it.code, name: it.name, stepCode: step.code });
+      if (l && l.calc_from && l.used != null && l.stock == null && !hidden.has(it.code)
+        && !estimatedBase(baselineOf(app, month, it.code))) out.push({ code: it.code, name: it.name, stepCode: step.code });
     });
   });
   return out;
@@ -926,6 +937,8 @@ function qtyWarnText(app, month, item) {
 const CALC_TAG = (field) => `<span class="calc-tag" data-calc-tag="${field}" hidden>คำนวณ</span>`;
 // 2au (Save): no คงเหลือ last round → ใช้ไป still typeable, but nothing is computed — say so and what makes it work next round
 const NO_BASE_TITLE = "รอบก่อนไม่มีคงเหลือ — กรอกใช้ไปได้ แต่ระบบคำนวณคงเหลือให้ไม่ได้ (กรอกคงเหลือเอง) · อยากให้รอบหน้าคำนวณได้ ต้องกรอกคงเหลือรอบนี้";
+// 2av (Save): last round's ได้มาจริง unknown → no estimate from ยอดเบิก; the figure fills in once it is reported
+const NO_RECV_TITLE = "รอบก่อนยังไม่ได้กรอกได้มาจริง — ยังคำนวณไม่ได้ · กรอก \"รายงานของได้จริง\" ของรอบก่อน แล้วระบบจะคำนวณให้เอง";
 
 // ใช้ไป input (mode B): 2au — always editable (Q13 disabled it without a baseline); no baseline = plain typing, calc_from null.
 function usedInputHtml(app, month, item, line, editable) {
