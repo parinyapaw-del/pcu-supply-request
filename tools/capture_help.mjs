@@ -223,7 +223,7 @@ const SHOTS = (c) => [
     marks: { pinbtn: ".notice-bar a::เปลี่ยน PIN", logout: "#btn-logout" } },
   { img: "login_3.png", role: "pcu", url: "index.html#/pin", clip: { from: "h2::เปลี่ยน PIN", to: "#link-cancel-pin" },
     marks: { old: "#pin-old", nw: "#pin-new", confirm: "#pin-confirm", go: "#btn-change-pin" } },
-  { img: "fill_1.png", role: "pcu", url: "index.html#/home", clip: { from: ".fy-line", to: ".round-card-preview" }, // 2am: next round = a line after the open cards
+  { img: "fill_1.png", role: "pcu", url: "index.html#/home", clip: { from: ".fy-line", to: `.round-card:has(button[data-fill="${c.OPEN}"])` }, // 2av: newest first — next-round preview, then the open card
     marks: { card: `button[data-fill="${c.OPEN}"]`, next: ".round-card-preview .badge, .round-card-preview .round-status" } },
   { img: "fill_2.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: "#app-header", to: `input[data-field="op"]`, pad: 60 },
     marks: { pills: ".progress-pill.active", search: "#item-search", stock: `input[data-field="stock"]`, op: `input[data-field="op"]` } },
@@ -257,10 +257,10 @@ const SHOTS = (c) => [
   { img: "noorder_2.png", role: "pcu", url: "index.html#/home", actions: [{ click: `button[data-noorder="on"][data-month="${c.OPEN}"]` }, { waitFor: ".dialog-box" }],
     clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 },
     marks: { warn: ".dialog-box .notice-warn", cancel: ".dialog-box .btn-secondary", ok: ".dialog-box .btn-primary" } },
-  { img: "received_1.png", role: "pcu", url: "index.html#/received?month=2026-12", clip: { from: "h2::รายงานของได้จริง", to: ".rcv-mismatch", pad: 16 },
-    marks: { date: "#rcv-date", full: "#rcv-fill", qty: ".rcv-qty", flag: ".rcv-flag:not([hidden])" } },
+  { img: "received_1.png", role: "pcu", url: "index.html#/received?month=2026-12", clip: { from: "h2::รายงานของได้จริง", to: `.rcv-row[data-code="P1-07"]`, pad: 16 },
+    marks: { date: "#rcv-date", full: "#rcv-fill", qty: ".rcv-qty", note: `.rcv-row[data-code="P1-07"] .rcv-note` } }, // 2aw: no ไม่ตรง badge since 2at
   { img: "flags_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`, clip: { from: `tr[data-code="P1-02"]`, to: `tr[data-code="P1-05"]`, pad: 0 },
-    marks: { out: `tr[data-code="P1-02"] .stock-flag`, over: `tr[data-code="P1-03"] .limit-plan`, pending: `tr[data-code="P1-04"] .stock-flag`, cancelled: `tr[data-code="P1-05"] .row-note` } },
+    marks: { out: `tr[data-code="P1-02"] .stock-flag`, pending: `tr[data-code="P1-04"] .stock-flag`, cancelled: `tr[data-code="P1-05"] .row-note` } },
   { img: "flags_2.png", role: "pcu", url: "index.html#/fill/P1?month=2026-12", clip: { from: `tr[data-code="P1-06"]`, to: `tr[data-code="P1-07"]`, pad: 0 },
     marks: { locked: `tr[data-code="P1-06"] .row-note` } },
   { img: "feedback_1.png", role: "pcu", url: "index.html#/home", widget: true, actions: [{ click: "#fb-fab" }], clip: { x: 640, y: 0, w: 640, h: 800 },
@@ -324,9 +324,7 @@ const SHOTS = (c) => [
       { click: `.admin-modal [data-role="ok"]` }, { waitFor: ".admin-modal input" }],
     clip: { from: ".admin-modal", to: ".admin-modal", pad: 16 }, marks: { phrase: ".admin-modal input", ok: ".admin-modal .btn-primary" } },
   // ---- 2ao (after the others: they type into the open round's draft) ----
-  { img: "unit_1.png", role: "pcu", url: `index.html#/fill/P1?month=${c.OPEN}`,
-    actions: [{ type: [`tr[data-code="P1-14"] input[data-field="op"]`, "900"], replace: true }, { waitFor: ".dialog-box" }],
-    clip: { from: ".dialog-box", to: ".dialog-box", pad: 8 }, marks: { fix: ".dialog-box .btn-secondary", ok: ".dialog-box .btn-primary" } },
+  // unit_1 (2ao popup) dropped in 2aw: 2at made it a gray "ตรวจหน่วย" line, and the manual no longer shows it
   { img: "dashboard_3.png", role: "pcu", url: "index.html#/dashboard", clip: { from: "#dash-overview", to: "#dash-overview", pad: 8, maxH: 700 },
     marks: { search: ".ov-search", sort: ".ov-sort" } },
   { img: "announce_2.png", role: "pcu", url: "index.html#/home", // a "show 3 times" announcement exists only for this image
@@ -473,6 +471,7 @@ async function checkManuals(shots) {
   const topics = [...pcu, ...staff.DISPENSER, ...staff.ADMIN_PARTS.flatMap((p) => p.topics)];
   const used = new Set(), problems = [];
   for (const t of topics) for (const sh of t.shots || []) {
+    if (!sh.img) continue; // a text-only block (help_render.js shows steps without an image)
     used.add(sh.img);
     if (!shots[sh.img]) { problems.push(`${t.id}: image ${sh.img} was not captured`); continue; }
     for (const m of sh.marks || []) if (!shots[sh.img].marks[m.sel_key]) problems.push(`${t.id}: ${sh.img} has no mark "${m.sel_key}"`);

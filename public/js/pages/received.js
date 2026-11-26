@@ -103,7 +103,7 @@ export async function renderReceived(container, app, params) {
         <span class="muted small" id="rcv-dirty"></span>
         <button type="button" class="btn btn-primary" id="rcv-save">บันทึก</button>
       </div>`;
-    wire(issued);
+    wire();
   };
 
   // {code: {qty, note, qtyChanged}} for rows whose box differs from what is stored
@@ -123,16 +123,10 @@ export async function renderReceived(container, app, params) {
     return out;
   };
 
-  function wire(issued) {
+  function wire() {
     const dirtyEl = box.querySelector("#rcv-dirty");
     const refresh = (row) => {
-      if (row) {
-        const code = row.dataset.code, got = issued[code];
-        const v = row.querySelector(".rcv-qty").value.trim();
-        const mm = !!got && v !== "" && Number(v) !== Number(got.total);
-        row.classList.toggle("rcv-mismatch", mm);
-        row.querySelector(".rcv-flag").hidden = !mm;
-      }
+      // 2aw: no "ไม่ตรง" badge on the PCU page since 2at (admin tab only) — the old lookup threw on every input
       const n = changes().length;
       dirtyEl.textContent = n ? `ยังไม่บันทึก ${n} รายการ` : "";
     };
