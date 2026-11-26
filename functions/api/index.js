@@ -68,6 +68,7 @@ const ADMIN = {
   adminSaveLines, // 2w — admin keys / edits / sends a request for a pcu
   adminSetRound: admin.adminSetRound,
   adminLockRound: admin.adminLockRound,
+  adminRoundOpen: admin.adminRoundOpen, // 2at
   adminSetLimitMode: admin.adminSetLimitMode,
   adminSetConfig: admin.adminSetConfig,
   adminSetLimit: admin.adminSetLimit,

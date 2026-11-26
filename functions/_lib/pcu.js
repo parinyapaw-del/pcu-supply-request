@@ -203,6 +203,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
   // 2p: price of each shown round (price_history) where it differs from the form price
   const prices = await roundPriceOverrides(priceHistories(DB), form, [cur, prev], monthFy, boundOf);
 
+  const opens = await specialOpenSet(DB, code, [cur, prev]); // 2at
   return {
     server_time: nowIso(), current_month: cal, current_round: cur,
     pcu: {
@@ -214,7 +215,7 @@ export async function buildPcuBootstrap(ctx, pcuRow) {
     form_version_id: form ? form.id : null,
     form: formPublic(form, PCU_FORM),
     forms,
-    rounds: [cur, prev].map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
+    rounds: [cur, prev].map((m) => ({ ...roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month), special_open: opens.has(m) })), // 2at
     next_round: { ...roundInfo(nxt, roundRows.get(nxt), cfg.deadline_day, cfg.trial_month), opens_on: `${cur}-01` },
     history,
     hidden: hiddenRes.results.map((r) => r.item_code),
@@ -285,7 +286,8 @@ export async function pcuGetMonth(ctx, p) {
   const cfg = publicConfig(await getConfigAll(DB), monthFy(round));
   const { view, unlocks } = await pcuMonthView(DB, pcu.code, p.month, cfg.fy_current);
   const rounds = await getRoundRows(DB, [p.month]);
-  const out = { month: p.month, ...view, unlocks, round: roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month) };
+  const opens = await specialOpenSet(DB, pcu.code, [p.month]);
+  const out = { month: p.month, ...view, unlocks, round: { ...roundInfo(p.month, rounds.get(p.month), cfg.deadline_day, cfg.trial_month), special_open: opens.has(p.month) } };
   // the bound form version, only when it differs from the latest (2d)
   const fid = view.request && view.request.form_version_id;
   const latest = await latestForm(DB, cfg.fy_current);
@@ -321,13 +323,13 @@ export async function saveLines(ctx, p) {
     formForFy(DB, fy, cfg.fy_current),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
-  if (roundRow && roundRow.locked) throw err("CONFLICT", "รอบนี้ปิดรับแล้ว แก้ไขไม่ได้");
-  // 2at: past the deadline a sent request keeps its requested quantities (คงเหลือ / ใช้ไป still change, ได้มาจริง via pcuReceivedSave);
-  // one never sent is closed (admin keys it from paper). Admin's adminSaveLines is not affected.
-  const pastDl = pastDeadlineOf(month, roundRow, cfg);
+  // 2at: a round the admin locked (= closed early) or past its deadline: a sent request keeps its requested quantities (คงเหลือ / ใช้ไป
+  // still change, ได้มาจริง via pcuReceivedSave); one never sent is closed (admin keys it from paper). A special opening for this PCU
+  // (round_opens, adminRoundOpen) lifts both. Admin's adminSaveLines is not affected.
+  const closedWhy = await closedReason(DB, month, roundRow, cfg, pcu.code);
   const wasSentNow = !!reqRow && reqRow.status !== "draft";
-  if (pastDl && !wasSentNow) throw err("CONFLICT", "เลยกำหนดส่งแล้ว — ใบนี้ยังไม่ได้ส่ง");
-  if (pastDl && (p.send === true || p.send === 1 || p.send === "1")) throw err("PAST_DEADLINE", "เลยกำหนดส่งแล้ว — ส่งใหม่ไม่ได้", { items: [] });
+  if (closedWhy && !wasSentNow) throw err("CONFLICT", `${closedWhy} — ใบนี้ยังไม่ได้ส่ง`);
+  if (closedWhy && (p.send === true || p.send === 1 || p.send === "1")) throw err("ROUND_CLOSED", `${closedWhy} — ส่งใหม่ไม่ได้`, { items: [] });
   if (!latest) throw err("NOT_FOUND", "ยังไม่มีแบบฟอร์มในระบบ");
   const bound = reqRow && reqRow.form_version_id ? await loadForm(DB, reqRow.form_version_id) : null;
   for (const l of parsed) {
@@ -348,10 +350,10 @@ export async function saveLines(ctx, p) {
   const base = parsed.some((l) => l.calc_from) ? await baselineFor(DB, pcu.code, month) : {};
   for (const l of parsed) Object.assign(l, computeLine(base[l.code], l));
 
-  if (pastDl) {
+  if (closedWhy) {
     const changed = parsed.filter((l) => { const e = existing.get(l.code); return (e ? e.op ?? null : null) !== l.op || (e ? e.pp ?? null : null) !== l.pp; });
     if (changed.length) {
-      throw err("PAST_DEADLINE", "เลยกำหนดส่งแล้ว — ยอดขอแก้ไม่ได้ (กรอกคงเหลือ/ใช้ไปได้)",
+      throw err("ROUND_CLOSED", `${closedWhy} — ยอดขอแก้ไม่ได้ (กรอกคงเหลือ/ใช้ไปได้)`,
         { items: changed.map((l) => { const e = existing.get(l.code); return { code: l.code, op: e ? e.op ?? null : null, pp: e ? e.pp ?? null : null }; }) });
     }
   }
@@ -377,6 +379,19 @@ export async function saveLines(ctx, p) {
 // 2at: same rule as roundInfo.past_deadline (the trial round never closes by date)
 function pastDeadlineOf(month, roundRow, cfg) {
   return isPastDeadline(computeDeadline(month, roundRow, cfg.deadline_day).deadline_date, !!cfg.trial_month && month === cfg.trial_month);
+}
+// 2at: why the round takes no request change for this PCU ("รอบนี้ปิดรับแล้ว" admin lock · "เลยกำหนดส่งแล้ว") or null (open / special opening)
+async function closedReason(DB, month, roundRow, cfg, pcu) {
+  const why = roundRow && roundRow.locked ? "รอบนี้ปิดรับแล้ว" : pastDeadlineOf(month, roundRow, cfg) ? "เลยกำหนดส่งแล้ว" : null;
+  if (!why) return null;
+  const open = await DB.prepare(`SELECT 1 AS x FROM round_opens WHERE month = ? AND pcu = ?`).bind(month, pcu).first();
+  return open ? null : why;
+}
+// 2at: the months (of `months`) the admin opened for this PCU as a special case
+export async function specialOpenSet(DB, pcu, months) {
+  if (!months.length) return new Set();
+  const { results } = await DB.prepare(`SELECT month FROM round_opens WHERE pcu = ? AND month IN (${months.map(() => "?").join(",")})`).bind(pcu, ...months).all();
+  return new Set(results.map((r) => r.month));
 }
 
 // 2al: the item's closed qty column (form item `closed_cols`, "op" | "pp") takes no new / higher quantity — lowering a stored one is fine
@@ -530,9 +545,9 @@ async function noOrderContext(ctx, month) {
     DB.prepare(`SELECT locked, deadline_date FROM rounds WHERE month = ?`).bind(month).first(),
   ]);
   if (!reqRow && month !== cur && month !== cal) throw err("BAD_REQUEST", "เดือนนี้ไม่เปิดให้กรอก");
-  if (roundRow && roundRow.locked) throw err("CONFLICT", "รอบนี้ปิดรับแล้ว เปลี่ยนแปลงไม่ได้");
   const cfg = publicConfig(await getConfigAll(DB), monthFy(cur));
-  if (pastDeadlineOf(month, roundRow, cfg)) throw err("CONFLICT", "เลยกำหนดส่งแล้ว — เปลี่ยนแปลงไม่ได้"); // 2at
+  const why = await closedReason(DB, month, roundRow, cfg, pcu.code); // 2at: admin lock / past deadline, unless opened for this PCU
+  if (why) throw err("CONFLICT", `${why} — เปลี่ยนแปลงไม่ได้`);
   return { reqRow, id: requestId(pcu.code, month) };
 }
 

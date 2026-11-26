@@ -12,7 +12,7 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
 - `GET /api` → `{ok:true,data:{service:"pcu-supply",time}}` (health check, no DB access).
 - Error codes: `BAD_REQUEST` · `AUTH_REQUIRED` · `AUTH_EXPIRED` · `FORBIDDEN` · `BAD_PIN{remaining}` · `PIN_LOCKED{until}` ·
   `BAD_PASSWORD{remaining}` · `LOCKED{until}` (backup password) · `NOT_FOUND` · `CONFLICT` · `INCOMPLETE{missing:[item_code]}` ·
-  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `COL_CLOSED{items}` (2al, §4) · `PAST_DEADLINE{items}` (2at, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
+  `OVER_LIMIT` (no longer raised since 2z — the yearly ceiling never blocks) · `PDF_UNAVAILABLE` · `PDF_FAILED{detail}` · `PDF_QUOTA{detail,usage}` (2b-R, §6b) · `RATE_LIMITED{limit}` (2ab `feedbackSend`, §4.3) · `LINE_LOCKED{items}` / `ITEM_CANCELLED{items}` (2ad) · `NO_ORDER{items}` / `HAS_LOCKED_LINES{items}` (2af, §4) · `ITEM_LOCKED{items}` (2ai, §4) · `COL_CLOSED{items}` (2al, §4) · `ROUND_CLOSED{items}` (2at, §4) · `NOT_IMPLEMENTED` · `SERVER_ERROR`.
 - Times: ISO 8601 UTC strings (`2026-10-06T08:00:00.000Z`); display in Asia/Bangkok. Month keys: CE `"YYYY-MM"`.
   Dates (`deadline_date`): `"YYYY-MM-DD"` (a Bangkok calendar date).
 - **Rounds (brief 2j).** A round is keyed by the month the supplies are *for* ("ขอเบิกเดือน X"); it is filled and submitted during the month
@@ -109,12 +109,13 @@ Nothing is reserved any more: 2b PDF, 2c issuing, 2d form editor and 2e fiscal-y
   - **2af**: request with `no_order = 1` and a line's `op+pp` changed to > 0 → `NO_ORDER{items:[{code,op,pp}]}` "เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กดยกเลิก … ก่อน"
     (stock / used stay editable; `send:true` on such a request keeps `no_order`).
   - every offending line is listed; nothing is written. The PCU client puts the stored `op`/`pp` back and re-sends the rest (`sync.js`, also for `NO_ORDER`).
-  - **2at deadline lock** (PCU `saveLines` only; `adminSaveLines` unaffected): the day after the round's `deadline_date` (Bangkok; the deadline day
-    itself is open; never the trial round) — a request never sent (none / `draft`) → `CONFLICT` "เลยกำหนดส่งแล้ว — ใบนี้ยังไม่ได้ส่ง" (client goes
-    read-only); a sent request keeps `stock/used/adj` open, but any `op`/`pp` change → `PAST_DEADLINE{items:[{code,op,pp}]}` (client restores like
-    `NO_ORDER`), `send:true` → `PAST_DEADLINE{items:[]}`. `pcuNoOrder` / `pcuNoOrderCancel` → `CONFLICT`. `pcuReceivedSave` (ได้มาจริง) has no deadline.
-    No unlock / edit request for the PCU (Save 2026-11-26).
-  - the round lock (`CONFLICT`) and the month window are unchanged.
+  - **2at closed round** (PCU `saveLines` only; `adminSaveLines` unaffected) = the admin locked the round (`rounds.locked`, "close early") **or** it is
+    past its `deadline_date` (Bangkok, the day after; never the trial round) — unless the admin opened it for this PCU (`round_opens`, `adminRoundOpen`):
+    a request never sent (none / `draft`) → `CONFLICT` "<why> — ใบนี้ยังไม่ได้ส่ง" (client read-only); a sent request keeps `stock/used/adj` open,
+    any `op`/`pp` change → `ROUND_CLOSED{items:[{code,op,pp}]}` (client restores like `NO_ORDER`), `send:true` → `ROUND_CLOSED{items:[]}`.
+    `pcuNoOrder` / `pcuNoOrderCancel` → `CONFLICT`. `pcuReceivedSave` (ได้มาจริง) is never closed. <why> = "รอบนี้ปิดรับแล้ว" (lock) / "เลยกำหนดส่งแล้ว".
+    No edit request for the PCU (Save 2026-11-26): the admin keys it (`adminSaveLines`) or opens it for one PCU.
+  - the month window is unchanged. (2at: the round lock no longer refuses every save — see above.)
 - `send:true`, in order: round locked → `CONFLICT` · `config.stock_required=1` → every non-hidden **active** item of the latest form needs `stock`
   else `INCOMPLETE{missing}`. **2z (Q10): the ceiling never blocks.** **2ad: the effective mode is `off` for every round of fy ≥ 2570**
   (`db.limitModeFor(cfg, fy)`, `LIMITS_OFF_FROM_FY` — the stored `config.limit_mode` and the `limits` rows stay; fy < 2570 behaves as below). `limit_mode="warn"` → per line `total=op+pp`: over if `used_fy + total > limit_year`
@@ -423,12 +424,17 @@ All mutating admin/PCU actions (except autosave) append to `audit_log` in the sa
   feedback_new: <int>                                                  // admin only (2ab) — feedback rows with status "new" (Feedback tab badge)
 }
 RoundInfo = { month, fy, deadline_date, deadline_source, trial:bool, past_deadline:bool, locked:bool, locked_at, locked_by, note }   // fy = monthFy(month); trial = month === config.trial_month
+// PCU views (pcuBootstrap.rounds, pcuGetMonth.round) add special_open:bool (2at, this PCU's round_opens row)
 // 2at past_deadline = !trial && today (Bangkok; dev: X-Dev-Date, none while only X-Dev-Month is pinned) > deadline_date — see saveLines (§4)
 ```
 `deadline_date` = `rounds.deadline_date` if set, else `config.deadline_day` (clamped to the month length) **of the submission month `prevMonth(month)`**,
 else the last day of `prevMonth(month)` (2j: round 2026-11 → `2026-10-31`; round 2026-10 → `2026-09-30`). `deadline_source` = `round|config|month_end`.
 
 ### 5.1b Admin keys a request for a pcu (2w — `functions/_lib/admin_entry.js`) — admin only (dispenser/PCU/no token → `FORBIDDEN`/`FORBIDDEN`/`AUTH_REQUIRED`)
+`adminRoundOpen{month, pcu, open:0|1}` (2at, admin) — opens a closed round (lock / past deadline) for one PCU as a special case: request quantities,
+sending and ไม่เบิก as before the deadline, until `open:0`. One `round_opens` row (migration v13) + audit. → `{month, pcu, open, opens:[pcu]}` ·
+`adminRequests` adds `opens:{month:[pcu]}`.
+
 `adminSaveLines{pcu, month, lines:{code:{op?,pp?,stock?,used?}}, send?}` — paper sheets of past rounds / any correction (spec 2w-2aa Q6/Q7/R4):
 - `month` ∈ `fyMonths(fy_current)` and ≤ currentRound, else `BAD_REQUEST`; unknown pcu → `NOT_FOUND`; code not in the fy's latest form (or the bound
   version) / qty not an integer 0–99999 → `BAD_REQUEST` (nothing written). **Skips** deadline, round lock, limits (any mode), stock_required, and the

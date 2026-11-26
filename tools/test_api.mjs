@@ -1903,7 +1903,7 @@ async function main() {
 
     // ---- migration v4 idempotent ----
     expectErr(await api("devRerunMigration", { v: 1 }), "BAD_REQUEST", "devRerunMigration v 1 refused");
-    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 12, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
+    eq((await mustOk("devRerunMigration", { v: 4 })).schema_version, 13, "re-running migrations v4+ on existing columns succeeds (duplicate column tolerated; v5–v9 re-run too)");
     eq([pick((await adm("PCU06", M2)).lines[A.code]), (await mustOk("pcuBootstrap", {}, P)).pcu.stock_mode], [[5, 4, null, null, "used"], "B"], "…and keeps the data (lines + stock_mode)");
 
     // ---- clean up ----
@@ -2266,10 +2266,10 @@ async function main() {
     // ---- migration v5: idempotent + backfill ----
     const hBefore = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const l7 = [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))];
-    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 12, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
+    eq((await mustOk("devRerunMigration", { v: 5 })).schema_version, 13, "re-running migration v5 (+ v6–v9) succeeds (duplicate column tolerated)");
     eq([(await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history, [pp2(await line("PCU07", PREV, Y)), pp2(await line("PCU07", CUR, X))]], [hBefore, l7],
       "…and changes nothing (price_history, price_snapshot / price_print)");
-    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 12, "migration v5 on an empty price_history (first deploy)");
+    eq((await mustOk("devRerunMigration", { v: 5, clear_price_history: true })).schema_version, 13, "migration v5 on an empty price_history (first deploy)");
     const hb = (await mustOk("adminFormGet", { id: F.id }, ADM2)).price_history;
     const itemsF = F.steps.flatMap((s) => s.rows.filter((r) => r.type === "item"));
     eq(hb.map((h) => [h.code, h.from_round, h.price].join("|")).sort(), itemsF.map((r) => [r.code, FIRST70, r.price].join("|")).sort(),
@@ -3626,7 +3626,7 @@ async function main() {
 
     // ---- migration v8 re-run: no error, no second seed, data kept ----
     const fbN = (await list()).items.length;
-    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 12, "devRerunMigration v8 (+ v9)");
+    eq((await mustOk("devRerunMigration", { v: 8 })).schema_version, 13, "devRerunMigration v8 (+ v9)");
     eq([(await mustOk("faqList", { all: true }, ADM2)).faqs.length, (await list()).items.length], [3, fbN], "…FAQ not re-seeded · feedback kept");
 
     await mustOk("adminUsersRemove", { email: DSP }, ADM2);
@@ -3666,7 +3666,8 @@ async function main() {
     ok((await sv({ [X.code]: { op: 7, pp: 1, stock: 9 } })).ok, "issue cleared → X op editable again");
     eq((await mustOk("pcuGetMonth", { month: CUR }, TP)).request.lines[X.code].qty_locked, undefined, "…and qty_locked is gone");
     await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
-    expectErr(await sv({ [Y.code]: { op: 2, stock: 5 } }), "CONFLICT", "a closed round still blocks every edit (CONFLICT)");
+    ok((await sv({ [Y.code]: { op: 2, stock: 5 } })).ok, "2at: an admin-locked round still takes คงเหลือ on a sent request");
+    expectErr(await sv({ [Y.code]: { op: 3, stock: 5 } }), "ROUND_CLOSED", "2at: …but no requested-qty change (ROUND_CLOSED)");
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
 
     // ---- permanently cancelled item: shown to the PCU with its reason, no new quantity ----
@@ -3711,7 +3712,7 @@ async function main() {
     for (const f of (await mustOk("itemFlagList", {}, ADM2)).flags) await mustOk("itemFlagClear", { code: f.code }, ADM2);
 
     // ---- migration v9 ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 12, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 13, "devRerunMigration v9 (CREATE IF NOT EXISTS re-runs cleanly)");
 
     // ---- flags: validation + scope ----
     expectErr(await api("itemFlagSet", { code: S1.code, status: "gone" }, ADM2), "BAD_REQUEST", "itemFlagSet bad status");
@@ -3803,7 +3804,7 @@ async function main() {
     ok((await mustOk("adminAuditLog", { limit: 50 }, ADM2)).entries.some((e) => e.action === "adminAnnouncementDelete"), "announcement delete audited");
 
     // ---- migration v9 re-run keeps data ----
-    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 12, "devRerunMigration v9 again");
+    eq((await mustOk("devRerunMigration", { v: 9 })).schema_version, 13, "devRerunMigration v9 again");
     eq((await mustOk("itemFlagList", {}, ADM2)).flags.length, 2, "…flags kept");
 
     for (const c of [S1.code, LB.code]) await mustOk("itemFlagClear", { code: c }, ADM2);
@@ -3814,7 +3815,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("2af: PCU received reports (separate from issued_*, lock the line, mismatch) · เดือนนี้ไม่เบิก (no_order) · admin mismatch report");
   {
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 12, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 13, "devRerunMigration v10 (received_reports + requests.no_order re-run cleanly)");
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
     const F0 = b0.form;
     const st = F0.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 3);
@@ -3905,7 +3906,8 @@ async function main() {
     // ---- closed round + older month of the fy ----
     await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
     eq((await mustOk("pcuReceivedSave", { month: CUR, lines: [{ code: Y.code, qty: 2 }] }, TP)).changed, 1, "closed round: reporting received still works");
-    expectErr(await sv(TP, CUR, { [Y.code]: { op: 3, stock: 1 } }), "CONFLICT", "…while the request itself is closed");
+    ok((await sv(TP, CUR, { [Y.code]: { op: 3, stock: 1 } })).ok, "…2at: คงเหลือ of the sent request still saves");
+    expectErr(await sv(TP, CUR, { [Y.code]: { op: 4, stock: 1 } }), "ROUND_CLOSED", "…while its requested qty is closed (2at: ROUND_CLOSED)");
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
     await mustOk("adminSaveLines", { pcu: P, month: FIRST70, lines: { [X.code]: { op: 2, pp: 0 } }, send: true }, ADM2);
     await mustOk("adminLockRound", { month: FIRST70, locked: 1 }, ADM2);
@@ -3965,7 +3967,7 @@ async function main() {
     await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
 
     // ---- migration re-run keeps data · cleanup ----
-    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 12, "devRerunMigration v10 again");
+    eq((await mustOk("devRerunMigration", { v: 10 })).schema_version, 13, "devRerunMigration v10 again");
     eq([(await aLine(P, CUR, Y.code)).rcv_qty, (await mustOk("adminGetRequest", { pcu: Q, month: CUR }, ADM2)).request.no_order], [1, true], "…reports and no_order kept");
     for (const pc of [P, Q]) for (const m of [CUR, PREV, FIRST70]) await mustOk("devDeleteRequest", { pcu: pc, month: m });
     eq((await mustOk("adminReceivedReport", { all: true, pcu: P }, ADM2)).rows.length, 0, "devDeleteRequest removes the received reports too");
@@ -3975,7 +3977,7 @@ async function main() {
   // ------------------------------------------------------------------------------------------------------------------------
   section("2ai: admin item locks (per-PCU release) · received on any request with a requested line");
   {
-    eq((await mustOk("devRerunMigration", { v: 11 })).schema_version, 12, "devRerunMigration v11 (item_locks + item_lock_exempt re-run cleanly)");
+    eq((await mustOk("devRerunMigration", { v: 11 })).schema_version, 13, "devRerunMigration v11 (item_locks + item_lock_exempt re-run cleanly)");
     const b0 = await mustOk("adminBootstrap", {}, ADM2);
     const st = b0.form.steps.find((x) => x.active !== false && x.rows.filter((r) => r.type === "item" && r.active !== false).length >= 2);
     const [X, Y] = st.rows.filter((r) => r.type === "item" && r.active !== false);
@@ -4451,14 +4453,34 @@ async function main() {
     const s1 = await sv({ [X.code]: { op: 2, stock: 5 } }, {}, late);
     ok(s1.ok && s1.data.request.lines[X.code].stock === 5, "past deadline, sent: คงเหลือ still saves");
     const s2 = await sv({ [X.code]: { op: 9, stock: 5 } }, {}, late);
-    expectErr(s2, "PAST_DEADLINE", "past deadline: raising the requested qty → PAST_DEADLINE");
-    eq(s2.error && s2.error.items, [{ code: X.code, op: 2, pp: null }], "PAST_DEADLINE.items carry the stored op/pp");
-    expectErr(await sv({ [Y.code]: { op: 1 } }, {}, late), "PAST_DEADLINE", "past deadline: a new requested line → PAST_DEADLINE");
-    expectErr(await sv({ [X.code]: { op: 2, stock: 5 } }, { send: true }, late), "PAST_DEADLINE", "past deadline: re-send → PAST_DEADLINE");
+    expectErr(s2, "ROUND_CLOSED", "past deadline: raising the requested qty → ROUND_CLOSED");
+    eq(s2.error && s2.error.items, [{ code: X.code, op: 2, pp: null }], "ROUND_CLOSED.items carry the stored op/pp");
+    expectErr(await sv({ [Y.code]: { op: 1 } }, {}, late), "ROUND_CLOSED", "past deadline: a new requested line → ROUND_CLOSED");
+    expectErr(await sv({ [X.code]: { op: 2, stock: 5 } }, { send: true }, late), "ROUND_CLOSED", "past deadline: re-send → ROUND_CLOSED");
     const r1 = await api("pcuReceivedSave", { month: CUR, lines: [{ code: X.code, qty: 2 }] }, T, late);
     ok(r1.ok, "past deadline: ได้มาจริง (pcuReceivedSave) still saves" + (r1.ok ? "" : ` (${r1.error.code})`));
     const a1 = await api("adminSaveLines", { pcu: P, month: CUR, lines: { [Y.code]: { op: 1, pp: 0 } } }, ADM2, late);
     ok(a1.ok, "past deadline: admin keying (adminSaveLines) unaffected" + (a1.ok ? "" : ` (${a1.error.code})`));
+    // special opening for this PCU lifts the deadline (qty + send), closing it brings the rule back
+    expectErr(await api("adminRoundOpen", { month: CUR, pcu: P, open: 1 }, T), "FORBIDDEN", "adminRoundOpen with a PCU token → FORBIDDEN");
+    const o1 = await mustOk("adminRoundOpen", { month: CUR, pcu: P, open: 1 }, ADM2);
+    eq([o1.open, o1.opens.includes(P)], [true, true], "adminRoundOpen open:1 → listed");
+    eq((await api("pcuBootstrap", {}, T, late)).data.rounds.find((r) => r.month === CUR).special_open, true, "pcuBootstrap round.special_open");
+    const so = await sv({ [Y.code]: { op: 4 } }, { send: true }, late);
+    ok(so.ok, "special opening: qty change + re-send past the deadline ok" + (so.ok ? "" : ` (${so.error.code})`));
+    eq(((await mustOk("adminRequests", { month: CUR }, ADM2)).opens[CUR] || []).includes(P), true, "adminRequests.opens");
+    await mustOk("adminRoundOpen", { month: CUR, pcu: P, open: 0 }, ADM2);
+    expectErr(await sv({ [Y.code]: { op: 3 } }, {}, late), "ROUND_CLOSED", "special opening closed → qty refused again");
+    // admin lock = closed early: same rule as past the deadline, before the deadline too
+    await mustOk("adminLockRound", { month: CUR, locked: 1 }, ADM2);
+    const sl = await sv({ [X.code]: { op: 2, stock: 6 } }, {}, on);
+    ok(sl.ok, "admin-locked round: sent request still takes คงเหลือ" + (sl.ok ? "" : ` (${sl.error.code})`));
+    expectErr(await sv({ [Y.code]: { op: 5 } }, {}, on), "ROUND_CLOSED", "admin-locked round: qty change → ROUND_CLOSED");
+    await mustOk("adminRoundOpen", { month: CUR, pcu: P, open: 1 }, ADM2);
+    const ls = await sv({ [Y.code]: { op: 5 } }, { send: true }, on);
+    ok(ls.ok, "admin-locked round + special opening → qty + send ok" + (ls.ok ? "" : ` (${ls.error.code})`));
+    await mustOk("adminRoundOpen", { month: CUR, pcu: P, open: 0 }, ADM2);
+    await mustOk("adminLockRound", { month: CUR, locked: 0 }, ADM2);
   }
   // ------------------------------------------------------------------------------------------------------------------------
   console.log(`\n${pass} passed, ${fail} failed`);

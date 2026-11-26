@@ -121,7 +121,9 @@ export function isTrialMonth(app, month) {
 // "กรุณาส่งภายใน …" (trial round: "กรอกภายใน …").
 export function deadlineText(round) {
   if (!round || !round.deadline_date) return "";
-  if (round.past_deadline) return `เลยกำหนดส่งแล้ว (${formatThaiYmd(round.deadline_date)})`;
+  if (round.special_open && (round.locked || round.past_deadline)) return "เปิดให้แก้เป็นกรณีพิเศษ";
+  const why = closedWhy(round);
+  if (why) return `${why} (กำหนดส่ง ${formatThaiYmd(round.deadline_date)})`;
   return `${round.trial ? "กรอกภายใน" : "กรุณาส่งภายใน"} ${formatThaiYmd(round.deadline_date)}`;
 }
 
@@ -136,19 +138,23 @@ export function isActiveRound(app, month) {
 
 // 2at: past the round's deadline (server RoundInfo.past_deadline) — the requested quantities are closed, a sent request keeps
 // คงเหลือ / ใช้ไป open (ได้มาจริง is on its own page), a request never sent is read-only.
+// 2at: an admin lock (= closed early) works the same way. A special opening for this PCU (RoundInfo.special_open) lifts both.
+export function closedWhy(round) {
+  if (!round || round.special_open) return null;
+  return round.locked ? "รอบนี้ปิดรับแล้ว" : round.past_deadline ? "เลยกำหนดส่งแล้ว" : null;
+}
 export function isPastDeadline(app, month) {
-  const r = roundOf(app, month);
-  return !!(r && r.past_deadline);
+  return !!closedWhy(roundOf(app, month));
 }
 export function isSent(app, month) {
   const req = requestOf(app, month);
   return !!req && (req.status === "submitted" || req.status === "issued");
 }
 
+// Fully read-only: the server refused an edit (CONFLICT). 2at: an admin lock alone no longer is — see isPastDeadline.
 export function isLocked(app, month) {
-  const r = roundOf(app, month);
   const s = sync.getSession(pcuCode(app), month);
-  return !!(r && r.locked) || !!(s && s.conflict);
+  return !!(s && s.conflict);
 }
 
 // Editable = an active round (current/previous), not locked, server has not refused (CONFLICT).
@@ -200,10 +206,10 @@ export function formForRequest(app, request) {
 // ---------------- status badge ----------------
 // -> { label, cls, extra: [{label, cls}] }
 export function requestStatus(request, round, conflict) {
-  const locked = !!(round && round.locked) || !!conflict;
+  const locked = !!conflict; // 2at: an admin-locked round shows its request status (closed like past the deadline)
   const base = (() => {
     const unsent = !request || request.status === "not_started" || request.status === "draft";
-    if (unsent && round && round.past_deadline) return { label: "ไม่ได้ส่ง", cls: "badge-muted", extra: [] }; // 2at: plain fact, no warning colour
+    if (unsent && closedWhy(round)) return { label: "ไม่ได้ส่ง", cls: "badge-muted", extra: [] }; // 2at: plain fact, no warning colour
     if (!request || request.status === "not_started") return { label: "ยังไม่เริ่ม", cls: "badge-muted", extra: [] };
     if (request.no_order) return { label: "ไม่เบิก", cls: "badge-info", extra: [] }; // 2af
     if (request.status === "issued") return { label: "จ่ายแล้ว", cls: "badge-success", extra: [] };

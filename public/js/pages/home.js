@@ -3,7 +3,7 @@
 // editable cards, read-only history rows incl. "ไม่ได้ส่ง") + a fiscal-year dropdown reaching back one year.
 import { getOrderedSteps, lineQty } from "../data.js";
 import {
-  esc, pcuCode, requestOf, requestStatus,
+  esc, pcuCode, requestOf, requestStatus, closedWhy,
   loadOlderMonth, alertDialog, monthData, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml, noOrderFlow, showDialog,
 } from "./common.js";
 import { call, getPcuToken } from "../api.js";
@@ -62,7 +62,7 @@ function cardHtml(app, round) {
   const session = sync.getSession(pcuCode(app), round.month);
   const issue = monthData(app, round.month).issue;
   const st = withIssueStatus(requestStatus(request, round, session && session.conflict), issue);
-  const locked = round.locked || !!(session && session.conflict);
+  const locked = !!(session && session.conflict); // 2at: admin lock = closed like past the deadline (below)
   const started = !!request && request.status !== "not_started";
   const prog = stepProgress(app, request);
   const startStep = request && request.last_step ? request.last_step : getOrderedSteps(app.boot.form)[0].code;
@@ -71,7 +71,7 @@ function cardHtml(app, round) {
   const notice = (app.boot.issue_notices || []).find((x) => x.month === round.month);
   const submitted = !!request && (request.status === "submitted" || request.status === "issued") && !request.no_order;
   // 2at: past the deadline a sent request only takes คงเหลือ (and ได้มาจริง on its own page); one never sent is view-only
-  const past = !locked && !!round.past_deadline;
+  const past = !locked && !!closedWhy(round);
   const sentAny = !!request && (request.status === "submitted" || request.status === "issued");
   const primaryLabel = past ? "กรอกคงเหลือ" : submitted ? "แก้ไขใบเบิก" : started ? "กรอกต่อ" : "เริ่มกรอก";
   const viewOnly = locked || (past && !sentAny);
@@ -109,7 +109,7 @@ function collapsedHtml(app, round) {
   const notice = (app.boot.issue_notices || []).find((x) => x.month === round.month);
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(round.month)}"${notice ? " open" : ""}>
-    <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)}${request && request.no_order ? ' <span class="badge badge-info">ไม่เบิก</span>' : ""} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <summary><strong>${esc(roundTitle(round.month, round))}</strong>${trialBadgeHtml(round)}${request && request.no_order ? ' <span class="badge badge-info">ไม่เบิก</span>' : ""} <span class="badge badge-muted">ปิดรับแล้ว</span></summary>
     ${notice ? `<p class="card-notice" role="status" data-notice="${esc(notice.month)}">พัสดุจ่ายของแล้ว — ครบ ${esc(notice.complete)} · ไม่ครบ ${esc(notice.incomplete)} รายการ</p>` : ""}
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-fill="${esc(round.month)}" data-step="summary">ดูใบเบิก</button>
@@ -225,7 +225,7 @@ function historyRowHtml(h) {
   }
   return `
   <details class="round-card round-card-collapsed" data-month="${esc(h.month)}">
-    <summary>${title} ${historyStatusBadge(h)} <span class="badge badge-danger">ปิดรับแล้ว</span></summary>
+    <summary>${title} ${historyStatusBadge(h)} <span class="badge badge-muted">ปิดรับแล้ว</span></summary>
     <div class="round-card-actions">
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="summary">ดูใบเบิก</button>
       <button type="button" class="btn btn-secondary" data-older="${esc(h.month)}" data-go="print">ดู/พิมพ์/ดาวน์โหลด</button>
@@ -241,7 +241,8 @@ function cardsHtml(app, V, F) {
   const parts = [];
   (b.rounds || []).forEach((r, i) => {
     if (V !== F && r.fy !== V) return;
-    parts.push(i > 0 && r.locked ? collapsedHtml(app, r) : cardHtml(app, r));
+    const sentR = ((requestOf(app, r.month) || {}).status || "").match(/submitted|issued/); // 2at: a sent request keeps คงเหลือ open
+    parts.push(i > 0 && closedWhy(r) && !sentR ? collapsedHtml(app, r) : cardHtml(app, r));
   });
   if (V === F && b.next_round) parts.push(previewHtml(b.next_round));
   const trialMonth = prevMonthKey(fiscalYearStartMonthKey(V));

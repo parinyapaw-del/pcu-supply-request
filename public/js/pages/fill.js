@@ -8,7 +8,7 @@ import * as sync from "../sync.js";
 import * as store from "../store.js";
 import { formatInt, formatMoney, formatMonthKeyThai, nowTimeHHMM } from "../format.js";
 import {
-  esc, pcuCode, roundOf, monthData, isEditable, isLocked, isQtyOpen, isPastDeadline, isSent, isPractice, realMonthOf, PRACTICE, isActiveRound, roundUsesCurrentFy,
+  esc, pcuCode, roundOf, monthData, isEditable, isLocked, isQtyOpen, isPastDeadline, closedWhy, isSent, isPractice, realMonthOf, PRACTICE, isActiveRound, roundUsesCurrentFy,
   requestOf, requestStatus, fyShort, roundTitle, currentRoundTagHtml, trialBadgeHtml, deadlineText, trialNote, adminEntryTagHtml,
   alertDialog, toast, requesterOf, formatThaiYmd, noOrderFlow, showDialog,
 } from "./common.js";
@@ -257,10 +257,13 @@ function renderBanners(app, month, stepIssued) {
     parts.push('<div class="notice notice-error"><strong>รอบนี้ปิดรับแล้ว</strong> — ดูใบเบิกได้อย่างเดียว แก้ไขไม่ได้</div>');
   } else if (!isActiveRound(app, month)) {
     parts.push('<div class="notice notice-info">เดือนเก่า — ดูอย่างเดียว</div>');
-  } else if (isPastDeadline(app, month)) { // 2at: like a closed round, but คงเหลือ / ใช้ไป / ได้มาจริง stay open on a sent request
+  } else if (isPastDeadline(app, month)) { // 2at: admin lock / past the deadline — คงเหลือ / ใช้ไป / ได้มาจริง stay open on a sent request
+    const why = closedWhy(roundOf(app, month));
     parts.push(isSent(app, month)
-      ? `<div class="notice notice-info" id="fill-deadline-banner"><strong>เลยกำหนดส่งแล้ว</strong> — ยอดขอแก้ไม่ได้ · กรอกคงเหลือได้ · <a href="#/received">รายงานของได้จริง</a></div>`
-      : '<div class="notice notice-info" id="fill-deadline-banner"><strong>เลยกำหนดส่งแล้ว</strong> — ดูอย่างเดียว</div>');
+      ? `<div class="notice notice-info" id="fill-deadline-banner"><strong>${esc(why)}</strong> — ยอดขอแก้ไม่ได้ · กรอกคงเหลือได้ · <a href="#/received?month=${esc(month)}">รายงานของได้จริง</a></div>`
+      : `<div class="notice notice-info" id="fill-deadline-banner"><strong>${esc(why)}</strong> — ดูอย่างเดียว</div>`);
+  } else if ((roundOf(app, month) || {}).special_open && ((roundOf(app, month) || {}).locked || (roundOf(app, month) || {}).past_deadline)) {
+    parts.push('<div class="notice notice-info" id="fill-special-banner"><strong>เปิดให้แก้เป็นกรณีพิเศษ</strong> — แก้แล้วกดบันทึกเพื่อส่งใหม่</div>');
   }
   if (isPractice(month)) {
     parts.push(`<div class="notice notice-trial" id="fill-practice-banner"><strong>ทดลองกรอก</strong> — เก็บในเครื่องนี้เท่านั้น ไม่ส่งจริง ไม่มีผลกับใบเบิก · <button type="button" class="btn btn-secondary btn-sm" data-practice-clear>ล้างข้อมูลทดลอง</button></div>`);
@@ -390,7 +393,7 @@ function renderNav(app, month, stepCode, codes) {
         : st.qtyRefusedCode === "ITEM_LOCKED" ? "รายการนี้ถูกล็อก ขอเบิกไม่ได้ — ถ้าต้องการเบิก ติดต่อ admin"
         : st.qtyRefusedCode === "COL_CLOSED" ? "รายการนี้ปิดช่อง OP/PP ไว้ — ขอเบิกในช่องนั้นไม่ได้ (ยอดขอคงไว้ตามเดิม)"
         : st.qtyRefusedCode === "NO_ORDER" ? 'เดือนนี้แจ้ง "ไม่เบิก" ไว้ — กด "ยกเลิก ไม่เบิก" ก่อนจึงกรอกยอดขอได้'
-        : st.qtyRefusedCode === "PAST_DEADLINE" ? "เลยกำหนดส่งแล้ว — ยอดขอคงไว้ตามเดิม (คงเหลือบันทึกแล้ว)"
+        : st.qtyRefusedCode === "ROUND_CLOSED" ? "ปิดรับแล้ว — ยอดขอคงไว้ตามเดิม (คงเหลือบันทึกแล้ว)"
         : `${QTY_LOCKED_TEXT} (ค่าที่แก้ในช่องขอไม่ถูกบันทึก)`);
       setTimeout(() => renderFill(document.getElementById("app"), app, stepCode, null), 0);
     }
@@ -1354,7 +1357,7 @@ function renderSummary(app, month, steps) {
            <!-- 2b: "ดาวน์โหลด PDF" button goes here (requestPdf; = send + download, spec §4.4). Not in 2a. -->`
         : `<button type="button" class="btn btn-secondary" id="btn-print-view">ดู/พิมพ์/ดาวน์โหลดใบเบิก</button>`}
     </div>
-    <p class="muted send-hint">${practice ? "ทดลองเท่านั้น — ไม่ส่งจริง" : isPastDeadline(app, month) ? "เลยกำหนดส่งแล้ว" : editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
+    <p class="muted send-hint">${practice ? "ทดลองเท่านั้น — ไม่ส่งจริง" : isPastDeadline(app, month) ? closedWhy(roundOf(app, month)) : editable && request && request.no_order ? 'ส่งแล้วเป็น "ไม่เบิก" — ไม่ต้องกดส่งอีก' : editable ? "บันทึก และ พิมพ์ = ส่งใบเบิกให้ผู้ดูแล (กดซ้ำเพื่อส่งใหม่หลังแก้ไข)" : ""}</p>
     ${round && editable && !practice && round.deadline_date ? `<p class="muted">${esc(deadlineText(round))}</p>` : ""}
   `;
 

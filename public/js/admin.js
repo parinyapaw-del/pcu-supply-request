@@ -54,8 +54,8 @@ const TABS = [
 const GROUPS = [
   { id: "g1", label: "งานประจำรอบ", tabs: ["tab1", "tab2", "tab2b", "tab16", "tab6"] },
   { id: "g2", label: "รายงาน", tabs: ["tab12", "tab3", "tab4"] },
-  { id: "g3", label: "รายการ / ประกาศ", tabs: ["tab15", "tab10", "tab5", "tab7"] },
-  { id: "g4", label: "ตั้งค่าระบบ", tabs: ["tab11", "tab8", "tab9"] },
+  { id: "g3", label: "รายการ / ประกาศ", tabs: ["tab15", "tab10", "tab5"] },
+  { id: "g4", label: "ตั้งค่าระบบ", tabs: ["tab7", "tab11", "tab8", "tab9"] }, // 2at: รพ.สต. / PIN first (was hidden under รายการ / ประกาศ)
   { id: "g5", label: "Feedback / คู่มือ", tabs: ["tab13", "tab14"] }
 ];
 const groupTabIdx = (t) => { const g = GROUPS.find((x) => x.tabs.includes(t.id)); return g ? g.tabs.indexOf(t.id) : 99; };

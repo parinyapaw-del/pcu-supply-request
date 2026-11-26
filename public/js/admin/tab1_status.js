@@ -173,12 +173,13 @@ export function renderTab1(container, ctx) {
 
     const lockBox = el("div", { class: "round-box" });
     lockBox.appendChild(el("span", { class: "round-label" }, "สถานะรอบ"));
-    lockBox.appendChild(el("span", { class: "badge " + (round.locked ? "badge-danger" : "badge-success"), id: "t1-lock-badge" },
-      round.locked ? "ล็อกแล้ว — รพ.สต. แก้ไม่ได้" : "เปิดรับ"));
+    // 2at: lock = close the requests early (like past the deadline) — a sent request still takes คงเหลือ / ใช้ไป / ได้มาจริง
+    lockBox.appendChild(el("span", { class: "badge " + (round.locked || round.past_deadline ? "badge-danger" : "badge-success"), id: "t1-lock-badge" },
+      round.locked ? "ปิดรับแล้ว (ล็อก) — แก้ยอดขอ/ส่งไม่ได้ · คงเหลือกรอกได้" : round.past_deadline ? "เลยกำหนดส่ง — แก้ยอดขอ/ส่งไม่ได้ · คงเหลือกรอกได้" : "เปิดรับ"));
     if (round.locked && round.locked_at) lockBox.appendChild(el("span", { class: "muted small" }, `เมื่อ ${formatBangkokDateTime(round.locked_at)}`));
     if (isAdmin) {
       const lockBtn = el("button", { type: "button", class: "btn btn-sm " + (round.locked ? "btn-secondary" : "btn-primary"), id: "t1-lock" },
-        round.locked ? "ปลดล็อกรอบ" : "ล็อกรอบ");
+        round.locked ? "ปลดล็อกรอบ" : "ปิดรับก่อนกำหนด");
       lockBtn.addEventListener("click", () => toggleLock(round));
       lockBox.appendChild(lockBtn);
     }
@@ -206,8 +207,8 @@ export function renderTab1(container, ctx) {
   async function toggleLock(round) {
     const lockNow = !round.locked;
     const ok = await confirmDialog(lockNow
-      ? `ล็อกรอบ ${monthLong(round.month)}?\nรพ.สต. จะบันทึก/ส่งใบเบิกของรอบนี้ไม่ได้จนกว่าจะปลดล็อก`
-      : `ปลดล็อกรอบ ${monthLong(round.month)}?\nรพ.สต. จะกลับมาแก้ไข/ส่งใบเบิกได้`,
+      ? `ปิดรับรอบ ${monthLong(round.month)} ก่อนกำหนด?\nรพ.สต. จะแก้ยอดขอ/ส่งใบไม่ได้ (ใบที่ส่งแล้วยังกรอกคงเหลือได้) · เปิดให้บางแห่งได้ด้วยปุ่ม "เปิดกรณีพิเศษ"`
+      : `ปลดล็อกรอบ ${monthLong(round.month)}?\nรพ.สต. จะกลับมาแก้ไข/ส่งใบเบิกได้ (ถ้ายังไม่เลยกำหนดส่ง)`,
     { title: lockNow ? "ล็อกรอบ" : "ปลดล็อกรอบ", okText: lockNow ? "ล็อกรอบ" : "ปลดล็อก", danger: lockNow });
     if (!ok) return;
     try {
@@ -226,6 +227,7 @@ export function renderTab1(container, ctx) {
     // 2w: admin entry — any round of fy_current up to the open round (not the trial round)
     const canEnter = isAdmin && !(currentRound() && currentRound().trial) && tabState.month <= ctx.roundMonth()
       && tabState.month >= fiscalYearStartMonthKey(ctx.fyCurrent()) && fiscalYearOf(tabState.month) === ctx.fyCurrent();
+    const opened = new Set(((tabState.data && tabState.data.opens) || {})[tabState.month] || []); // 2at
     const rows = state.bootstrap.pcus.map((pcu) => {
       const req = reqs[pcu.code] || null;
       const baht = req && req.progress ? req.progress.baht : 0;
@@ -242,13 +244,20 @@ export function renderTab1(container, ctx) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="issue" data-pcu="${pcu.code}" title="บันทึกจ่ายจริงของใบนี้">จ่าย</button>`);
       }
       if (isAdmin && canEnter) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="entry" data-pcu="${pcu.code}" title="admin คีย์/แก้ใบเบิกแทน รพ.สต.">คีย์แทน</button>`);
+      // 2at: a closed round (lock / past deadline) opened again for this PCU only, until the admin closes it
+      const rnd = currentRound();
+      if (isAdmin && rnd && !rnd.trial && (rnd.locked || rnd.past_deadline)) {
+        actions.push(opened.has(pcu.code)
+          ? `<button type="button" class="btn btn-primary btn-sm" data-act="special" data-open="0" data-pcu="${pcu.code}" title="ปิดการเปิดกรณีพิเศษของแห่งนี้">ปิดกรณีพิเศษ</button>`
+          : `<button type="button" class="btn btn-secondary btn-sm" data-act="special" data-open="1" data-pcu="${pcu.code}" title="ให้แห่งนี้แก้ยอดขอ/ส่งใบได้อีกครั้ง จนกว่าจะกดปิด">เปิดกรณีพิเศษ</button>`);
+      }
       if (isAdmin) {
         actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="note" data-pcu="${pcu.code}" title="ฝากข้อความขอให้ รพ.สต. แก้ใบ — ขึ้นบนการ์ดรอบของเขา">โน้ตถึง รพ.สต.</button>`);
         if (req && req.admin_note) actions.push(`<button type="button" class="btn btn-secondary btn-sm" data-act="clear-note" data-pcu="${pcu.code}">ล้างโน้ต</button>`);
       }
       return `<tr data-pcu="${pcu.code}">
         <td class="left"><strong>${pcu.code}</strong> ${escapeHtml(pcu.name)}${pcuTag(pcu)}</td>
-        <td class="left status-cell">${statusCell(req)}${noteHtml}</td>
+        <td class="left status-cell">${statusCell(req)}${opened.has(pcu.code) ? ' <span class="badge badge-info">เปิดกรณีพิเศษ</span>' : ""}${noteHtml}</td>
         <td class="num">${showBaht ? formatMoney(baht) : "–"}</td>
         <td class="left actions-cell">${actions.join(" ")}</td>
       </tr>`;
@@ -278,7 +287,22 @@ export function renderTab1(container, ctx) {
       openEntry(ctx, b.dataset.pcu, tabState.month, { onSaved: () => load(false) });
     }));
     tableHost.querySelectorAll('[data-act="note"]').forEach((b) => b.addEventListener("click", () => editNote(b.dataset.pcu, reqs[b.dataset.pcu])));
+    tableHost.querySelectorAll('[data-act="special"]').forEach((b) => b.addEventListener("click", () => setSpecial(b.dataset.pcu, b.dataset.open === "1")));
     tableHost.querySelectorAll('[data-act="clear-note"]').forEach((b) => b.addEventListener("click", () => saveNote(b.dataset.pcu, "")));
+  }
+
+  async function setSpecial(pcu, open) {
+    const name = (state.bootstrap.pcus.find((p) => p.code === pcu) || {}).name || pcu;
+    const ok = await confirmDialog(open
+      ? `เปิดรอบ ${monthLong(tabState.month)} ให้ ${name} เป็นกรณีพิเศษ?\nแห่งนี้จะแก้ยอดขอและส่งใบได้อีกครั้ง จนกว่าจะกด "ปิดกรณีพิเศษ"`
+      : `ปิดกรณีพิเศษของ ${name}?\nกลับไปเป็นปิดรับ (คงเหลือยังกรอกได้)`, { title: open ? "เปิดกรณีพิเศษ" : "ปิดกรณีพิเศษ", okText: open ? "เปิด" : "ปิด" });
+    if (!ok) return;
+    try {
+      const data = await ctx.adminCall("adminRoundOpen", { month: tabState.month, pcu, open: open ? 1 : 0 });
+      if (tabState.data) (tabState.data.opens ||= {})[tabState.month] = data.opens;
+      toast(open ? `เปิดกรณีพิเศษให้ ${name} แล้ว` : `ปิดกรณีพิเศษของ ${name} แล้ว`);
+      draw();
+    } catch (err) { toast(errMessage(err), "err"); }
   }
 
   // PDF of one request (adminRequestPdf → pending/ready; the file is then fetched with the admin token)

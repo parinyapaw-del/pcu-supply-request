@@ -282,7 +282,7 @@ export async function adminRequests(ctx, p) {
   const cfgAll = await getConfigAll(DB);
   const cfg = publicConfig(cfgAll, monthFy(cur));
 
-  const [reqRes, lineRes, hidRes, roundRows, doneRes, mmRes] = await Promise.all([
+  const [reqRes, lineRes, hidRes, roundRows, doneRes, mmRes, openRes] = await Promise.all([
     DB.prepare(`SELECT ${REQ_COLS.split(",").map((c) => "r." + c).join(",")}, p.name AS pcu_name FROM requests r LEFT JOIN pcus p ON p.code = r.pcu
                 WHERE r.month IN (${ph}) ORDER BY r.month DESC, r.pcu`).bind(...months).all(),
     DB.prepare(`SELECT request_id, item_code, stock, op, pp, price_snapshot, issued_total FROM request_lines
@@ -296,7 +296,10 @@ export async function adminRequests(ctx, p) {
                   JOIN request_lines l ON l.request_id = rr.request_id AND l.item_code = rr.item_code
                 WHERE rr.request_id IN (SELECT id FROM requests WHERE month IN (${ph})) AND l.issued_total IS NOT NULL AND l.issued_total <> rr.qty
                 GROUP BY rr.request_id`).bind(...months).all(),
+    DB.prepare(`SELECT month, pcu FROM round_opens WHERE month IN (${ph})`).bind(...months).all(), // 2at
   ]);
+  const opens = {};
+  for (const o of openRes.results) (opens[o.month] ||= []).push(o.pcu);
   const mismatchN = new Map(mmRes.results.map((r) => [r.request_id, r.n]));
   const doneBy = new Map();
   for (const d of doneRes.results) { if (!doneBy.has(d.request_id)) doneBy.set(d.request_id, []); doneBy.get(d.request_id).push(d); }
@@ -344,6 +347,7 @@ export async function adminRequests(ctx, p) {
   }
   return {
     requests, rounds: months.map((m) => roundInfo(m, roundRows.get(m), cfg.deadline_day, cfg.trial_month)),
+    opens, // 2at: {month: [pcu]} special openings (adminRoundOpen)
     server_time: nowIso(), current_month: cal, current_round: cur,
   };
 }
@@ -492,6 +496,25 @@ export async function adminLockRound(ctx, p) {
     auditStmt(DB, who.email, who.role, "adminLockRound", "", p.month, lock ? "locked" : "unlocked"),
   ]);
   return { round: await roundResult(DB, p.month) };
+}
+
+// 2at: adminRoundOpen{month, pcu, open:0|1} — a round the admin locked / past its deadline opened again for one PCU (request quantities and
+// sending as before the deadline) until it is closed again. Writes only the one round_opens row (+ audit). → {month, pcu, open, opens:[pcu]}
+export async function adminRoundOpen(ctx, p) {
+  const { DB, who } = ctx;
+  assertMonthParam(p.month);
+  const pcuRow = await DB.prepare(`SELECT code FROM pcus WHERE code = ?`).bind(String(p.pcu || "")).first();
+  if (!pcuRow) throw err("NOT_FOUND", "ไม่พบ รพ.สต. นี้: " + p.pcu);
+  const open = p.open === 1 || p.open === true || p.open === "1" ? 1 : p.open === 0 || p.open === false || p.open === "0" ? 0 : null;
+  if (open === null) throw err("BAD_REQUEST", "open ต้องเป็น 0 หรือ 1");
+  await DB.batch([
+    open
+      ? DB.prepare(`INSERT INTO round_opens (month, pcu, opened_at, opened_by) VALUES (?,?,?,?) ON CONFLICT(month, pcu) DO NOTHING`).bind(p.month, pcuRow.code, nowIso(), who.email)
+      : DB.prepare(`DELETE FROM round_opens WHERE month = ? AND pcu = ?`).bind(p.month, pcuRow.code),
+    auditStmt(DB, who.email, who.role, "adminRoundOpen", pcuRow.code, p.month, open ? "open" : "close"),
+  ]);
+  const { results } = await DB.prepare(`SELECT pcu FROM round_opens WHERE month = ? ORDER BY pcu`).bind(p.month).all();
+  return { month: p.month, pcu: pcuRow.code, open: !!open, opens: results.map((r) => r.pcu) };
 }
 
 // ---- config -------------------------------------------------------------------------------------------------------------------------------

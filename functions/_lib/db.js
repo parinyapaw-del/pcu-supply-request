@@ -193,6 +193,12 @@ const V12 = [
      announcement_id INTEGER NOT NULL, pcu TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0, last_at TEXT, PRIMARY KEY (announcement_id, pcu))`,
 ];
 
+// 2at: a round the admin closed (locked) or past its deadline, opened again for one PCU as a special case (until the admin closes it)
+const V13 = [
+  `CREATE TABLE IF NOT EXISTS round_opens (
+     month TEXT NOT NULL, pcu TEXT NOT NULL, opened_at TEXT, opened_by TEXT, PRIMARY KEY (month, pcu))`,
+];
+
 // oneByOne: run each statement on its own; an error whose message matches `tolerate` is ignored (a racing isolate got there first).
 export const MIGRATIONS = [
   { v: 1, statements: V1 },
@@ -207,10 +213,11 @@ export const MIGRATIONS = [
   { v: 10, statements: V10, oneByOne: true, tolerate: /duplicate column/i },
   { v: 11, statements: V11, oneByOne: true, tolerate: /duplicate column/i },
   { v: 12, statements: V12, oneByOne: true, tolerate: /duplicate column/i },
+  { v: 13, statements: V13 },
 ];
 export const TABLES = [
   "config", "users", "pcus", "form_versions", "rounds", "requests", "request_lines", "issue_status", "hidden_items",
-  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "item_locks", "item_lock_exempt", "announcement_views", "audit_log",
+  "limits", "limit_unlocks", "plans", "actual_prev", "prices_prev", "price_history", "stats", "pdf_files", "usage_counters", "requester_log", "feedback", "faq", "item_flags", "announcements", "received_reports", "item_locks", "item_lock_exempt", "announcement_views", "round_opens", "audit_log",
 ];
 
 let migrated = false;
